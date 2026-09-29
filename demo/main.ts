@@ -35,7 +35,25 @@ const term = new Terminal({
 });
 const frames: FrameStats[] = [];
 const invalid: string[] = [];
-const hotty = new HottyAddon({ onFrame: (f) => frames.push(f), onInvalid: (r) => invalid.push(r) });
+// `?net=img-src self; font-src https:`: the host's half of the network policy
+// (SPEC §7.2), "self" meaning this page's origin.
+const net = params.get("net");
+const network = net
+  ? Object.fromEntries(
+      net.split(";").map((part) => {
+        const [d, ...srcs] = part.trim().split(/\s+/);
+        return [d, srcs.map((src) => (src === "self" ? location.origin : src))];
+      }),
+    )
+  : undefined;
+// `?record-links`: links the user asks to open are recorded, not opened.
+const opened: string[] = [];
+const hotty = new HottyAddon({
+  onFrame: (f) => frames.push(f),
+  onInvalid: (r) => invalid.push(r),
+  network,
+  openLink: params.has("record-links") ? (url) => void opened.push(url) : undefined,
+});
 const fit = new FitAddon();
 term.loadAddon(fit);
 term.loadAddon(hotty);
@@ -82,6 +100,7 @@ Object.assign(window, {
     frames,
     invalid,
     sent,
+    opened,
     get exited() {
       return exited;
     },

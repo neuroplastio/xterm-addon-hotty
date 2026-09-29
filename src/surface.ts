@@ -2,10 +2,11 @@
 //
 // The iframe is same-origin without scripts (`sandbox="allow-same-origin
 // allow-forms"`), so the addon can change its document directly and nothing
-// inside it can run. Its CSP allows nothing but `data:` and `blob:`
-// resources and inline styles. `allow-forms` is there only so that `submit`
-// fires (a sandbox without it cancels submission before the event); the
-// submission itself is cancelled here and blocked by `form-action 'none'`.
+// inside it can run. Its CSP allows `data:` and `blob:` resources, inline
+// styles, and from the network only what the embedder granted (the host's
+// half of the network policy, SPEC §7.2). `allow-forms` is there only so that
+// `submit` fires (a sandbox without it cancels submission before the event);
+// the submission itself is cancelled here and blocked by `form-action 'none'`.
 //
 // The iframe never moves in the DOM (moving an iframe reloads it): it sits
 // in the addon's layer, and placement only changes the position of its box.
@@ -13,19 +14,36 @@
 import { Patcher } from "./patch.ts";
 import { Resolver } from "./resolver.ts";
 import { encodeKey } from "./keys.ts";
-import type { Store } from "./resources.ts";
+import { cspSources, intersect, parse, type Policy } from "./network.ts";
+import { NO_BASE, type Store } from "./resources.ts";
 
-export const CSP = [
-  "default-src 'none'",
-  "img-src data: blob:",
-  "media-src data: blob:",
-  "font-src data: blob:",
-  "style-src 'unsafe-inline' blob:",
-  "form-action 'none'",
-  "base-uri https://hotty.invalid/",
-].join("; ");
+/** A surface's CSP: nothing from the network but what the host grants. The
+ * `<base>` is the addon's own (a document's is read, then dropped), so any
+ * http(s) base is allowed. */
+export function csp(host: Policy): string {
+  const with_ = (fixed: string, d: keyof Policy) => [fixed, cspSources(host, d)].filter(Boolean).join(" ");
+  return [
+    "default-src 'none'",
+    with_("img-src data: blob:", "img-src"),
+    with_("media-src data: blob:", "media-src"),
+    with_("font-src data: blob:", "font-src"),
+    with_("style-src 'unsafe-inline' blob:", "style-src"),
+    "form-action 'none'",
+    "base-uri http: https:",
+  ].join("; ");
+}
 
-export const BASE = "https://hotty.invalid/";
+/** A document's base URL (SPEC §7.3): its first <base href>, if absolute http(s). */
+function baseOf(doc: Document): string {
+  const href = doc.querySelector("base[href]")?.getAttribute("href") ?? "";
+  try {
+    const u = new URL(href);
+    if (u.protocol === "http:" || u.protocol === "https:") return u.href;
+  } catch {
+    /* not absolute */
+  }
+  return NO_BASE;
+}
 
 /** What a surface needs from the addon. */
 export interface SurfaceHost {
@@ -37,6 +55,10 @@ export interface SurfaceHost {
   input(bytes: string): void;
   /** Gives the keyboard back to the terminal. */
   focusTerminal(): void;
+  /** The host's half of the network policy (SPEC §7.2). */
+  policy: Policy;
+  /** Opens a link outside the surface (SPEC §9); false if it did not. */
+  openLink(url: string): boolean;
   /** A wheel event the surface has no use for, at a point in the page. */
   wheel(e: WheelEvent, pageX: number, pageY: number): void;
   applicationCursor(): boolean;
@@ -60,6 +82,8 @@ export class Surface {
   private readonly hostStyle: HTMLStyleElement;
   /** Set while the program moves focus, so no `focus` event echoes back. */
   private programFocus = false;
+  /** The document's base URL (SPEC §7.3). */
+  private base = NO_BASE;
   private keyboard = false;
 
   constructor(name: string, host: SurfaceHost, hostCss: string) {
@@ -91,8 +115,8 @@ export class Surface {
     doc.open();
     doc.write(
       `<!doctype html><html><head><meta charset="utf-8">` +
-        `<meta http-equiv="Content-Security-Policy" content="${CSP}">` +
-        `<base href="${BASE}"><style id="hotty-host"></style></head><body></body></html>`,
+        `<meta http-equiv="Content-Security-Policy" content="${csp(host.policy)}">` +
+        `<base href="${NO_BASE}"><style id="hotty-host"></style></head><body></body></html>`,
     );
     doc.close();
     this.doc = doc;
@@ -110,6 +134,14 @@ export class Surface {
   /** Replaces the whole document (`a=doc`): its head's styles and its body. */
   setDocument(html: string) {
     const parsed = new DOMParser().parseFromString(html, "text/html");
+    // The document's base and its network request (SPEC §7.2, §7.3) are read
+    // before the resolver drops its <base> and <meta> elements; patches can
+    // add neither, so both hold until the next a=doc.
+    this.base = baseOf(parsed);
+    const request = parse(parsed.querySelector('meta[name="hotty-network" i]')?.getAttribute("content") ?? "");
+    this.resolver.ctx = { base: this.base, policy: intersect(this.host.policy, request) };
+    const ours = this.doc.head.querySelector("base");
+    if (ours && ours.getAttribute("href") !== this.base) ours.setAttribute("href", this.base);
     this.resolver.adopt(parsed.documentElement);
     const head = this.doc.head;
     for (const n of Array.from(head.childNodes)) {
@@ -275,7 +307,7 @@ export class Surface {
     const d = this.doc;
     const win = this.frame.contentWindow!;
     d.addEventListener("click", (e) => this.onClick(e), true);
-    d.addEventListener("auxclick", (e) => this.linkIn(e) && e.preventDefault(), true);
+    d.addEventListener("auxclick", (e) => this.onAuxClick(e), true);
     d.addEventListener("submit", (e) => this.onSubmit(e as SubmitEvent), true);
     d.addEventListener("change", (e) => this.onChange(e), true);
     d.addEventListener("input", (e) => this.onInput(e), true);
@@ -335,9 +367,38 @@ export class Surface {
     return null;
   }
 
+  /** A link's click (SPEC §9): reported with or without an id; opened
+   * outside the surface when the user asked for that. */
+  private onLink(link: Element, e: MouseEvent) {
+    e.preventDefault();
+    const href = this.resolver.get(link, "href") ?? "";
+    let url = "";
+    try {
+      url = new URL(href, this.base).href;
+    } catch {
+      /* not a URL */
+    }
+    if (url.startsWith(NO_BASE)) url = "";
+    const detail: Record<string, unknown> = { href };
+    if (url) detail.url = url;
+    const wantsOpen = e.button === 1 || e.ctrlKey || e.metaKey || e.shiftKey;
+    if (wantsOpen && /^(https?|mailto):/i.test(url) && this.host.openLink(url)) detail.opened = true;
+    this.emit("click", link.getAttribute("id") ?? "", detail);
+  }
+
+  private onAuxClick(e: MouseEvent) {
+    const link = this.linkIn(e);
+    if (!link) return;
+    if (e.button === 1) this.onLink(link, e);
+    else e.preventDefault();
+  }
+
   private onClick(e: MouseEvent) {
-    // Links never navigate (PROTOCOL §8): the program hears the click.
-    if (this.linkIn(e)) e.preventDefault();
+    const link = this.linkIn(e);
+    if (link) {
+      this.onLink(link, e);
+      return;
+    }
     for (const n of e.composedPath()) {
       if (!isElement(n)) continue;
       const el = n;

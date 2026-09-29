@@ -19,6 +19,32 @@ term.open(element);
 // term.onData → your pty, as usual: replies and events travel that way too.
 ```
 
+### Links and the network
+
+A surface fetches nothing from the network unless the page grants it, and
+the document asks for it (SPEC §7.2):
+
+```ts
+new HottyAddon({
+  // The host's half of the network policy: directive → origins, or "https:".
+  network: { "img-src": ["https://example.com"] },
+  // Optional: how to open a link the user asks to open. Default: a new tab.
+  openLink: (url) => void window.open(url, "_blank", "noopener,noreferrer"),
+});
+```
+
+- A document asks with `<meta name="hotty-network" content="img-src
+  https://example.com">` and gets what both allow; its `<base href>` sets
+  its base URL, so relative images and links resolve (§7.3). The capability
+  reply reports the grant as `net`.
+- **Links** show, hover and copy as the links they are. A plain click is a
+  `click` event for the program, with `href` (the program's value) and
+  `url` (resolved), whether the link has an `id` or not. A middle click, or
+  a Ctrl, Cmd or Shift click, opens an `http`, `https` or `mailto` link
+  through `openLink`, and the event says `"opened": true` (§9). The context
+  menu's own "open in new tab" and "copy link" work as on any page.
+- The page's own CSP must allow the granted origins too (below).
+
 ## Try it
 
 Clone [neuroplastio/hotty](https://github.com/neuroplastio/hotty) next to
@@ -70,14 +96,22 @@ test checks each one (`tests/e2e/hostile.spec.ts`):
    `script`, `iframe`, `object`, `embed`, `base`, `meta` and any `link` that
    is not a stylesheet. It also removes `on*`, `srcdoc`, `autofocus` and
    `ping`. URL attributes resolve to `blob:` for `cid:`, stay as they are for
-   `data:`, and fail closed as `about:invalid` for everything else.
+   `data:`, become absolute URLs where the network policy allows them (the
+   page's grant and the document's request, both), and fail closed as
+   `about:invalid` for everything else. A document's `<base>` and
+   `<meta name="hotty-network">` are read before they are removed.
 2. **The iframe:**
    - `sandbox="allow-same-origin allow-forms"`: no scripts, popups or
      navigation. `allow-forms` is there only so that `submit` fires; the
      submission is cancelled.
    - A CSP `<meta>` written by the parser before any program markup:
      `default-src 'none'`, with `data:` and `blob:` allowed for images,
-     media and fonts, inline styles allowed, and `form-action 'none'`.
+     media and fonts, and the page's `network` grant; inline styles allowed,
+     and `form-action 'none'`. It holds the page's grant on its own: a
+     reference the sanitizer misses reaches nothing the page did not grant.
+     Network URLs inside `cid:` stylesheets are not fetched (a stylesheet
+     resource serves surfaces with different policies); a `<link>` to the
+     stylesheet on the network, or a `<style>`, is.
 
 With the CSP removed, 9 requests get through, all from CSS (`@import`, `url()`
 and `@font-face`). With the sanitizer passing URLs through, the CSP alone
@@ -86,8 +120,9 @@ stops everything. `position: fixed` stays inside the surface's own viewport.
 **The embedding page's CSP applies inside the surfaces too** (about:blank
 iframes inherit it, and it can only be narrowed). A page that embeds xterm.js
 already has to allow inline styles, because xterm's DOM renderer sets them.
-For HOTTY it must also allow `data:` and `blob:` images, fonts and media. This
-is the recommended policy, and `tests/e2e/embedder.spec.ts` checks it:
+For HOTTY it must also allow `data:` and `blob:` images, fonts and media, and
+whatever origins it grants in `network`. This is the recommended policy (with
+no network grant), and `tests/e2e/embedder.spec.ts` checks it:
 
 ```
 default-src 'self'; style-src 'self' 'unsafe-inline';

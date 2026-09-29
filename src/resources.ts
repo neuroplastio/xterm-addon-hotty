@@ -6,7 +6,34 @@
 // Stylesheets are rewritten too (their own `url(cid:…)`), so a stylesheet's
 // blob depends on the resources it names; changing one re-resolves both.
 
+import { allows, type Directive, type Policy } from "./network.ts";
+
 export const INVALID = "about:invalid";
+
+/** The base URL no document declared (SPEC §7.3): nothing under it loads. */
+export const NO_BASE = "https://hotty.invalid/";
+
+/** What a document's references resolve against (SPEC §7.2, §7.3). */
+export interface UrlContext {
+  /** The document's base URL. */
+  base: string;
+  /** The effective network policy: the host's half and the document's. */
+  policy: Policy;
+}
+
+/** A fetch the policy allows, as an absolute URL, or INVALID. Never relative:
+ * a relative URL would resolve against the base in the browser, and reach
+ * whatever the host's half (the CSP) allows, asked for or not. */
+function network(value: string, ctx: UrlContext | undefined, d: Directive): string {
+  if (!ctx) return INVALID;
+  let abs: string;
+  try {
+    abs = new URL(value, ctx.base).href;
+  } catch {
+    return INVALID;
+  }
+  return !abs.startsWith(NO_BASE) && allows(ctx.policy, d, abs) ? abs : INVALID;
+}
 
 /** Attributes that hold a URL, per element or globally. */
 const URL_ATTRS = new Set(["src", "href", "poster", "background", "data", "action", "formaction", "xlink:href", "srcset", "cite", "longdesc", "lowsrc", "manifest", "codebase", "usemap", "ping"]);
@@ -68,19 +95,33 @@ export class Store {
     return e.url;
   }
 
-  /** CSS text with every `cid:` reference resolved; `names` collects them. */
-  rewriteCss(css: string, names: Set<string>): string {
-    return css.replace(/url\(\s*(['"]?)cid:([^'")\s]+)\1\s*\)/gi, (_m, _q, name: string) => {
-      names.add(name);
-      return `url("${this.url(name) ?? INVALID}")`;
-    }).replace(/@import\s+(['"])cid:([^'"]+)\1/gi, (_m, _q, name: string) => {
-      names.add(name);
-      return `@import "${this.url(name) ?? INVALID}"`;
-    });
+  /** CSS text with every reference resolved; `names` collects the resources.
+   * Without a context (a stylesheet resource, shared by surfaces with
+   * different policies) nothing from the network is allowed. */
+  rewriteCss(css: string, names: Set<string>, ctx?: UrlContext): string {
+    const one = (raw: string, d: Directive[]): string => {
+      const v = raw.trim();
+      if (/^cid:/i.test(v)) {
+        names.add(v.slice(4));
+        return this.url(v.slice(4)) ?? INVALID;
+      }
+      if (/^data:/i.test(v) || /^blob:/i.test(v) || v.startsWith("#")) return raw;
+      // CSS does not say what a url() is for: an image or a font. The
+      // resolver allows either; the CSP holds each to its own directive.
+      for (const dir of d) {
+        const r = network(v, ctx, dir);
+        if (r !== INVALID) return r;
+      }
+      return INVALID;
+    };
+    return css
+      .replace(/@import\s+(?:url\(\s*)?(['"])([^'"]*)\1\s*\)?/gi, (_m, _q, u: string) => `@import "${one(u, ["style-src"])}"`)
+      .replace(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi, (_m, _q, u: string) => `url("${one(u, ["img-src", "font-src"])}")`);
   }
 
-  /** Resolves one attribute value; `names` collects the resources it names. */
-  resolveUrl(value: string, names: Set<string>): string {
+  /** Resolves one attribute value; `names` collects the resources it names.
+   * `d` is the directive that covers the attribute, if it fetches. */
+  resolveUrl(value: string, names: Set<string>, ctx?: UrlContext, d?: Directive | null): string {
     const v = value.trim();
     if (/^cid:/i.test(v)) {
       const name = v.slice(4);
@@ -88,8 +129,9 @@ export class Store {
       return this.url(name) ?? INVALID;
     }
     if (/^data:/i.test(v) || /^blob:/i.test(v) || v === "" || v.startsWith("#")) return value;
-    // Relative URLs resolve under https://hotty.invalid/ and fail there; an
-    // absolute URL fails closed here (D2), before CSP has to catch it.
+    if (d) return network(v, ctx, d);
+    // An attribute that does not fetch (cite, longdesc, a form's action):
+    // relative stays relative, and an absolute URL fails closed.
     return /^[a-z][a-z0-9+.-]*:/i.test(v) ? INVALID : value;
   }
 

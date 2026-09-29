@@ -16,6 +16,7 @@
 import type { IDisposable, IMarker, ITerminalAddon, Terminal } from "@xterm/xterm";
 import { hostCss, palette } from "./hostcss.ts";
 import { OPS, PatchError } from "./patch.ts";
+import { clean, type Policy } from "./network.ts";
 import { Store } from "./resources.ts";
 import { Surface, type SurfaceHost } from "./surface.ts";
 import { Assembler, Control, encode, OSC, text, type Command, type Decoded } from "./wire.ts";
@@ -29,6 +30,20 @@ export interface HottyOptions {
   onFrame?: (f: FrameStats) => void;
   /** Called for commands that could not be decoded. */
   onInvalid?: (reason: string) => void;
+  /**
+   * What surfaces may fetch from the network: the host's half of the network
+   * policy (SPEC §7.2), directive to sources, e.g.
+   * `{ "img-src": ["https://example.com"] }`. A document gets what it asks
+   * for (`<meta name="hotty-network">`) and this allows. Default: nothing.
+   * The embedding page's own CSP must allow these sources too.
+   */
+  network?: Policy;
+  /**
+   * Opens a link the user asked to open (a middle click, a Ctrl, Cmd or
+   * Shift click; SPEC §9). Return false if it was not opened. Default: a new
+   * tab, without an opener or a referrer.
+   */
+  openLink?: (url: string) => boolean | void;
 }
 
 export interface FrameStats {
@@ -67,7 +82,7 @@ type Reply = { extra?: [string, string][]; body?: string };
 
 export class HottyAddon implements ITerminalAddon {
   private term!: Terminal;
-  private readonly opts: Required<Omit<HottyOptions, "onFrame" | "onInvalid">> & HottyOptions;
+  private readonly opts: Required<Pick<HottyOptions, "maxSurfaces" | "resourceQuota">> & HottyOptions;
   private readonly store: Store;
   private readonly surfaces = new Map<string, Surface>();
   private readonly placements = new Map<string, Placement>();
@@ -78,11 +93,13 @@ export class HottyAddon implements ITerminalAddon {
   private held: Command[] = [];
   private heldTimer: ReturnType<typeof setTimeout> | null = null;
   private css = "";
+  private readonly policy: Policy;
   private metrics = { cellW: 0, cellH: 0, key: "" };
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: HottyOptions = {}) {
     this.opts = { maxSurfaces: 64, resourceQuota: 64 << 20, ...options };
+    this.policy = clean(options.network);
     this.store = new Store(this.opts.resourceQuota);
     this.store.onChange = (names) => {
       for (const s of this.surfaces.values()) s.resolver.refresh(names);
@@ -301,6 +318,7 @@ export class HottyAddon implements ITerminalAddon {
       scale,
       scheme: palette(this.term.options.theme).dark ? "dark" : "light",
       limits: { resources: this.store.quota, surfaces: this.opts.maxSurfaces },
+      net: this.policy,
       host: "xterm-addon-hotty",
     };
   }
@@ -429,6 +447,12 @@ export class HottyAddon implements ITerminalAddon {
       },
       input: (bytes) => this.send(bytes),
       focusTerminal: () => this.term.focus(),
+      policy: this.policy,
+      openLink: (url) => {
+        if (this.opts.openLink) return this.opts.openLink(url) !== false;
+        window.open(url, "_blank", "noopener,noreferrer");
+        return true;
+      },
       // Replayed on the terminal's screen, where xterm handles it as its own:
       // scrollback, or mouse reports and arrow keys on the alternate screen.
       wheel: (e, x, y) => {

@@ -7,7 +7,8 @@
 // scripts and requests; this is the first line, and it keeps the live DOM
 // free of things that could navigate, load or steal focus.
 
-import { INVALID, isUrlAttr, type Store } from "./resources.ts";
+import { directiveFor } from "./network.ts";
+import { INVALID, isUrlAttr, type Store, type UrlContext } from "./resources.ts";
 
 /** Elements that never enter a surface. */
 const DROP = new Set(["script", "iframe", "frame", "frameset", "object", "embed", "applet", "base", "meta", "portal", "fencedframe"]);
@@ -23,6 +24,8 @@ export class Resolver {
   /** Elements that name resources, and which. */
   private refs = new Map<Element, Set<string>>();
   private readonly store: Store;
+  /** The document's base URL and effective network policy (set per a=doc). */
+  ctx: UrlContext | undefined;
 
   constructor(store: Store) {
     this.store = store;
@@ -86,12 +89,15 @@ export class Resolver {
     if (n.startsWith("on") || DROP_ATTRS.has(n)) return;
     const names = new Set<string>();
     let live = value;
-    if (n === "style") live = this.store.rewriteCss(value, names);
-    else if (isUrlAttr(n)) live = n === "srcset" ? this.srcset(value, names) : this.store.resolveUrl(value, names);
-    // Links keep their href: they never navigate (clicks are intercepted and
-    // the CSP blocks every scheme but data: and blob:), and the program hears
-    // it back in `click` events.
-    if (el.localName === "a" && n === "href") live = value;
+    if (n === "style") live = this.store.rewriteCss(value, names, this.ctx);
+    else if (isUrlAttr(n)) {
+      const d = directiveFor(el.localName, n, el.getAttribute("rel") ?? "");
+      live = n === "srcset" ? this.srcset(value, names) : this.store.resolveUrl(value, names, this.ctx, d);
+    }
+    // Links keep their href, resolved by the browser against the document's
+    // base, so they show and copy as the links they are. They never navigate:
+    // clicks are events (SPEC §9), and the sandbox has no allow-popups.
+    if ((el.localName === "a" || el.localName === "area") && n === "href") live = value;
     try {
       el.setAttribute(name, live);
     } catch {
@@ -112,14 +118,12 @@ export class Resolver {
 
   setCss(el: Element, text: string): void {
     const names = new Set<string>();
-    const live = this.store.rewriteCss(text, names);
+    const live = this.store.rewriteCss(text, names, this.ctx);
     if (el.textContent !== live) el.textContent = live;
-    if (names.size > 0) {
-      this.css.set(el, text);
-      this.track(el, names);
-    } else {
-      this.css.delete(el);
-    }
+    // The program's text stands (SPEC §7.1) whenever resolving changed it.
+    if (live !== text) this.css.set(el, text);
+    else this.css.delete(el);
+    if (names.size > 0) this.track(el, names);
   }
 
   /** Re-resolves everything that names one of `names` (a resource changed). */
@@ -143,7 +147,7 @@ export class Resolver {
       .split(",")
       .map((part) => {
         const [url, ...rest] = part.trim().split(/\s+/);
-        return [this.store.resolveUrl(url ?? "", names), ...rest].join(" ");
+        return [this.store.resolveUrl(url ?? "", names, this.ctx, "img-src"), ...rest].join(" ");
       })
       .join(", ");
   }

@@ -7,7 +7,8 @@ import { expect, test, type Page } from "@playwright/test";
 import { Control, encode } from "../../src/wire.ts";
 import { open, send, surface, take, write } from "./helpers.ts";
 
-const leak = (tag: string) => `/leak/${tag}`;
+// Its own prefix: other specs record legitimate requests in parallel.
+const leak = (tag: string) => `/leak/hostile/${tag}`;
 const abs = (page: Page, tag: string) => new URL(leak(tag), page.url()).href;
 
 async function leaks(page: Page): Promise<string[]> {
@@ -16,7 +17,8 @@ async function leaks(page: Page): Promise<string[]> {
 }
 
 test("script, requests, navigation, popups and focus theft all fail", async ({ page, context }) => {
-  await open(page);
+  // Links the user asks to open (SPEC §9) are recorded rather than opened.
+  await open(page, "?pty=0&record-links");
   const before = await leaks(page);
   await page.evaluate(() => window.hotty.term.focus());
   const L = (t: string) => abs(page, t);
@@ -75,15 +77,18 @@ test("script, requests, navigation, popups and focus theft all fail", async ({ p
 
   expect(await page.title()).toBe("HOTTY in xterm.js");
   expect(context.pages()).toHaveLength(1);
-  const got = (await leaks(page)).slice(before.length);
+  const got = (await leaks(page)).slice(before.length).filter((p) => p.startsWith("/leak/hostile/"));
   expect(got).toEqual([]);
+  // Only the user's Ctrl-click opened anything, and only through the host.
+  expect(await page.evaluate(() => (window.hotty as unknown as { opened: string[] }).opened)).toEqual([L("blank")]);
 
   // What reached the live document: none of the dangerous elements or handlers.
   const live = await d.locator("html").evaluate((root) => ({
-    // Only the skeleton's own <meta charset>, CSP <meta> and <base> remain.
+    // Only the skeleton's own <meta charset>, CSP <meta> and <base> remain
+    // (the <base> carries the document's base URL, SPEC §7.3).
     dropped: [...root.querySelectorAll("script, iframe, object, embed, base, meta")]
       .map((el) => el.outerHTML)
-      .filter((h) => !/^<meta charset="utf-8">$|^<meta http-equiv="Content-Security-Policy"|^<base href="https:\/\/hotty\.invalid\/">$/.test(h)),
+      .filter((h) => !/^<meta charset="utf-8">$|^<meta http-equiv="Content-Security-Policy"|^<base href="[^"]*">$/.test(h)),
     handlers: [...root.querySelectorAll("*")].flatMap((el) => [...el.attributes].filter((a) => a.name.startsWith("on")).map((a) => a.name)),
     ping: root.querySelector("#link")?.getAttribute("ping") ?? null,
     fixed: (() => {
