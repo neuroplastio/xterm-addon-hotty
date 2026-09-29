@@ -16,7 +16,7 @@
     "check": "npm run typecheck && npm run build && npm run test:unit && npm run test:e2e"
   },
   "peerDependencies": {
-    "@xterm/xterm": "^6.0.0"
+    "@xterm/xterm": "^6.0.0 || ^6.1.0-0"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
