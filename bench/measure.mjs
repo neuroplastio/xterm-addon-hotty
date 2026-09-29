@@ -104,6 +104,41 @@ if (only !== "frames") {
   console.log(`  a=doc + a=place (iframe, parse, sanitize, adopt): median ${ms[n >> 1].toFixed(2)} ms, p90 ${ms[Math.floor(n * 0.9)].toFixed(2)} ms`);
   console.log(`  main thread per surface ${per("TaskDuration").toFixed(2)} ms (style ${per("RecalcStyleDuration").toFixed(2)}, layout ${per("LayoutDuration").toFixed(2)})`);
   console.log(`  RSS +${((rss1 - rss0) / n).toFixed(2)} MB per surface (${rss0.toFixed(0)} → ${rss1.toFixed(0)} MB)`);
+
+  // Scrolling content (SPEC §5.2, §5.4): a surface leaves the view and
+  // comes back, or scrolls a row. Main-thread time per cycle, the frame it
+  // takes included (Chrome's counters), and the time to apply the commands.
+  const cycle = async (make) => {
+    const a0 = await metrics();
+    const apply = [];
+    for (let i = 0; i < n; i++) {
+      apply.push(await page.evaluate(async (d) => {
+        const t = performance.now();
+        await window.hotty.write(d);
+        const ms = performance.now() - t;
+        await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+        return ms;
+      }, make(i)));
+    }
+    const a1 = await metrics();
+    apply.sort((a, b) => a - b);
+    const task = (((a1.TaskDuration ?? 0) - (a0.TaskDuration ?? 0)) * 1000) / n;
+    const style = (((a1.RecalcStyleDuration ?? 0) - (a0.RecalcStyleDuration ?? 0)) * 1000) / n;
+    const layout = (((a1.LayoutDuration ?? 0) - (a0.LayoutDuration ?? 0)) * 1000) / n;
+    return `apply ${apply[n >> 1].toFixed(2)} ms; main thread ${task.toFixed(2)} ms (style ${style.toFixed(2)}, layout ${layout.toFixed(2)})`;
+  };
+  const place = (i, extra = {}) => cmd({ a: "place", s: `c${i}`, c: "60", r: "8", C: "1", q: "2", ...extra });
+  const recreate = await cycle((i) => cmd({ a: "del", s: `c${i}`, q: "2" }) + cmd({ a: "doc", s: `c${i}`, q: "2" }, card) + place(i));
+  const hideShow = await cycle((i) => cmd({ a: "hide", s: `c${i}`, q: "2" }) + place(i));
+  const scroll = await cycle((i) => place(i, { y: "1", h: "7" }));
+  const rssHidden0 = rssMB(chromiumPids());
+  for (let i = 0; i < n; i++) await page.evaluate((d) => window.hotty.write(d), cmd({ a: "hide", s: `c${i}`, q: "2" }));
+  await page.waitForTimeout(1000);
+  const rssHidden1 = rssMB(chromiumPids());
+  console.log(`  out of view and back: a=del, a=doc, a=place ${recreate}`);
+  console.log(`                        a=hide, a=place       ${hideShow}`);
+  console.log(`  scrolled a row (a new window)               ${scroll}`);
+  console.log(`  hiding all ${n}: RSS ${rssHidden0.toFixed(0)} → ${rssHidden1.toFixed(0)} MB (a hidden surface keeps its memory)`);
 }
 
 if (only !== "surfaces") {
