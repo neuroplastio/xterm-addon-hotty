@@ -45,6 +45,14 @@ function baseOf(doc: Document): string {
 }
 
 /** What a surface needs from the addon. */
+/** A window of a surface, in cells from its top-left corner (SPEC §5.2). */
+export interface Window {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface SurfaceHost {
   layer: HTMLElement;
   store: Store;
@@ -76,6 +84,8 @@ export class Surface {
   readonly patcher: Patcher;
   cols = 80;
   rows = 24;
+  /** The part of the surface on screen, in cells (SPEC §5.2). */
+  win: Window = { x: 0, y: 0, w: 80, h: 24 };
   autoRows = false;
   private readonly host: SurfaceHost;
   private readonly hostStyle: HTMLStyleElement;
@@ -104,7 +114,17 @@ export class Surface {
     this.frame = document.createElement("iframe");
     this.frame.setAttribute("sandbox", "allow-same-origin allow-forms");
     this.frame.setAttribute("title", `HOTTY surface ${name}`);
-    Object.assign(this.frame.style, { border: "0", width: "100%", height: "100%", display: "block", colorScheme: "normal" });
+    // The document is the whole surface; the box shows its window (SPEC §5.2).
+    Object.assign(this.frame.style, {
+      border: "0",
+      position: "absolute",
+      left: "0px",
+      top: "0px",
+      width: "100%",
+      height: "100%",
+      display: "block",
+      colorScheme: "normal",
+    });
     this.box.append(this.frame);
     host.layer.append(this.box);
 
@@ -165,17 +185,27 @@ export class Surface {
 
   /** Rows the content needs at `cols` columns (`r=auto`). */
   contentRows(cols: number, cellW: number, cellH: number): number {
-    this.box.style.width = `${cols * cellW}px`;
-    this.box.style.height = "1px";
+    // Laid out, unseen, whatever the surface was showing.
+    Object.assign(this.box.style, { display: "block", visibility: "hidden" });
+    Object.assign(this.frame.style, { width: `${cols * cellW}px`, height: "1px" });
     const h = this.doc.documentElement.scrollHeight;
     return Math.max(1, Math.min(1000, Math.ceil(h / cellH)));
   }
 
-  setSize(cols: number, rows: number, cellW: number, cellH: number) {
+  /** The surface is `cols`×`rows` cells, and the box shows `win` of it:
+   *  the document keeps the whole size, offset by the window's corner. */
+  setSize(cols: number, rows: number, cellW: number, cellH: number, win: Window = { x: 0, y: 0, w: cols, h: rows }) {
     this.cols = cols;
     this.rows = rows;
-    this.box.style.width = `${Math.round(cols * cellW)}px`;
-    this.box.style.height = `${rows * cellH}px`;
+    this.win = win;
+    Object.assign(this.frame.style, {
+      left: `${-Math.round(win.x * cellW)}px`,
+      top: `${-win.y * cellH}px`,
+      width: `${Math.round(cols * cellW)}px`,
+      height: `${rows * cellH}px`,
+    });
+    this.box.style.width = `${Math.round(win.w * cellW)}px`;
+    this.box.style.height = `${win.h * cellH}px`;
   }
 
   /** Shows the surface with its top-left corner at (x, y) in the screen's pixels. */
@@ -190,10 +220,10 @@ export class Surface {
     this.box.style.display = "none";
   }
 
-  /** Off screen but laid out, for a surface with no placement. */
+  /** No placement (hidden, or not placed yet): the document stays, and the
+   *  browser skips its style, layout and paint until it is placed again. */
   park() {
-    this.box.style.visibility = "hidden";
-    this.box.style.display = "block";
+    this.box.style.display = "none";
   }
 
   destroy() {

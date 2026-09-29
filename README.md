@@ -77,6 +77,11 @@ runs programs for whoever connects.
   scrollback. On the alternate buffer, where markers do not work, it sits on
   fixed cells and dies with the screen. The iframe never
   moves in the DOM, since that would reload it; only its box moves.
+- **Windows and hiding** (SPEC §5.2, §5.4). The iframe keeps the surface's
+  whole size inside a box the size of the window, offset by the window's
+  corner, so a new window moves the iframe and lays nothing out. A hidden
+  surface's box is `display: none`: its document stays, and the browser
+  skips its style, layout and paint until it is placed again.
 - **Cursor.** After `a=place` the cursor moves below the surface, as in the
   native host. xterm.js has no public API for that, so the addon uses the same
   private calls as the official image addon.

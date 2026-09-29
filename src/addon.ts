@@ -258,6 +258,13 @@ export class HottyAddon implements ITerminalAddon {
       }
       case "place":
         return this.place(this.existing(c), c);
+      case "hide": {
+        // The document stays; the keyboard goes back to the terminal (§5.4).
+        const s = this.existing(c);
+        if (s.hasKeyboard()) s.blur();
+        this.unplace(s.name);
+        return;
+      }
       case "patch": {
         const s = this.existing(c);
         s.patcher.apply(c.get("op") ?? "morph", c.get("t"), c.get("k"), text(cmd.payload));
@@ -346,8 +353,22 @@ export class HottyAddon implements ITerminalAddon {
     const auto = r === undefined || r === "auto";
     const rows = auto ? s.contentRows(cols, cellW, cellH) : Number(r);
     if (!Number.isInteger(rows) || rows < 1 || rows > 1000) throw new Failure("EINVAL", "r out of range");
+    // The window: the part of the surface the placement shows (§5.2).
+    const cell = (k: string, d: number) => {
+      const v = c.get(k);
+      if (v === undefined) return d;
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 0) throw new Failure("EINVAL", `bad ${k}`);
+      return n;
+    };
+    const x = cell("x", 0);
+    const y = cell("y", 0);
+    const win = { x, y, w: cell("w", cols - x), h: cell("h", rows - y) };
+    if (win.w < 1 || win.h < 1 || x + win.w > cols || y + win.h > rows) {
+      throw new Failure("EINVAL", "the window is not inside the surface");
+    }
     s.autoRows = auto;
-    s.setSize(cols, rows, cellW, cellH);
+    s.setSize(cols, rows, cellW, cellH, win);
     this.unplace(s.name);
 
     const buf = this.term.buffer.active;
@@ -367,7 +388,7 @@ export class HottyAddon implements ITerminalAddon {
     this.placements.set(s.name, p);
     this.position(p);
 
-    if (c.get("C") !== "1") this.moveCursorBelow(rows);
+    if (c.get("C") !== "1") this.moveCursorBelow(win.h);
     return { extra: [["c", String(cols)], ["r", String(rows)]] };
   }
 
@@ -399,11 +420,11 @@ export class HottyAddon implements ITerminalAddon {
       }
       row = p.marker.line - buf.viewportY;
     }
-    if (row + s.rows <= 0 || row >= this.term.rows) {
+    if (row + s.win.h <= 0 || row >= this.term.rows) {
       s.hide();
       return;
     }
-    s.setSize(s.cols, s.rows, cellW, cellH);
+    s.setSize(s.cols, s.rows, cellW, cellH, s.win);
     s.show(Math.round(p.col * cellW), row * cellH);
   }
 

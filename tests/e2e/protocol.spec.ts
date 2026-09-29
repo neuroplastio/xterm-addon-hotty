@@ -136,6 +136,55 @@ test("place puts the surface at the cursor and moves the cursor below it, unless
   expect(await page.evaluate(() => window.hotty.term.buffer.active.cursorY)).toBe(6);
 });
 
+test("a window shows part of the surface: the document keeps its size, the pointer hits what shows", async ({ page }) => {
+  const { w, h } = await cell(page);
+  const rows = Array.from({ length: 8 }, (_, i) => `<button id=b${i} style="display:block;box-sizing:border-box;width:100%;height:var(--hotty-cell-h);border:0;padding:0;margin:0">row ${i}</button>`).join("");
+  await send(page, { a: "doc", s: "x", q: "2" }, `<body style="margin:0">${rows}</body>`);
+  await write(page, "\x1b[3;5H");
+  await send(page, { a: "place", s: "x", c: "20", r: "8", x: "2", y: "2", w: "10", h: "3", q: "2" });
+  const box = page.locator('.hotty-surface[data-surface="x"]');
+  const bb = (await box.boundingBox())!;
+  const screen = (await page.locator(".xterm-screen").boundingBox())!;
+  // The window's cells at the cursor, and the cursor below them.
+  expect([Math.round((bb.x - screen.x) / w), Math.round((bb.y - screen.y) / h)]).toEqual([4, 2]);
+  expect([Math.round(bb.width / w), Math.round(bb.height / h)]).toEqual([10, 3]);
+  expect(await page.evaluate(() => window.hotty.term.buffer.active.cursorY)).toBe(5);
+  // The document is laid out at the surface's size, whatever shows.
+  const d = surface(page, "x");
+  const [vw, vh] = await d.locator("body").evaluate(() => [innerWidth, innerHeight]);
+  expect(Math.abs(vw - 20 * w)).toBeLessThanOrEqual(1);
+  expect(vh).toBe(8 * h);
+  // The window's middle row is the surface's row 3.
+  await take(page);
+  await page.mouse.click(bb.x + bb.width / 2, bb.y + 1.5 * h);
+  const { msgs } = await take(page);
+  expect(msgs.filter((m) => m.get("e") === "click").map((m) => m.get("t"))).toEqual(["b3"]);
+});
+
+test("hide removes the placement and keeps the document for the next place", async ({ page }) => {
+  await send(page, { a: "doc", s: "x", q: "2" }, "<input id=i><p id=p>one</p>");
+  await send(page, { a: "place", s: "x", c: "20", r: "2", q: "2" });
+  const box = page.locator('.hotty-surface[data-surface="x"]');
+  await expect(box).toBeVisible();
+  const d = surface(page, "x");
+  await d.locator("#i").fill("typed");
+  await send(page, { a: "focus", s: "x", t: "i", q: "2" });
+  await take(page);
+  await send(page, { a: "hide", s: "x" });
+  await expect(box).toBeHidden();
+  const { msgs } = await take(page);
+  // Answered, and the keyboard went back to the terminal.
+  expect(msgs.map((m) => [m.get("a"), m.get("re") ?? m.get("e")])).toEqual(
+    expect.arrayContaining([["ok", "hide"], ["ev", "blur"]]),
+  );
+  // Patches apply while hidden; placing again shows it as it is, input kept.
+  await send(page, { a: "patch", s: "x", op: "text", t: "p", q: "2" }, "two");
+  await send(page, { a: "place", s: "x", c: "20", r: "2", q: "2" });
+  await expect(box).toBeVisible();
+  await expect(d.locator("#p")).toHaveText("two");
+  await expect(d.locator("#i")).toHaveValue("typed");
+});
+
 test("a surface scrolls with the text and dies when its line leaves the scrollback", async ({ page }) => {
   const { h } = await cell(page);
   await write(page, "\x1b[5;1H");
