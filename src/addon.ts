@@ -445,7 +445,41 @@ export class HottyAddon implements ITerminalAddon {
         const c = new Control().set("a", "ev").set("s", surface).set("e", kind).set("t", target);
         this.send(encode(c, detail === undefined ? "" : JSON.stringify(detail)));
       },
-      input: (bytes) => this.send(bytes),
+      key: (e) => {
+        // Through xterm.js's own keyboard handling, so the key is encoded
+        // the way the program asked: DECCKM, modifyOtherKeys, the kitty
+        // keyboard protocol. A printable key xterm.js leaves to keypress
+        // (legacy input) gets one.
+        const ta = this.term.textarea;
+        if (!ta) return;
+        const init = {
+          key: e.key,
+          code: e.code,
+          location: e.location,
+          repeat: e.repeat,
+          ctrlKey: e.ctrlKey,
+          altKey: e.altKey,
+          shiftKey: e.shiftKey,
+          metaKey: e.metaKey,
+          keyCode: e.keyCode,
+          which: e.which,
+          bubbles: true,
+          cancelable: true,
+        };
+        // xterm.js focuses the terminal on every keyup; the surface keeps
+        // the keyboard, so its focus does nothing meanwhile.
+        Object.defineProperty(ta, "focus", { value: () => {}, configurable: true });
+        try {
+          const ev = new KeyboardEvent(e.type, init);
+          ta.dispatchEvent(ev);
+          if (e.type === "keydown" && !ev.defaultPrevented && [...e.key].length === 1) {
+            const c = e.key.codePointAt(0)!;
+            ta.dispatchEvent(new KeyboardEvent("keypress", { ...init, charCode: c, keyCode: c, which: c }));
+          }
+        } finally {
+          delete (ta as { focus?: unknown }).focus;
+        }
+      },
       focusTerminal: () => this.term.focus(),
       policy: this.policy,
       openLink: (url) => {
@@ -471,7 +505,6 @@ export class HottyAddon implements ITerminalAddon {
           }),
         );
       },
-      applicationCursor: () => this.term.modes.applicationCursorKeysMode,
     };
   }
 

@@ -65,12 +65,11 @@ runs programs for whoever connects.
 | piece | file | what it does |
 | --- | --- | --- |
 | wire | `src/wire.ts` | OSC 7279 control parsing, chunk reassembly, base64, zlib through `DecompressionStream`, and reply encoding |
-| addon | `src/addon.ts` | OSC handler, replies through `term.input(…, false)`, placement, synchronized output, RIS, the alternate screen, zoom and theme |
+| addon | `src/addon.ts` | OSC handler, replies through `term.input(…, false)`, placement, synchronized output, RIS, the alternate screen, zoom and theme, and keys a surface does not use, through xterm.js's own keyboard handling |
 | surface | `src/surface.ts` | one sandboxed iframe per surface; events, focus and key routing |
 | patches | `src/patch.ts` | SPEC §6: the ops and morph |
 | resources | `src/resources.ts`, `src/resolver.ts` | `cid:` as `blob:` URLs; sanitizing everything before it reaches a live document |
 | host stylesheet | `src/hostcss.ts` | §7 from `term.options` (theme, font, cell size), in a cascade layer |
-| keys | `src/keys.ts` | keys a surface does not use, encoded as terminal input |
 
 - **Placement.** On the normal buffer a surface hangs from a marker, which is
   public API (decorations need `allowProposedApi`). It scrolls with the text,

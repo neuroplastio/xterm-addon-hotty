@@ -99,6 +99,20 @@ test.describe("without a pty", () => {
     expect(evs(msgs)).toEqual(["t", "ty", "typ", "type", "typed"].map((v) => ["input", "t", { value: v }]));
   });
 
+  test("keys reach the program in the encoding it enabled: the kitty keyboard protocol", async ({ page }) => {
+    // Disambiguate escape codes (flag 1): Escape is CSI 27 u, so a key right
+    // after it is not read as Alt+key.
+    await write(page, "\x1b[=1;1u");
+    await send(page, { a: "focus", s: "ui", t: "b", q: "2" });
+    await take(page);
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("ArrowDown");
+    const { raw } = await take(page);
+    expect(raw).toBe("\x1b[27u\x1b[B");
+    // The surface kept the keyboard: no blur came back.
+    await expect(surface(page, "ui").locator("#b")).toBeFocused();
+  });
+
   test("Tab past the last control gives the keyboard back to the terminal", async ({ page }) => {
     await send(page, { a: "focus", s: "ui", t: "t", q: "2" });
     await page.keyboard.press("Tab"); // → q

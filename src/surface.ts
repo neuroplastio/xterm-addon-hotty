@@ -13,7 +13,6 @@
 
 import { Patcher } from "./patch.ts";
 import { Resolver } from "./resolver.ts";
-import { encodeKey } from "./keys.ts";
 import { cspSources, intersect, parse, type Policy } from "./network.ts";
 import { NO_BASE, type Store } from "./resources.ts";
 
@@ -51,8 +50,9 @@ export interface SurfaceHost {
   store: Store;
   /** Sends a HOTTY message (an event) to the program. */
   event(surface: string, kind: string, target: string, detail?: unknown): void;
-  /** Sends key bytes to the program, as if typed in the terminal. */
-  input(bytes: string): void;
+  /** A key the surface does not use (a keydown or its keyup), for the
+   *  terminal to send to the program as if typed there (SPEC §10.2). */
+  key(e: KeyboardEvent): void;
   /** Gives the keyboard back to the terminal. */
   focusTerminal(): void;
   /** The host's half of the network policy (SPEC §7.2). */
@@ -61,7 +61,6 @@ export interface SurfaceHost {
   openLink(url: string): boolean;
   /** A wheel event the surface has no use for, at a point in the page. */
   wheel(e: WheelEvent, pageX: number, pageY: number): void;
-  applicationCursor(): boolean;
 }
 
 type Control = "none" | "text" | "textarea" | "select" | "activatable";
@@ -85,6 +84,8 @@ export class Surface {
   /** The document's base URL (SPEC §7.3). */
   private base = NO_BASE;
   private keyboard = false;
+  /** Keys whose keydown went to the program, so their keyup follows. */
+  private forwarded = new Set<string>();
 
   constructor(name: string, host: SurfaceHost, hostCss: string) {
     this.name = name;
@@ -295,10 +296,19 @@ export class Surface {
       return;
     }
     if (this.consumes(e, this.controlKind(this.doc.activeElement))) return;
-    const bytes = encodeKey(e, this.host.applicationCursor());
     e.preventDefault();
     e.stopPropagation();
-    if (bytes !== null) this.host.input(bytes);
+    this.forwarded.add(e.code);
+    this.host.key(e);
+  }
+
+  /** The release of a key the program had: the program hears it too, if it
+   *  asked the terminal for releases (SPEC §10.3). */
+  private onKeyUp(e: KeyboardEvent) {
+    if (!this.forwarded.delete(e.code)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.host.key(e);
   }
 
   // --- Events for the program (PROTOCOL §8) --------------------------------
@@ -312,6 +322,7 @@ export class Surface {
     d.addEventListener("change", (e) => this.onChange(e), true);
     d.addEventListener("input", (e) => this.onInput(e), true);
     d.addEventListener("keydown", (e) => this.onKey(e), true);
+    d.addEventListener("keyup", (e) => this.onKeyUp(e), true);
     d.addEventListener("dragstart", (e) => e.preventDefault(), true);
     d.addEventListener("wheel", (e) => this.onWheel(e), { capture: true, passive: false });
     win.addEventListener("focus", () => {
