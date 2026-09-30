@@ -19,6 +19,7 @@ import { OPS, PatchError } from "./patch.ts";
 import { clean, type Policy } from "./network.ts";
 import { Store } from "./resources.ts";
 import { Surface, type SurfaceHost } from "./surface.ts";
+import { Touch } from "./touch.ts";
 import { Assembler, Control, encode, OSC, text, type Command, type Decoded } from "./wire.ts";
 
 export interface HottyOptions {
@@ -38,6 +39,14 @@ export interface HottyOptions {
    * The embedding page's own CSP must allow these sources too.
    */
   network?: Policy;
+  /**
+   * Touch on the whole terminal (SPEC §9): a drag scrolls, over the cells
+   * and the surfaces alike, and a tap on the cells is a click for the
+   * program. This replaces xterm.js's own touch handling, which in 6.1 sends
+   * wheel reports with no position (NaN) and turns taps into nothing.
+   * Default true.
+   */
+  touch?: boolean;
 }
 
 export interface FrameStats {
@@ -117,7 +126,10 @@ export class HottyAddon implements ITerminalAddon {
         return false;
       }),
       term.buffer.onBufferChange((b) => this.onBufferChange(b.type)),
-      term.onRender(() => this.checkMetrics()),
+      term.onRender(() => {
+        this.bindTouch();
+        this.checkMetrics();
+      }),
       term.onResize(() => this.checkMetrics()),
       term.onScroll(() => this.reposition()),
       term.onWriteParsed(() => this.reposition()),
@@ -125,6 +137,8 @@ export class HottyAddon implements ITerminalAddon {
   }
 
   dispose(): void {
+    this.cellTouch?.dispose();
+    this.cellTouch = null;
     this.reset();
     for (const d of this.disposables) d.dispose();
     this.disposables.length = 0;
@@ -518,23 +532,53 @@ export class HottyAddon implements ITerminalAddon {
       },
       // Replayed on the terminal's screen, where xterm handles it as its own:
       // scrollback, or mouse reports and arrow keys on the alternate screen.
-      wheel: (e, x, y) => {
-        const ev = new WheelEvent("wheel", {
-          deltaX: e.deltaX,
-          deltaY: e.deltaY,
-          deltaMode: e.deltaMode,
-          clientX: x,
-          clientY: y,
-          shiftKey: e.shiftKey,
-          altKey: e.altKey,
-          metaKey: e.metaKey,
-          bubbles: true,
-          cancelable: true,
-        });
-        legacyWheelDelta(ev, e);
-        this.term.element?.querySelector(".xterm-screen")?.dispatchEvent(ev);
-      },
+      wheel: (e, x, y) => this.forwardWheel(e, x, y),
     };
+  }
+
+  private cellTouch: Touch | null = null;
+
+  /** Touch on the cells (the `touch` option), once the terminal is open. */
+  private bindTouch() {
+    const el = this.term.element;
+    if (this.cellTouch || !el || this.opts.touch === false) return;
+    const screen = () => el.querySelector(".xterm-screen");
+    this.cellTouch = new Touch(
+      el,
+      el.ownerDocument.defaultView!,
+      {
+        scroll: (dx, dy, x, y) => this.forwardWheel(new WheelEvent("wheel", { deltaX: dx, deltaY: dy, deltaMode: 0 }), x, y),
+        // A tap is the press and release a click would make: xterm.js
+        // reports them to the program as it reports a mouse.
+        tap: (x, y) => {
+          const at = { clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true, view: el.ownerDocument.defaultView };
+          screen()?.dispatchEvent(new MouseEvent("mousedown", { ...at, buttons: 1 }));
+          el.ownerDocument.dispatchEvent(new MouseEvent("mouseup", { ...at, buttons: 0 }));
+        },
+        toPage: (x, y) => [x, y],
+      },
+      true,
+    );
+  }
+
+  /** A wheel, at a point in the page, replayed on the terminal's screen,
+   * where xterm.js handles it as its own: scrollback, or mouse reports and
+   * arrow keys on the alternate screen. */
+  private forwardWheel(e: WheelEvent, x: number, y: number) {
+    const ev = new WheelEvent("wheel", {
+      deltaX: e.deltaX,
+      deltaY: e.deltaY,
+      deltaMode: e.deltaMode,
+      clientX: x,
+      clientY: y,
+      shiftKey: e.shiftKey,
+      altKey: e.altKey,
+      metaKey: e.metaKey,
+      bubbles: true,
+      cancelable: true,
+    });
+    legacyWheelDelta(ev, e);
+    this.term.element?.querySelector(".xterm-screen")?.dispatchEvent(ev);
   }
 
   private ensureLayer(): HTMLDivElement {

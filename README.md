@@ -93,6 +93,11 @@ runs programs for whoever connects.
     as wheel events at the finger. After the finger lifts, the drag keeps
     going and slows down.
   - Taps and long presses stay the surface's.
+  - On the cells, the addon handles touch too (the `touch` option, on by
+    default), in place of xterm.js's own. A drag scrolls as over a surface.
+    A tap is a click for the program: a press and a release at the finger.
+    xterm.js 6.1's own touch handling sends wheel reports with no position
+    (`NaN`, which a program reads as typing) and turns taps into nothing.
   - Ctrl and the wheel stay the browser's zoom.
   - xterm.js's scrollable reads the legacy `wheelDeltaY` where browsers have
     it, so a forwarded wheel carries one.

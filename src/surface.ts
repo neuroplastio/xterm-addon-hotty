@@ -11,6 +11,7 @@
 // The iframe never moves in the DOM (moving an iframe reloads it): it sits
 // in the addon's layer, and placement only changes the position of its box.
 
+import { Touch } from "./touch.ts";
 import { Patcher } from "./patch.ts";
 import { Resolver } from "./resolver.ts";
 import { cspSources, intersect, parse, type Policy } from "./network.ts";
@@ -77,11 +78,6 @@ export interface SurfaceHost {
 type Control = "none" | "text" | "textarea" | "select" | "activatable";
 
 const TEXT_TYPES = new Set(["text", "email", "password", "search", "tel", "url", "number", "date", "datetime-local", "month", "time", "week"]);
-
-/** How far a touch moves, in CSS pixels, before it is a drag, not a tap. */
-const DRAG_SLOP = 8;
-/** A fling's speed is multiplied by this every millisecond. */
-const FLING_DECAY = 0.996;
 
 export class Surface {
   readonly name: string;
@@ -366,10 +362,15 @@ export class Surface {
     d.addEventListener("dragstart", (e) => e.preventDefault(), true);
     d.addEventListener("wheel", (e) => this.onWheel(e), { capture: true, passive: false });
     d.addEventListener("scroll", (e) => this.onScroll(e), true);
-    d.addEventListener("touchstart", (e) => this.onTouchStart(e), { capture: true, passive: true });
-    d.addEventListener("touchmove", (e) => this.onTouchMove(e), { capture: true, passive: false });
-    d.addEventListener("touchend", (e) => this.onTouchEnd(e), { capture: true, passive: true });
-    d.addEventListener("touchcancel", () => (this.touch = null), { capture: true, passive: true });
+    // A touch drag is the terminal's, as a wheel is (SPEC §9); taps and long
+    // presses stay the surface's.
+    new Touch(d, this.frame.ownerDocument.defaultView!, {
+      scroll: (dx, dy, x, y) => this.host.wheel(new WheelEvent("wheel", { deltaX: dx, deltaY: dy, deltaMode: 0, clientX: x, clientY: y }), x, y),
+      toPage: (x, y) => {
+        const r = this.frame.getBoundingClientRect();
+        return [r.left + x, r.top + y];
+      },
+    });
     win.addEventListener("focus", () => {
       this.keyboard = true;
       if (!this.programFocus) this.emit("focus", "");
@@ -410,83 +411,6 @@ export class Surface {
     if (t.scrollTop || t.scrollLeft) t.scrollTo(0, 0);
   }
 
-  // A touch drag is the terminal's, as a wheel is (SPEC §9): past a few
-  // pixels of movement it becomes wheel events at the finger, and after the
-  // finger lifts it keeps going and slows down, as a drag on the cells does.
-  // Taps and long presses stay the surface's: nothing is taken from a touch
-  // until it has moved.
-  private touch: { id: number; x0: number; y0: number; x: number; y: number; t: number; vx: number; vy: number; dragging: boolean } | null = null;
-  private fling = 0;
-
-  private onTouchStart(e: TouchEvent) {
-    this.stopFling();
-    const t = e.touches.length === 1 ? e.touches[0] : undefined;
-    this.touch = t ? { id: t.identifier, x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY, t: e.timeStamp, vx: 0, vy: 0, dragging: false } : null;
-  }
-
-  private onTouchMove(e: TouchEvent) {
-    const s = this.touch;
-    if (!s) return;
-    if (e.touches.length !== 1) {
-      this.touch = null; // two fingers: the browser's (a pinch)
-      return;
-    }
-    const t = [...e.changedTouches].find((c) => c.identifier === s.id);
-    if (!t) return;
-    if (!s.dragging && Math.hypot(t.clientX - s.x0, t.clientY - s.y0) < DRAG_SLOP) return;
-    s.dragging = true;
-    e.preventDefault();
-    const dx = t.clientX - s.x;
-    const dy = t.clientY - s.y;
-    const dt = Math.max(1, e.timeStamp - s.t);
-    s.vx = 0.7 * (dx / dt) + 0.3 * s.vx;
-    s.vy = 0.7 * (dy / dt) + 0.3 * s.vy;
-    s.x = t.clientX;
-    s.y = t.clientY;
-    s.t = e.timeStamp;
-    this.scrollBy(-dx, -dy, s.x, s.y);
-  }
-
-  private onTouchEnd(e: TouchEvent) {
-    const s = this.touch;
-    if (!s || ![...e.changedTouches].some((c) => c.identifier === s.id)) return;
-    this.touch = null;
-    // A finger that stopped before it lifted does not fling.
-    if (s.dragging && e.timeStamp - s.t < 80) this.startFling(-s.vx, -s.vy, s.x, s.y);
-  }
-
-  /** A wheel event for the terminal, dx and dy pixels, at a point in the
-   * surface's document. */
-  private scrollBy(dx: number, dy: number, x: number, y: number) {
-    const r = this.frame.getBoundingClientRect();
-    const init = { deltaX: dx, deltaY: dy, deltaMode: 0, clientX: r.left + x, clientY: r.top + y };
-    this.host.wheel(new WheelEvent("wheel", init), r.left + x, r.top + y);
-  }
-
-  /** Keeps a flung drag going, slowing down (velocities in px/ms). */
-  private startFling(vx: number, vy: number, x: number, y: number) {
-    const win = this.frame.ownerDocument.defaultView!;
-    let last = win.performance.now();
-    const step = (now: number) => {
-      const dt = now - last;
-      last = now;
-      const decay = Math.pow(FLING_DECAY, dt);
-      vx *= decay;
-      vy *= decay;
-      if (Math.abs(vx) < 0.02 && Math.abs(vy) < 0.02) {
-        this.fling = 0;
-        return;
-      }
-      this.scrollBy(vx * dt, vy * dt, x, y);
-      this.fling = win.requestAnimationFrame(step);
-    };
-    this.fling = win.requestAnimationFrame(step);
-  }
-
-  private stopFling() {
-    if (this.fling) this.frame.ownerDocument.defaultView!.cancelAnimationFrame(this.fling);
-    this.fling = 0;
-  }
 
   private emit(kind: string, target: string, detail?: unknown) {
     this.host.event(this.name, kind, target, detail);

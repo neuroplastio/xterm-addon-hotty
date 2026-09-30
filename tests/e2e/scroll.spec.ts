@@ -70,4 +70,38 @@ test.describe("on a touch screen", () => {
       })
       .toBe(true);
   });
+
+  test("on the cells, a tap is a click and a drag is wheel input, at the finger", async ({ page, browserName }) => {
+    test.skip(browserName !== "chromium", "touch input comes from CDP");
+    await open(page, "?pty=0");
+    // The program asks for mouse reports, SGR encoded, as a TUI does.
+    await write(page, "\x1b[?1000h\x1b[?1006h");
+    await take(page);
+    const cdp = await page.context().newCDPSession(page);
+    const touch = (type: "touchStart" | "touchMove" | "touchEnd", points: { x: number; y: number }[]) =>
+      cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
+    const r = (await page.locator(".xterm-screen").boundingBox())!;
+    const x = r.x + r.width / 2;
+    const y = r.y + r.height / 2;
+    await touch("touchStart", [{ x, y }]);
+    await touch("touchEnd", []);
+    let raw = "";
+    await expect
+      .poll(async () => {
+        raw += (await take(page)).raw;
+        return raw;
+      })
+      .toMatch(/\x1b\[<0;\d+;\d+M\x1b\[<0;\d+;\d+m/);
+    raw = "";
+    await touch("touchStart", [{ x, y }]);
+    for (let i = 1; i <= 8; i++) await touch("touchMove", [{ x, y: y + i * 15 }]);
+    await touch("touchEnd", []);
+    await expect
+      .poll(async () => {
+        raw += (await take(page)).raw;
+        return raw;
+      })
+      .toMatch(/\x1b\[<64;\d+;\d+M/);
+    expect(raw).not.toContain("NaN");
+  });
 });
