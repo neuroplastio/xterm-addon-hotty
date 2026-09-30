@@ -402,8 +402,13 @@ export class HottyAddon implements ITerminalAddon {
     if (win.w < 1 || win.h < 1 || x + win.w > cols || y + win.h > rows) {
       throw new Failure("EINVAL", "the window is not inside the surface");
     }
+    // Stacking (SPEC §5.2): z, then the order the surfaces were created in,
+    // which is the boxes' order in the layer.
+    const z = c.get("z") === undefined ? 0 : Number(c.get("z"));
+    if (!Number.isInteger(z) || z < -1000 || z > 1000) throw new Failure("EINVAL", "z is an integer from -1000 to 1000");
     s.autoRows = auto;
     s.setSize(cols, rows, cellW, cellH, win);
+    s.setZ(z);
     this.unplace(s.name);
 
     const buf = this.term.buffer.active;

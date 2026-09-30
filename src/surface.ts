@@ -215,6 +215,12 @@ export class Surface {
     this.box.style.height = `${win.h * cellH}px`;
   }
 
+  /** The placement's z (SPEC §5.2): CSS z-index on the box, so overlapping
+   *  boxes stack by it, and by their order in the layer at the same z. */
+  setZ(z: number) {
+    this.box.style.zIndex = String(z);
+  }
+
   /** Shows the surface with its top-left corner at (x, y) in the screen's pixels. */
   show(x: number, y: number) {
     this.box.style.left = `${x}px`;

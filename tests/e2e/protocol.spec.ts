@@ -161,6 +161,37 @@ test("a window shows part of the surface: the document keeps its size, the point
   expect(msgs.filter((m) => m.get("e") === "click").map((m) => m.get("t"))).toEqual(["b3"]);
 });
 
+test("z stacks overlapping placements, and among equals the surface created later is above", async ({ page }) => {
+  const doc = (id: string) => `<button id=${id} style="position:absolute;left:0;top:0;right:0;bottom:0;border:0">${id}</button>`;
+  await send(page, { a: "doc", s: "a", q: "2" }, doc("a"));
+  await send(page, { a: "doc", s: "b", q: "2" }, doc("b"));
+  await write(page, "\x1b[2;2H");
+  await send(page, { a: "place", s: "a", c: "10", r: "3", C: "1", q: "2" });
+  await send(page, { a: "place", s: "b", c: "10", r: "3", C: "1", q: "2" });
+  const bb = (await page.locator('.hotty-surface[data-surface="a"]').boundingBox())!;
+  const click = async () => {
+    await take(page);
+    await page.mouse.click(bb.x + bb.width / 2, bb.y + bb.height / 2);
+    const { msgs } = await take(page);
+    return msgs.filter((m) => m.get("e") === "click").map((m) => m.get("t"));
+  };
+  // Both at z 0: b, created later, is above.
+  expect(await click()).toEqual(["b"]);
+  // a placed again above.
+  await send(page, { a: "place", s: "a", c: "10", r: "3", C: "1", z: "1", q: "2" });
+  expect(await click()).toEqual(["a"]);
+  // z belongs to the placement: placed again without it, a is back at 0.
+  await send(page, { a: "place", s: "a", c: "10", r: "3", C: "1", q: "2" });
+  expect(await click()).toEqual(["b"]);
+  await send(page, { a: "place", s: "b", c: "10", r: "3", C: "1", z: "-1", q: "2" });
+  expect(await click()).toEqual(["a"]);
+  // Out of range, or not a number: EINVAL.
+  await send(page, { a: "place", s: "b", c: "10", r: "3", C: "1", z: "1001" });
+  const { msgs } = await take(page);
+  expect(msgs.at(-1)!.get("a")).toBe("err");
+  expect((msgs.at(-1)!.json as { code: string }).code).toBe("EINVAL");
+});
+
 test("hide removes the placement and keeps the document for the next place", async ({ page }) => {
   await send(page, { a: "doc", s: "x", q: "2" }, "<input id=i><p id=p>one</p>");
   await send(page, { a: "place", s: "x", c: "20", r: "2", q: "2" });
