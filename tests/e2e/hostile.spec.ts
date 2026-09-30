@@ -37,6 +37,9 @@ test("script, requests, navigation, popups and focus theft all fail", async ({ p
     #bg { background: url("${L("css-bg")}"); font-family: X; width: 10px; height: 10px; }
     #var { background: var(--u); width: 10px; height: 10px; }
     #fixed { position: fixed; inset: 0; pointer-events: none; }
+    /* Small enough to be seen whole: nothing in a surface scrolls (SPEC
+       §5.3), so every click must land on something that shows. */
+    img, svg, video, iframe, object, embed { width: 16px; height: 16px; }
   </style>
 </head>
 <body>

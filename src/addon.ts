@@ -519,20 +519,20 @@ export class HottyAddon implements ITerminalAddon {
       // Replayed on the terminal's screen, where xterm handles it as its own:
       // scrollback, or mouse reports and arrow keys on the alternate screen.
       wheel: (e, x, y) => {
-        this.term.element?.querySelector(".xterm-screen")?.dispatchEvent(
-          new WheelEvent("wheel", {
-            deltaX: e.deltaX,
-            deltaY: e.deltaY,
-            deltaMode: e.deltaMode,
-            clientX: x,
-            clientY: y,
-            shiftKey: e.shiftKey,
-            altKey: e.altKey,
-            metaKey: e.metaKey,
-            bubbles: true,
-            cancelable: true,
-          }),
-        );
+        const ev = new WheelEvent("wheel", {
+          deltaX: e.deltaX,
+          deltaY: e.deltaY,
+          deltaMode: e.deltaMode,
+          clientX: x,
+          clientY: y,
+          shiftKey: e.shiftKey,
+          altKey: e.altKey,
+          metaKey: e.metaKey,
+          bubbles: true,
+          cancelable: true,
+        });
+        legacyWheelDelta(ev, e);
+        this.term.element?.querySelector(".xterm-screen")?.dispatchEvent(ev);
       },
     };
   }
@@ -626,4 +626,22 @@ function openAfterConfirm(uri: string): void {
     // Electron can throw
   }
   w.location.href = uri;
+}
+
+/**
+ * xterm.js scrolls its scrollback with VS Code's scrollable, which reads the
+ * legacy `wheelDeltaX`/`wheelDeltaY` wherever the browser has them (Chromium,
+ * WebKit), and those are 0 on a constructed event: without this, a forwarded
+ * wheel moves nothing there. A real wheel's own values are kept. A drag's
+ * (pixels) are chosen so the scrollback moves as far as the finger: the
+ * scrollable moves 50 pixels per 120 of wheelDelta.
+ */
+function legacyWheelDelta(ev: WheelEvent, from: WheelEvent) {
+  if (!("wheelDeltaY" in WheelEvent.prototype)) return; // Firefox reads deltaY
+  const legacy = from as WheelEvent & { wheelDeltaX?: number; wheelDeltaY?: number };
+  const pixels = from.deltaMode === WheelEvent.DOM_DELTA_PIXEL ? 1 : from.deltaMode === WheelEvent.DOM_DELTA_LINE ? 20 : 400;
+  const x = legacy.wheelDeltaX || -from.deltaX * pixels * (120 / 50);
+  const y = legacy.wheelDeltaY || -from.deltaY * pixels * (120 / 50);
+  Object.defineProperty(ev, "wheelDeltaX", { value: x });
+  Object.defineProperty(ev, "wheelDeltaY", { value: y });
 }

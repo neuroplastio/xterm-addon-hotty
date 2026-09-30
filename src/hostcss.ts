@@ -44,12 +44,16 @@ export function hostCss(theme: ITheme | undefined, m: Metrics): string {
     `  line-height: ${m.cellH}px;`,
     "  color: var(--hotty-fg);",
     "  background: var(--hotty-bg);",
-    // A surface is a fixed rectangle of cells: what does not fit is clipped,
-    // as SPEC §5.3 says, never scrolled (a root scrollbar would also
-    // narrow the layout). Elements with `overflow: auto` still scroll.
+    // A surface is a fixed rectangle of cells, and nothing in it scrolls
+    // (SPEC §5.3): what does not fit is clipped. The browser pans nothing
+    // on a touch (a drag is the terminal's, SPEC §9; the surface forwards
+    // it), and nothing shows a scrollbar, even with `overflow: auto`.
     "  overflow: hidden;",
+    "  touch-action: none;",
     "}",
     "body { margin: 0; }",
+    "* { scrollbar-width: none !important; }",
+    "::-webkit-scrollbar { display: none !important; }",
     "}",
   ];
   return lines.join("\n");

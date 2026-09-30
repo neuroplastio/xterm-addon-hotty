@@ -85,6 +85,17 @@ runs programs for whoever connects.
   corner, so a new window moves the iframe and lays nothing out. A hidden
   surface's box is `display: none`: its document stays, and the browser
   skips its style, layout and paint until it is placed again.
+- **Nothing in a surface scrolls** (SPEC §5.3, §9):
+  - It shows no scrollbars, and pans nothing on a touch
+    (`touch-action: none`). Any scroll offset the browser sets goes back to
+    zero, except a text field's own text.
+  - A wheel over a surface goes to the terminal, and so does a touch drag,
+    as wheel events at the finger. After the finger lifts, the drag keeps
+    going and slows down.
+  - Taps and long presses stay the surface's.
+  - Ctrl and the wheel stay the browser's zoom.
+  - xterm.js's scrollable reads the legacy `wheelDeltaY` where browsers have
+    it, so a forwarded wheel carries one.
 - **Cursor.** After `a=place` the cursor moves below the surface, as in the
   native host. xterm.js has no public API for that, so the addon uses the same
   private calls as the official image addon.

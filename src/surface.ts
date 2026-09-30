@@ -69,13 +69,19 @@ export interface SurfaceHost {
    *  or clicked: the terminal's, as an OSC 8 hyperlink is. `box` is the
    *  link's box in the page. */
   hyperlink(kind: "activate" | "hover" | "leave", e: MouseEvent, url: string, box: DOMRect): void;
-  /** A wheel event the surface has no use for, at a point in the page. */
+  /** A wheel event over the surface, or a touch drag made one: the
+   *  terminal's (SPEC §9), at a point in the page. */
   wheel(e: WheelEvent, pageX: number, pageY: number): void;
 }
 
 type Control = "none" | "text" | "textarea" | "select" | "activatable";
 
 const TEXT_TYPES = new Set(["text", "email", "password", "search", "tel", "url", "number", "date", "datetime-local", "month", "time", "week"]);
+
+/** How far a touch moves, in CSS pixels, before it is a drag, not a tap. */
+const DRAG_SLOP = 8;
+/** A fling's speed is multiplied by this every millisecond. */
+const FLING_DECAY = 0.996;
 
 export class Surface {
   readonly name: string;
@@ -359,6 +365,11 @@ export class Surface {
     d.addEventListener("keyup", (e) => this.onKeyUp(e), true);
     d.addEventListener("dragstart", (e) => e.preventDefault(), true);
     d.addEventListener("wheel", (e) => this.onWheel(e), { capture: true, passive: false });
+    d.addEventListener("scroll", (e) => this.onScroll(e), true);
+    d.addEventListener("touchstart", (e) => this.onTouchStart(e), { capture: true, passive: true });
+    d.addEventListener("touchmove", (e) => this.onTouchMove(e), { capture: true, passive: false });
+    d.addEventListener("touchend", (e) => this.onTouchEnd(e), { capture: true, passive: true });
+    d.addEventListener("touchcancel", () => (this.touch = null), { capture: true, passive: true });
     win.addEventListener("focus", () => {
       this.keyboard = true;
       if (!this.programFocus) this.emit("focus", "");
@@ -373,32 +384,108 @@ export class Surface {
   }
 
   /**
-   * Wheel events never leave an iframe, so without this the terminal's
-   * scrollback (or, on the alternate screen, the program's wheel input) would
-   * stall under the pointer. A surface keeps a wheel event only when an
-   * element under the pointer can scroll that way.
+   * Nothing in a surface scrolls, and a wheel over it is the terminal's
+   * (SPEC §5.3, §9). Wheel events never leave an iframe, so without this
+   * the terminal's scrollback (or, on the alternate screen, the program's
+   * wheel input) would stall under the pointer. Ctrl and the wheel stay the
+   * browser's: its zoom.
    */
   private onWheel(e: WheelEvent) {
-    if (e.ctrlKey || this.canScroll(e.target, e.deltaX, e.deltaY)) return;
+    if (e.ctrlKey) return;
     e.preventDefault();
     const r = this.frame.getBoundingClientRect();
     this.host.wheel(e, r.left + e.clientX, r.top + e.clientY);
   }
 
-  private canScroll(target: EventTarget | null, dx: number, dy: number): boolean {
-    for (let n = target as Node | null; n && n.nodeType === 1; n = n.parentNode) {
-      const el = n as Element;
-      if (el === this.doc.documentElement || el === this.doc.body) return false;
-      const style = this.frame.contentWindow!.getComputedStyle(el);
-      const scrolls = (o: string) => o === "auto" || o === "scroll";
-      if (dy !== 0 && scrolls(style.overflowY) && el.scrollHeight > el.clientHeight) {
-        if (dy < 0 ? el.scrollTop > 0 : el.scrollTop + el.clientHeight < el.scrollHeight - 1) return true;
-      }
-      if (dx !== 0 && scrolls(style.overflowX) && el.scrollWidth > el.clientWidth) {
-        if (dx < 0 ? el.scrollLeft > 0 : el.scrollLeft + el.clientWidth < el.scrollWidth - 1) return true;
-      }
+  /** Whatever the browser scrolled (a focused element into view, say) goes
+   * back to zero. A text field's own text follows its caret (SPEC §5.3). */
+  private onScroll(e: Event) {
+    const t = e.target;
+    if (t === this.doc) {
+      const s = this.doc.scrollingElement;
+      if (s && (s.scrollTop || s.scrollLeft)) s.scrollTo(0, 0);
+      return;
     }
-    return false;
+    if (!t || !isElement(t) || t.localName === "input" || t.localName === "textarea") return;
+    if (t.scrollTop || t.scrollLeft) t.scrollTo(0, 0);
+  }
+
+  // A touch drag is the terminal's, as a wheel is (SPEC §9): past a few
+  // pixels of movement it becomes wheel events at the finger, and after the
+  // finger lifts it keeps going and slows down, as a drag on the cells does.
+  // Taps and long presses stay the surface's: nothing is taken from a touch
+  // until it has moved.
+  private touch: { id: number; x0: number; y0: number; x: number; y: number; t: number; vx: number; vy: number; dragging: boolean } | null = null;
+  private fling = 0;
+
+  private onTouchStart(e: TouchEvent) {
+    this.stopFling();
+    const t = e.touches.length === 1 ? e.touches[0] : undefined;
+    this.touch = t ? { id: t.identifier, x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY, t: e.timeStamp, vx: 0, vy: 0, dragging: false } : null;
+  }
+
+  private onTouchMove(e: TouchEvent) {
+    const s = this.touch;
+    if (!s) return;
+    if (e.touches.length !== 1) {
+      this.touch = null; // two fingers: the browser's (a pinch)
+      return;
+    }
+    const t = [...e.changedTouches].find((c) => c.identifier === s.id);
+    if (!t) return;
+    if (!s.dragging && Math.hypot(t.clientX - s.x0, t.clientY - s.y0) < DRAG_SLOP) return;
+    s.dragging = true;
+    e.preventDefault();
+    const dx = t.clientX - s.x;
+    const dy = t.clientY - s.y;
+    const dt = Math.max(1, e.timeStamp - s.t);
+    s.vx = 0.7 * (dx / dt) + 0.3 * s.vx;
+    s.vy = 0.7 * (dy / dt) + 0.3 * s.vy;
+    s.x = t.clientX;
+    s.y = t.clientY;
+    s.t = e.timeStamp;
+    this.scrollBy(-dx, -dy, s.x, s.y);
+  }
+
+  private onTouchEnd(e: TouchEvent) {
+    const s = this.touch;
+    if (!s || ![...e.changedTouches].some((c) => c.identifier === s.id)) return;
+    this.touch = null;
+    // A finger that stopped before it lifted does not fling.
+    if (s.dragging && e.timeStamp - s.t < 80) this.startFling(-s.vx, -s.vy, s.x, s.y);
+  }
+
+  /** A wheel event for the terminal, dx and dy pixels, at a point in the
+   * surface's document. */
+  private scrollBy(dx: number, dy: number, x: number, y: number) {
+    const r = this.frame.getBoundingClientRect();
+    const init = { deltaX: dx, deltaY: dy, deltaMode: 0, clientX: r.left + x, clientY: r.top + y };
+    this.host.wheel(new WheelEvent("wheel", init), r.left + x, r.top + y);
+  }
+
+  /** Keeps a flung drag going, slowing down (velocities in px/ms). */
+  private startFling(vx: number, vy: number, x: number, y: number) {
+    const win = this.frame.ownerDocument.defaultView!;
+    let last = win.performance.now();
+    const step = (now: number) => {
+      const dt = now - last;
+      last = now;
+      const decay = Math.pow(FLING_DECAY, dt);
+      vx *= decay;
+      vy *= decay;
+      if (Math.abs(vx) < 0.02 && Math.abs(vy) < 0.02) {
+        this.fling = 0;
+        return;
+      }
+      this.scrollBy(vx * dt, vy * dt, x, y);
+      this.fling = win.requestAnimationFrame(step);
+    };
+    this.fling = win.requestAnimationFrame(step);
+  }
+
+  private stopFling() {
+    if (this.fling) this.frame.ownerDocument.defaultView!.cancelAnimationFrame(this.fling);
+    this.fling = 0;
   }
 
   private emit(kind: string, target: string, detail?: unknown) {
