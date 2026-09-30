@@ -46,13 +46,20 @@ const network = net
       }),
     )
   : undefined;
-// `?record-links`: links the user asks to open are recorded, not opened.
+// `?record-links`: hyperlinks (and OSC 8 links) are recorded, not opened:
+// the terminal's linkHandler, which a hyperlink in a surface goes to too.
 const opened: string[] = [];
+const hovered: string[] = [];
+if (params.has("record-links")) {
+  term.options.linkHandler = {
+    activate: (_e, uri) => void opened.push(uri),
+    hover: (_e, uri) => void hovered.push(uri),
+  };
+}
 const hotty = new HottyAddon({
   onFrame: (f) => frames.push(f),
   onInvalid: (r) => invalid.push(r),
   network,
-  openLink: params.has("record-links") ? (url) => void opened.push(url) : undefined,
 });
 const fit = new FitAddon();
 term.loadAddon(fit);
@@ -101,6 +108,7 @@ Object.assign(window, {
     invalid,
     sent,
     opened,
+    hovered,
     get exited() {
       return exited;
     },

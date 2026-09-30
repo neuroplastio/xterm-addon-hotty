@@ -63,7 +63,7 @@ test("without the host's grant nothing is fetched, whatever the document asks", 
   expect(caps.net).toEqual({});
 });
 
-test("links: every click is an event; a gesture opens http, https and mailto links", async ({ page, context }) => {
+test("links: every click on a link is an event, and the host opens none", async ({ page, context }) => {
   await open(page, "?pty=0&record-links");
   await place(
     page,
@@ -78,16 +78,41 @@ test("links: every click is an event; a gesture opens http, https and mailto lin
 
   await d.getByText("About").click();
   await d.locator("#ext").click({ modifiers: ["Control"] });
-  await d.locator("#mail").click({ button: "middle" });
+  await d.locator("#mail").click({ button: "middle" }); // nothing: not a click
   await d.locator("#js").click({ modifiers: ["Control"] });
-  const got = await clicks(page, 4);
+  const got = await clicks(page, 3);
   expect(got).toEqual([
     { t: "", detail: { href: "../about", url: "https://example.com/about" } },
-    { t: "ext", detail: { href: "https://other.org/x", url: "https://other.org/x", opened: true } },
-    { t: "mail", detail: { href: "mailto:a@b.example", url: "mailto:a@b.example", opened: true } },
+    { t: "ext", detail: { href: "https://other.org/x", url: "https://other.org/x" } },
     { t: "js", detail: { href: "javascript:void 0", url: "javascript:void 0" } },
   ]);
-  expect(await page.evaluate(() => (window.hotty as unknown as { opened: string[] }).opened)).toEqual(["https://other.org/x", "mailto:a@b.example"]);
+  expect(await page.evaluate(() => (window.hotty as unknown as { opened: string[] }).opened)).toEqual([]);
+  expect(context.pages()).toHaveLength(1);
+});
+
+test("a target=_blank link is a hyperlink: xterm's linkHandler has it, as an OSC 8 one, and the program nothing", async ({ page, context }) => {
+  await open(page, "?pty=0&record-links");
+  await place(
+    page,
+    "h",
+    `<base href="https://example.com/blog/"><style>a{display:block;height:30px}</style>` +
+      `<a id=spec target=_blank href="../spec">spec</a><a id=mail target=_blank href="mailto:a@b.example">mail</a><a id=own href="../own">own</a>`,
+  );
+  await take(page);
+  const d = surface(page, "h");
+  const rec = () => page.evaluate(() => {
+    const h = window.hotty as unknown as { opened: string[]; hovered: string[] };
+    return { opened: [...h.opened], hovered: [...h.hovered] };
+  });
+  await d.locator("#spec").hover();
+  await expect.poll(async () => (await rec()).hovered).toEqual(["https://example.com/spec"]);
+  await d.locator("#spec").click();
+  // Not http or https, and the handler does not allow other schemes: ignored, as xterm.js ignores it.
+  await d.locator("#mail").click();
+  await d.locator("#own").click();
+  // Only the program's own link reached the program.
+  expect(await clicks(page, 1)).toEqual([{ t: "own", detail: { href: "../own", url: "https://example.com/own" } }]);
+  expect((await rec()).opened).toEqual(["https://example.com/spec"]);
   expect(context.pages()).toHaveLength(1);
 });
 

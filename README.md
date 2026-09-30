@@ -28,8 +28,6 @@ the document asks for it (SPEC §7.2):
 new HottyAddon({
   // The host's half of the network policy: directive → origins, or "https:".
   network: { "img-src": ["https://example.com"] },
-  // Optional: how to open a link the user asks to open. Default: a new tab.
-  openLink: (url) => void window.open(url, "_blank", "noopener,noreferrer"),
 });
 ```
 
@@ -37,12 +35,17 @@ new HottyAddon({
   https://example.com">` and gets what both allow; its `<base href>` sets
   its base URL, so relative images and links resolve (§7.3). The capability
   reply reports the grant as `net`.
-- **Links** show, hover and copy as the links they are. A plain click is a
+- **Links** show, hover and copy as the links they are. A click is a
   `click` event for the program, with `href` (the program's value) and
-  `url` (resolved), whether the link has an `id` or not. A middle click, or
-  a Ctrl, Cmd or Shift click, opens an `http`, `https` or `mailto` link
-  through `openLink`, and the event says `"opened": true` (§9). The context
-  menu's own "open in new tab" and "copy link" work as on any page.
+  `url` (resolved), whether the link has an `id` or not. The addon never
+  opens one itself (§9). The context menu's own "open in new tab" and "copy
+  link" work as on any page.
+- **Hyperlinks**, links with `target="_blank"`, are the terminal's, as OSC 8
+  links are (§9). They go where xterm.js sends an OSC 8 link: the
+  terminal's `linkHandler` (`activate`, `hover`, `leave`, with the link's
+  cells as the range), or xterm.js's confirm-then-open default. Only
+  `http` and `https` go through, unless the handler sets
+  `allowNonHttpProtocols`. The program hears nothing of them.
 - The page's own CSP must allow the granted origins too (below).
 
 ## Try it

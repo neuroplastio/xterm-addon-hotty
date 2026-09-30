@@ -65,8 +65,10 @@ export interface SurfaceHost {
   focusTerminal(): void;
   /** The host's half of the network policy (SPEC §7.2). */
   policy: Policy;
-  /** Opens a link outside the surface (SPEC §9); false if it did not. */
-  openLink(url: string): boolean;
+  /** A hyperlink (SPEC §9: a link with target="_blank") was hovered, left
+   *  or clicked: the terminal's, as an OSC 8 hyperlink is. `box` is the
+   *  link's box in the page. */
+  hyperlink(kind: "activate" | "hover" | "leave", e: MouseEvent, url: string, box: DOMRect): void;
   /** A wheel event the surface has no use for, at a point in the page. */
   wheel(e: WheelEvent, pageX: number, pageY: number): void;
 }
@@ -348,6 +350,8 @@ export class Surface {
     const win = this.frame.contentWindow!;
     d.addEventListener("click", (e) => this.onClick(e), true);
     d.addEventListener("auxclick", (e) => this.onAuxClick(e), true);
+    d.addEventListener("mouseover", (e) => this.onOver(e), true);
+    d.addEventListener("mouseout", (e) => this.onOut(e), true);
     d.addEventListener("submit", (e) => this.onSubmit(e as SubmitEvent), true);
     d.addEventListener("change", (e) => this.onChange(e), true);
     d.addEventListener("input", (e) => this.onInput(e), true);
@@ -408,10 +412,9 @@ export class Surface {
     return null;
   }
 
-  /** A link's click (SPEC §9): reported with or without an id; opened
-   * outside the surface when the user asked for that. */
-  private onLink(link: Element, e: MouseEvent) {
-    e.preventDefault();
+  /** A link's `url` (SPEC §9): its href resolved against the document's
+   * base, or "" under hotty.invalid or when it is no URL. */
+  private urlOf(link: Element): string {
     const href = this.resolver.get(link, "href") ?? "";
     let url = "";
     try {
@@ -419,19 +422,67 @@ export class Surface {
     } catch {
       /* not a URL */
     }
-    if (url.startsWith(NO_BASE)) url = "";
-    const detail: Record<string, unknown> = { href };
+    return url.startsWith(NO_BASE) ? "" : url;
+  }
+
+  private static isHyperlink(link: Element): boolean {
+    return link.getAttribute("target") === "_blank";
+  }
+
+  /** The link's box in the page (the iframe may be offset for a window). */
+  private pageBox(el: Element): DOMRect {
+    const f = this.frame.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    return new DOMRect(f.left + r.left, f.top + r.top, r.width, r.height);
+  }
+
+  /** A link's click (SPEC §9). A hyperlink is the terminal's, as an OSC 8
+   * one is, and not reported; any other link is the program's: an event,
+   * with or without an id. The host opens nothing itself. */
+  private onLink(link: Element, e: MouseEvent) {
+    e.preventDefault();
+    const url = this.urlOf(link);
+    if (Surface.isHyperlink(link)) {
+      if (url && e.button === 0) this.host.hyperlink("activate", e, url, this.pageBox(link));
+      return;
+    }
+    const detail: Record<string, unknown> = { href: this.resolver.get(link, "href") ?? "" };
     if (url) detail.url = url;
-    const wantsOpen = e.button === 1 || e.ctrlKey || e.metaKey || e.shiftKey;
-    if (wantsOpen && /^(https?|mailto):/i.test(url) && this.host.openLink(url)) detail.opened = true;
     this.emit("click", link.getAttribute("id") ?? "", detail);
   }
 
+  /** Other buttons on a link do nothing: no navigation, no new tab. */
   private onAuxClick(e: MouseEvent) {
+    if (this.linkIn(e)) e.preventDefault();
+  }
+
+  private hovered: { link: Element; url: string } | null = null;
+
+  /** The pointer onto a hyperlink: the terminal hears it, as it does over
+   * an OSC 8 one. */
+  private onOver(e: MouseEvent) {
     const link = this.linkIn(e);
-    if (!link) return;
-    if (e.button === 1) this.onLink(link, e);
-    else e.preventDefault();
+    const hyper = link && Surface.isHyperlink(link) ? link : null;
+    if (hyper === this.hovered?.link) return;
+    this.onLeave(e);
+    const url = hyper ? this.urlOf(hyper) : "";
+    if (hyper && url) {
+      this.hovered = { link: hyper, url };
+      this.host.hyperlink("hover", e, url, this.pageBox(hyper));
+    }
+  }
+
+  private onOut(e: MouseEvent) {
+    const to = e.relatedTarget as Node | null;
+    if (this.hovered && to && this.hovered.link.contains(to)) return;
+    this.onLeave(e);
+  }
+
+  private onLeave(e: MouseEvent) {
+    const h = this.hovered;
+    if (!h) return;
+    this.hovered = null;
+    this.host.hyperlink("leave", e, h.url, this.pageBox(h.link));
   }
 
   private onClick(e: MouseEvent) {

@@ -17,7 +17,7 @@ async function leaks(page: Page): Promise<string[]> {
 }
 
 test("script, requests, navigation, popups and focus theft all fail", async ({ page, context }) => {
-  // Links the user asks to open (SPEC §9) are recorded rather than opened.
+  // Hyperlinks (SPEC §9) reach the terminal's linkHandler, which records them.
   await open(page, "?pty=0&record-links");
   const before = await leaks(page);
   await page.evaluate(() => window.hotty.term.focus());
@@ -79,8 +79,9 @@ test("script, requests, navigation, popups and focus theft all fail", async ({ p
   expect(context.pages()).toHaveLength(1);
   const got = (await leaks(page)).slice(before.length).filter((p) => p.startsWith("/leak/hostile/"));
   expect(got).toEqual([]);
-  // Only the user's Ctrl-click opened anything, and only through the host.
-  expect(await page.evaluate(() => (window.hotty as unknown as { opened: string[] }).opened)).toEqual([L("blank")]);
+  // Only the hyperlink went anywhere, and only to the terminal's
+  // linkHandler, as an OSC 8 link would: once for each click.
+  expect(await page.evaluate(() => (window.hotty as unknown as { opened: string[] }).opened)).toEqual([L("blank"), L("blank")]);
 
   // What reached the live document: none of the dangerous elements or handlers.
   const live = await d.locator("html").evaluate((root) => ({

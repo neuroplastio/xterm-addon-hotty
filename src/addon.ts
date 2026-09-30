@@ -13,7 +13,7 @@
 // scrollback. On the alternate buffer, where markers do not work (as
 // xterm.js's own image addon notes), it sits on fixed cells.
 
-import type { IDisposable, IMarker, ITerminalAddon, Terminal } from "@xterm/xterm";
+import type { IBufferRange, IDisposable, IMarker, ITerminalAddon, Terminal } from "@xterm/xterm";
 import { hostCss, palette } from "./hostcss.ts";
 import { OPS, PatchError } from "./patch.ts";
 import { clean, type Policy } from "./network.ts";
@@ -38,12 +38,6 @@ export interface HottyOptions {
    * The embedding page's own CSP must allow these sources too.
    */
   network?: Policy;
-  /**
-   * Opens a link the user asked to open (a middle click, a Ctrl, Cmd or
-   * Shift click; SPEC §9). Return false if it was not opened. Default: a new
-   * tab, without an opener or a referrer.
-   */
-  openLink?: (url: string) => boolean | void;
 }
 
 export interface FrameStats {
@@ -503,10 +497,24 @@ export class HottyAddon implements ITerminalAddon {
       },
       focusTerminal: () => this.term.focus(),
       policy: this.policy,
-      openLink: (url) => {
-        if (this.opts.openLink) return this.opts.openLink(url) !== false;
-        window.open(url, "_blank", "noopener,noreferrer");
-        return true;
+      // A hyperlink (SPEC §9) goes where xterm.js sends an OSC 8 one: the
+      // terminal's linkHandler, or its confirm-then-open default, and only
+      // for http and https unless the handler allows other schemes.
+      hyperlink: (kind, e, url, box) => {
+        const handler = this.term.options.linkHandler;
+        if (!handler?.allowNonHttpProtocols) {
+          try {
+            if (!["http:", "https:"].includes(new URL(url).protocol)) return;
+          } catch {
+            return;
+          }
+        }
+        const range = this.cellRange(box);
+        if (kind === "activate") {
+          if (handler) handler.activate(e, url, range);
+          else openAfterConfirm(url);
+        } else if (kind === "hover") handler?.hover?.(e, url, range);
+        else handler?.leave?.(e, url, range);
       },
       // Replayed on the terminal's screen, where xterm handles it as its own:
       // scrollback, or mouse reports and arrow keys on the alternate screen.
@@ -540,6 +548,19 @@ export class HottyAddon implements ITerminalAddon {
     screen.append(layer);
     this.layer = layer;
     return layer;
+  }
+
+  /** A box in the page as the buffer cells it covers (1-based, as xterm.js
+   * gives an OSC 8 link's range). */
+  private cellRange(box: DOMRect): IBufferRange {
+    const screen = this.term.element?.querySelector(".xterm-screen")?.getBoundingClientRect();
+    const { cellW, cellH } = this.cell();
+    const top = this.term.buffer.active.viewportY;
+    const at = (x: number, y: number) => ({
+      x: Math.floor((x - (screen?.left ?? 0)) / cellW) + 1,
+      y: top + Math.floor((y - (screen?.top ?? 0)) / cellH) + 1,
+    });
+    return { start: at(box.left, box.top), end: at(box.right - 1, box.bottom - 1) };
   }
 
   /** Cell size in CSS pixels (private in xterm.js), with a measured fallback. */
@@ -588,4 +609,21 @@ function sequence(chain: Promise<void> | undefined, f: () => void | Promise<void
   if (chain) return chain.then(f);
   const r = f();
   return r instanceof Promise ? r : undefined;
+}
+
+/** xterm.js's default for an OSC 8 link with no linkHandler, as it has it:
+ * ask, then open without an opener. */
+function openAfterConfirm(uri: string): void {
+  if (!confirm(`Do you want to navigate to ${uri}?\n\nWARNING: This link could potentially be dangerous`)) return;
+  const w = window.open();
+  if (!w) {
+    console.warn("Opening link blocked as opener could not be cleared");
+    return;
+  }
+  try {
+    w.opener = null;
+  } catch {
+    // Electron can throw
+  }
+  w.location.href = uri;
 }
