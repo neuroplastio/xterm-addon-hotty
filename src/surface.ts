@@ -80,6 +80,9 @@ export interface SurfaceHost {
 
 type Control = "none" | "text" | "textarea" | "select" | "activatable";
 
+/** The theme's colour scheme, as the host stylesheet declares it. */
+export type Scheme = "dark" | "light";
+
 const TEXT_TYPES = new Set(["text", "email", "password", "search", "tel", "url", "number", "date", "datetime-local", "month", "time", "week"]);
 
 export class Surface {
@@ -104,7 +107,7 @@ export class Surface {
   /** Keys whose keydown went to the program, so their keyup follows. */
   private forwarded = new Set<string>();
 
-  constructor(name: string, host: SurfaceHost, hostCss: string) {
+  constructor(name: string, host: SurfaceHost, hostCss: string, scheme: Scheme) {
     this.name = name;
     this.host = host;
     this.box = document.createElement("div");
@@ -122,6 +125,10 @@ export class Surface {
     this.frame.setAttribute("sandbox", "allow-same-origin allow-forms");
     this.frame.setAttribute("title", `HOTTY surface ${name}`);
     // The document is the whole surface; the box shows its window (SPEC §5.2).
+    // The frame's colour scheme is the document's (the host stylesheet's,
+    // from the theme): were they to differ, the browser would paint the
+    // frame an opaque canvas, and a document with a transparent background
+    // could not show the cells beneath it.
     Object.assign(this.frame.style, {
       border: "0",
       position: "absolute",
@@ -130,7 +137,7 @@ export class Surface {
       width: "100%",
       height: "100%",
       display: "block",
-      colorScheme: "normal",
+      colorScheme: scheme,
     });
     this.box.append(this.frame);
     host.layer.append(this.box);
@@ -155,8 +162,9 @@ export class Surface {
     this.listen();
   }
 
-  setHostCss(css: string) {
+  setHostCss(css: string, scheme: Scheme) {
     if (this.hostStyle.textContent !== css) this.hostStyle.textContent = css;
+    if (this.frame.style.colorScheme !== scheme) this.frame.style.colorScheme = scheme;
   }
 
   /** Replaces the whole document (`a=doc`): its head's styles and its body. */

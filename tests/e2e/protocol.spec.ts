@@ -192,6 +192,31 @@ test("z stacks overlapping placements, and among equals the surface created late
   expect((msgs.at(-1)!.json as { code: string }).code).toBe("EINVAL");
 });
 
+test("a transparent document shows the cells beneath it: the frame's colour scheme is the document's", async ({ page }) => {
+  // Red cells, and over them a surface whose background is transparent.
+  await write(page, "\x1b[2;2H\x1b[41m" + " ".repeat(20) + "\x1b[m\x1b[3;2H\x1b[41m" + " ".repeat(20) + "\x1b[m\x1b[2;2H");
+  await send(page, { a: "doc", s: "t", q: "2" }, "<style>:root, body { background: transparent }</style><p id=p>see through</p>");
+  await send(page, { a: "place", s: "t", c: "20", r: "2", C: "1", q: "2" });
+  const box = page.locator('.hotty-surface[data-surface="t"]');
+  const frame = box.locator("iframe");
+  expect(await frame.evaluate((f) => getComputedStyle(f).colorScheme)).toBe("dark");
+  // The pixel at the surface's corner, off the text, is the cell's red.
+  const bb = (await box.boundingBox())!;
+  const png = await page.screenshot({ clip: { x: bb.x + bb.width - 3, y: bb.y + bb.height - 3, width: 1, height: 1 } });
+  const [r, g, b] = await page.evaluate(async (data) => {
+    const img = new Image();
+    img.src = "data:image/png;base64," + data;
+    await img.decode();
+    const c = document.createElement("canvas");
+    c.width = c.height = 1;
+    const ctx = c.getContext("2d")!;
+    ctx.drawImage(img, 0, 0);
+    return Array.from(ctx.getImageData(0, 0, 1, 1).data);
+  }, png.toString("base64"));
+  expect(r).toBeGreaterThan(g + 60);
+  expect(r).toBeGreaterThan(b + 60);
+});
+
 test("hide removes the placement and keeps the document for the next place", async ({ page }) => {
   await send(page, { a: "doc", s: "x", q: "2" }, "<input id=i><p id=p>one</p>");
   await send(page, { a: "place", s: "x", c: "20", r: "2", q: "2" });

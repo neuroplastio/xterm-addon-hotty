@@ -85,6 +85,10 @@ runs programs for whoever connects.
   corner, so a new window moves the iframe and lays nothing out. A hidden
   surface's box is `display: none`: its document stays, and the browser
   skips its style, layout and paint until it is placed again.
+- **A transparent document shows the cells beneath it.** The frame's
+  colour scheme is the document's (the theme's, as the host stylesheet
+  declares it): were they to differ, the browser would paint the frame an
+  opaque canvas.
 - **Stacking** (SPEC §5.2). A placement's `z` is its box's `z-index`, and
   the boxes stand in the layer in the order their surfaces were created,
   so overlapping placements stack as the spec says, and the browser gives

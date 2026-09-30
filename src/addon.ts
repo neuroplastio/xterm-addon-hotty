@@ -18,7 +18,7 @@ import { hostCss, palette } from "./hostcss.ts";
 import { OPS, PatchError } from "./patch.ts";
 import { clean, type Policy } from "./network.ts";
 import { Store } from "./resources.ts";
-import { Surface, type SurfaceHost } from "./surface.ts";
+import { type Scheme, Surface, type SurfaceHost } from "./surface.ts";
 import { Touch } from "./touch.ts";
 import { Assembler, Control, encode, OSC, text, type Command, type Decoded } from "./wire.ts";
 
@@ -285,7 +285,7 @@ export class HottyAddon implements ITerminalAddon {
         let s = this.surfaces.get(name);
         if (!s) {
           if (this.surfaces.size >= this.opts.maxSurfaces) throw new Failure("EQUOTA", `at most ${this.opts.maxSurfaces} surfaces`);
-          s = new Surface(name, this.host(), this.hostCss());
+          s = new Surface(name, this.host(), this.hostCss(), this.scheme());
           this.surfaces.set(name, s);
         }
         s.setDocument(text(cmd.payload));
@@ -358,7 +358,7 @@ export class HottyAddon implements ITerminalAddon {
       events: EVENTS,
       cell: { w: Math.round(cellW * scale), h: Math.round(cellH * scale) },
       scale,
-      scheme: palette(this.term.options.theme).dark ? "dark" : "light",
+      scheme: this.scheme(),
       limits: { resources: this.store.quota, surfaces: this.opts.maxSurfaces },
       net: this.policy,
       host: "xterm-addon-hotty",
@@ -660,6 +660,10 @@ export class HottyAddon implements ITerminalAddon {
     return this.css;
   }
 
+  private scheme(): Scheme {
+    return palette(this.term.options.theme).dark ? "dark" : "light";
+  }
+
   /** On every render: did the cell size, font or theme change? */
   private checkMetrics() {
     const { cellW, cellH } = this.cell();
@@ -670,7 +674,8 @@ export class HottyAddon implements ITerminalAddon {
     this.metrics = { cellW, cellH, key };
     if (this.surfaces.size === 0) return;
     const css = this.hostCss();
-    for (const s of this.surfaces.values()) s.setHostCss(css);
+    const scheme = this.scheme();
+    for (const s of this.surfaces.values()) s.setHostCss(css, scheme);
     this.reposition();
     if (sizeChanged) {
       // Re-rendered with no program involvement; tell the program the new size.
