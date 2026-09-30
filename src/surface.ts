@@ -62,6 +62,9 @@ export interface SurfaceHost {
   /** A key the surface does not use (a keydown or its keyup), for the
    *  terminal to send to the program as if typed there (SPEC §10.2). */
   key(e: KeyboardEvent): void;
+  /** A key the browser keeps (the `browserKeys` option): the surface
+   *  leaves it to the browser rather than hand it to the terminal. */
+  browserKey(e: KeyboardEvent): boolean;
   /** Gives the keyboard back to the terminal. */
   focusTerminal(): void;
   /** The host's half of the network policy (SPEC §7.2). */
@@ -330,6 +333,7 @@ export class Surface {
       return;
     }
     if (this.consumes(e, this.controlKind(this.doc.activeElement))) return;
+    if (this.host.browserKey(e)) return; // the browser's: reload, zoom, …
     e.preventDefault();
     e.stopPropagation();
     this.forwarded.add(e.code);

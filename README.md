@@ -85,6 +85,18 @@ runs programs for whoever connects.
   corner, so a new window moves the iframe and lays nothing out. A hidden
   surface's box is `display: none`: its document stays, and the browser
   skips its style, layout and paint until it is placed again.
+- **The browser's keys stay the browser's** (the `browserKeys` option):
+  - reload (F5, and Ctrl or Cmd with R);
+  - zoom (Ctrl or Cmd with +, − or 0);
+  - full screen (F11);
+  - the developer tools (F12, and Ctrl+Shift with I, J or C);
+  - on a Mac, everything with Cmd.
+
+  Neither the terminal nor a surface holding the keyboard sends them to the
+  program, and the browser acts on them. A terminal cannot know which keys
+  a program binds, so these are the browser's own. The addon installs
+  xterm.js's custom key handler for this, so a page passes its own list
+  here, not to xterm.js.
 - **Nothing in a surface scrolls** (SPEC §5.3, §9):
   - It shows no scrollbars, and pans nothing on a touch
     (`touch-action: none`). Any scroll offset the browser sets goes back to

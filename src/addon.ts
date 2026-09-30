@@ -47,6 +47,31 @@ export interface HottyOptions {
    * Default true.
    */
   touch?: boolean;
+  /**
+   * Keys the browser keeps: they never reach the program, from the terminal
+   * or from a surface holding the keyboard, and the browser acts on them.
+   * A terminal cannot know which keys a program binds, so these are the
+   * browser's own. Default: `browserKeys`, which covers reload, zoom, full
+   * screen, the developer tools, and on a Mac everything with Cmd.
+   */
+  browserKeys?: (e: KeyboardEvent) => boolean;
+}
+
+const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+
+/** The browser's own keys (the default for `browserKeys`): reload (F5, Ctrl
+ * or Cmd with R), zoom (Ctrl or Cmd with +, - or 0), full screen (F11), the
+ * developer tools (F12, Ctrl+Shift with I, J or C), and on a Mac everything
+ * with Cmd. */
+export function browserKeys(e: KeyboardEvent): boolean {
+  if (e.key === "F5" || e.key === "F11" || e.key === "F12") return true;
+  if (mac && e.metaKey) return true;
+  const mod = e.ctrlKey || e.metaKey;
+  const k = e.key.toLowerCase();
+  if (mod && !e.altKey && k === "r") return true;
+  if (mod && ["=", "+", "-", "0"].includes(e.key)) return true;
+  if (e.ctrlKey && e.shiftKey && ["i", "j", "c"].includes(k)) return true;
+  return false;
 }
 
 export interface FrameStats {
@@ -111,6 +136,8 @@ export class HottyAddon implements ITerminalAddon {
 
   activate(term: Terminal): void {
     this.term = term;
+    // The browser's keys: xterm.js leaves them alone, and the browser acts.
+    term.attachCustomKeyEventHandler((e) => !this.browserKey(e));
     const p = term.parser;
     this.disposables.push(
       p.registerOscHandler(OSC, (data) => this.onOsc(data)),
@@ -474,6 +501,7 @@ export class HottyAddon implements ITerminalAddon {
         const c = new Control().set("a", "ev").set("s", surface).set("e", kind).set("t", target);
         this.send(encode(c, detail === undefined ? "" : JSON.stringify(detail)));
       },
+      browserKey: (e) => this.browserKey(e),
       key: (e) => {
         // Through xterm.js's own keyboard handling, so the key is encoded
         // the way the program asked: DECCKM, modifyOtherKeys, the kitty
@@ -592,6 +620,10 @@ export class HottyAddon implements ITerminalAddon {
     screen.append(layer);
     this.layer = layer;
     return layer;
+  }
+
+  private browserKey(e: KeyboardEvent): boolean {
+    return (this.opts.browserKeys ?? browserKeys)(e);
   }
 
   /** A box in the page as the buffer cells it covers (1-based, as xterm.js
