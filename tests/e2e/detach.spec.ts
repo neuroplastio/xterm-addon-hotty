@@ -231,6 +231,9 @@ test.describe("§5.5: a detached surface", () => {
     // The host's mark on a hyperlink is not the program's.
     const attrs = await page.evaluate(() => (window.hotty as unknown as { addon: { inspect(s: string, id: string): { attrs: object } } }).addon.inspect("x", "hyper").attrs);
     expect(attrs).toEqual({ id: "hyper", target: "_blank", href: "spec" });
+    // It carries the addon's vendor prefix: data-hotty-* is the spec's (§15).
+    const live = await d.locator("#hyper").evaluate((el) => Array.from(el.attributes, (a) => a.name).filter((n) => n.startsWith("data-")));
+    expect(live).toEqual(["data-xterm-hotty-hyperlink"]);
     for (const id of ["btn", "on", "hand"]) expect(await cursor(id), id).toBe("auto");
     // Selecting text: a drag across the paragraph, while the terminal takes
     // the keyboard back.

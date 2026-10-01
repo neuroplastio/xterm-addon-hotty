@@ -89,8 +89,9 @@ const TEXT_TYPES = new Set(["text", "email", "password", "search", "tel", "url",
 const CONTROLS = "input, select, textarea, button";
 
 /** The host's own attribute on a detached surface's hyperlinks, for its
- * stylesheet: whether a link is one depends on its `url` (SPEC §9). */
-const HYPERLINK = "data-hotty-hyperlink";
+ * stylesheet: whether a link is one depends on its `url` (SPEC §9). Under
+ * the addon's vendor prefix: `data-hotty-*` is the spec's (§15). */
+const HYPERLINK = "data-xterm-hotty-hyperlink";
 
 /**
  * A detached surface shows no pointer that promises a click (SPEC §5.5),
