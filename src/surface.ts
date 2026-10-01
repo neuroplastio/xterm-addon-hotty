@@ -88,6 +88,10 @@ const TEXT_TYPES = new Set(["text", "email", "password", "search", "tel", "url",
 /** The form controls a detached surface disables (SPEC §5.5). */
 const CONTROLS = "input, select, textarea, button";
 
+/** The host's own attribute on a detached surface's hyperlinks, for its
+ * stylesheet: whether a link is one depends on its `url` (SPEC §9). */
+const HYPERLINK = "data-hotty-hyperlink";
+
 /**
  * A detached surface shows no pointer that promises a click (SPEC §5.5),
  * whatever the document's `cursor` asks for, except over a hyperlink, which
@@ -98,7 +102,7 @@ const CONTROLS = "input, select, textarea, button";
 const DETACHED_CSS = `@layer hotty-host {
 * { cursor: auto !important; }
 a[href], a[href] * { cursor: text !important; }
-a[href][target="_blank"], a[href][target="_blank"] * { cursor: pointer !important; }
+a[href][${HYPERLINK}], a[href][${HYPERLINK}] * { cursor: pointer !important; }
 }`;
 
 export class Surface {
@@ -262,12 +266,19 @@ export class Surface {
   }
 
   /** Disables the form controls of a detached surface, as if each had the
-   * `disabled` attribute, or enables those it disabled. The attribute is
-   * the host's own: the document reports the program's (SPEC §16). */
+   * `disabled` attribute, or enables those it disabled, and marks its
+   * hyperlinks for the host's stylesheet. The attributes are the host's
+   * own: the document reports the program's (SPEC §16). */
   private sync() {
+    const detached = this.detachedState;
     for (const el of Array.from(this.doc.querySelectorAll(CONTROLS))) {
-      if (!this.detachedState) this.resolver.removeOwn(el, "disabled");
+      if (!detached) this.resolver.removeOwn(el, "disabled");
       else if (!el.hasAttribute("disabled")) this.resolver.setOwn(el, "disabled", "");
+    }
+    for (const a of Array.from(this.doc.querySelectorAll("a"))) {
+      if (detached && this.isHyperlink(a)) {
+        if (!a.hasAttribute(HYPERLINK)) this.resolver.setOwn(a, HYPERLINK, "");
+      } else this.resolver.removeOwn(a, HYPERLINK);
     }
     this.restyle();
   }
@@ -402,7 +413,7 @@ export class Surface {
       setTimeout(() => (this.auxPress = false), 0);
       return;
     }
-    const el = this.detachedState ? null : focusTargetAt(e);
+    const el = this.detachedState ? null : focusTargetAt(e, this.hyper);
     if (el) {
       this.pressed = el;
       this.settle();
@@ -444,7 +455,7 @@ export class Surface {
    * nor a detached surface's. */
   private onFocusIn(e: FocusEvent) {
     if (this.programFocus || this.auxPress) return;
-    if (this.detachedState || this.pressNothing || !isElement(e.target as EventTarget) || !takesFocus(e.target as Element)) {
+    if (this.detachedState || this.pressNothing || !isElement(e.target as EventTarget) || !takesFocus(e.target as Element, this.hyper)) {
       this.settle();
       return;
     }
@@ -642,14 +653,22 @@ export class Surface {
     return new DOMRect(f.left + r.left, f.top + r.top, r.width, r.height);
   }
 
+  /** A hyperlink (SPEC §9): a link with target="_blank" and a `url`. One
+   * without a url is the program's, as any other link. */
+  private isHyperlink(link: Element): boolean {
+    return link.getAttribute("target") === "_blank" && this.urlOf(link) !== "";
+  }
+
+  private readonly hyper = (link: Element) => this.isHyperlink(link);
+
   /** A link's click (SPEC §9). A hyperlink is the terminal's, as an OSC 8
    * one is, and not reported; any other link is the program's: an event,
    * with or without an id. The host opens nothing itself. */
   private onLink(link: Element, e: MouseEvent) {
     e.preventDefault();
     const url = this.urlOf(link);
-    if (isHyperlink(link)) {
-      if (url && e.button === 0) this.host.hyperlink("activate", e, url, this.pageBox(link));
+    if (this.isHyperlink(link)) {
+      if (e.button === 0) this.host.hyperlink("activate", e, url, this.pageBox(link));
       return;
     }
     const detail: Record<string, unknown> = { href: this.resolver.get(link, "href") ?? "" };
@@ -668,11 +687,11 @@ export class Surface {
    * an OSC 8 one. */
   private onOver(e: MouseEvent) {
     const link = this.linkIn(e);
-    const hyper = link && isHyperlink(link) ? link : null;
+    const hyper = link && this.isHyperlink(link) ? link : null;
     if (hyper === this.hovered?.link) return;
     this.onLeave(e);
     const url = hyper ? this.urlOf(hyper) : "";
-    if (hyper && url) {
+    if (hyper) {
       this.hovered = { link: hyper, url };
       this.host.hyperlink("hover", e, url, this.pageBox(hyper));
     }
@@ -758,18 +777,14 @@ function isElement(n: EventTarget): n is Element {
   return (n as Node).nodeType === 1;
 }
 
-/** A link with target="_blank": a hyperlink, the terminal's (SPEC §9). */
-function isHyperlink(link: Element): boolean {
-  return link.getAttribute("target") === "_blank";
-}
-
 /**
  * Whether a click focuses `el` (SPEC §10.1), unless it is disabled: `input`,
  * `select`, `textarea` and `button`; a link with an href, except a
- * hyperlink, which is the terminal's; the first summary of a details; an
- * editing host; any element with a tabindex of 0 or more.
+ * hyperlink (`hyper`), which is the terminal's whatever its tabindex; the
+ * first summary of a details; an editing host; any element with a tabindex
+ * of 0 or more.
  */
-function takesFocus(el: Element): boolean {
+function takesFocus(el: Element, hyper: (link: Element) => boolean): boolean {
   if (el.matches(":disabled")) return false;
   switch (el.localName) {
     case "button":
@@ -780,7 +795,7 @@ function takesFocus(el: Element): boolean {
       return (el as HTMLInputElement).type !== "hidden";
     case "a":
     case "area":
-      if (el.hasAttribute("href")) return !isHyperlink(el);
+      if (el.hasAttribute("href")) return !hyper(el);
       break;
     case "summary": {
       const d = el.parentElement;
@@ -797,13 +812,13 @@ function takesFocus(el: Element): boolean {
 /** The element a press focuses: the nearest one, from its target outward,
  * that takes focus, or a label's control; null if there is none, or if the
  * press is on a hyperlink. */
-function focusTargetAt(e: Event): HTMLElement | null {
+function focusTargetAt(e: Event, hyper: (link: Element) => boolean): HTMLElement | null {
   for (const n of e.composedPath()) {
     if (!isElement(n)) continue;
-    if (n.localName === "a" && n.hasAttribute("href") && isHyperlink(n)) return null;
-    if (takesFocus(n)) return n as HTMLElement;
+    if (n.localName === "a" && n.hasAttribute("href") && hyper(n)) return null;
+    if (takesFocus(n, hyper)) return n as HTMLElement;
     const control = n.localName === "label" ? (n as HTMLLabelElement).control : null;
-    if (control) return takesFocus(control) ? control : null;
+    if (control) return takesFocus(control, hyper) ? control : null;
   }
   return null;
 }

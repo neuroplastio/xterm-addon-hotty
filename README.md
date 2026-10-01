@@ -40,8 +40,9 @@ new HottyAddon({
   `url` (resolved), whether the link has an `id` or not. The addon never
   opens one itself (§9). The context menu's own "open in new tab" and "copy
   link" work as on any page.
-- **Hyperlinks**, links with `target="_blank"`, are the terminal's, as OSC 8
-  links are (§9). They go where xterm.js sends an OSC 8 link: the
+- **Hyperlinks**, links with `target="_blank"` and a `url`, are the
+  terminal's, as OSC 8 links are (§9). One without a `url` (a relative
+  `href` with no base, say) is the program's, as any other link. They go where xterm.js sends an OSC 8 link: the
   terminal's `linkHandler` (`activate`, `hover`, `leave`, with the link's
   cells as the range), or xterm.js's confirm-then-open default. Only
   `http` and `https` go through, unless the handler sets

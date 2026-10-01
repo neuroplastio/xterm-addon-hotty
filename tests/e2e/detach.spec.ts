@@ -100,6 +100,15 @@ test.describe("§10.1: a click takes the keyboard only through an element that t
     expect(await opened(page)).toEqual(["https://example.com/x", "https://example.com/x"]);
   });
 
+  test("a target=_blank link without a url is no hyperlink: it takes focus, and its click is the program's", async ({ page }) => {
+    // No <base>: a relative href has no url (§9).
+    await place(page, "r", `<a id=rel target=_blank href="docs/intro">rel</a>`);
+    await page.evaluate(() => window.hotty.term.focus());
+    await surface(page, "r").locator("#rel").click();
+    expect(evs((await take(page)).msgs)).toEqual([["focus", "", null], ["click", "rel", { href: "docs/intro" }]]);
+    expect(await opened(page)).toEqual([]);
+  });
+
   test("a click on another surface is elsewhere: the keyboard goes back, and that surface takes nothing", async ({ page }) => {
     await place(page, "a", `<input id=i>`);
     await send(page, { a: "doc", s: "b", q: "2" }, `<p id=p>other text</p>`);
@@ -197,6 +206,7 @@ test.describe("§5.5: a detached surface", () => {
       "x",
       `<base href="https://example.com/"><style>a { display: block; height: 30px } a, span, .hand { cursor: pointer !important }</style>` +
         `<p id=p>Some printed output, to select.</p><a id=hyper target=_blank href="spec">spec</a><a id=own href="own"><span id=inner>own</span></a>` +
+        `<a id=nourl target=_blank href="http://[x">no url</a>` +
         `<button id=btn>b</button><span id=on data-on=click>on</span><p id=hand class=hand>hand</p>`,
       { d: "1" },
     );
@@ -216,6 +226,11 @@ test.describe("§5.5: a detached surface", () => {
     expect(await cursor("hyper")).toBe("pointer");
     expect(await cursor("own")).toBe("text");
     expect(await cursor("inner")).toBe("text");
+    // A target=_blank link without a url is no hyperlink (§9): the text pointer.
+    expect(await cursor("nourl")).toBe("text");
+    // The host's mark on a hyperlink is not the program's.
+    const attrs = await page.evaluate(() => (window.hotty as unknown as { addon: { inspect(s: string, id: string): { attrs: object } } }).addon.inspect("x", "hyper").attrs);
+    expect(attrs).toEqual({ id: "hyper", target: "_blank", href: "spec" });
     for (const id of ["btn", "on", "hand"]) expect(await cursor(id), id).toBe("auto");
     // Selecting text: a drag across the paragraph, while the terminal takes
     // the keyboard back.
