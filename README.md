@@ -94,18 +94,21 @@ runs programs for whoever connects.
   so overlapping placements stack as the spec says, and the browser gives
   the pointer to the topmost.
 - **The keyboard** (SPEC §10.1). A click takes it only by focusing an
-  element that takes focus: a form control, a link with an `href`, a
-  `summary`, a `tabindex` of 0 or more, or an editing host. A click on
-  anything else sends no `focus`, and on a surface that had the keyboard it
-  sends `blur`. The browser focuses the frame on any click; once the press
+  element that takes focus: an `input`, `select`, `textarea` or `button`, a
+  link with an `href` that is not a hyperlink, a details' first `summary`,
+  an editing host, or a `tabindex` of 0 or more (a `label` counts as its
+  control). A click on anything else, a hyperlink included, sends no
+  `focus`, and on a surface that had the keyboard it sends `blur`. The browser focuses the frame on any click; once the press
   is done, the addon gives that focus back to the terminal, so text
   selection works as usual. A right click leaves focus where the browser
   put it, so the context menu's Copy copies the surface's selection.
 - **Detached surfaces** (SPEC §5.5: `a=detach`, or `d=1` on `a=doc`) send no
-  events and never take the keyboard. Their form controls carry a
-  `disabled` of the addon's own, which inspection and morphs do not see, and
-  which a patch cannot remove. Hover, selection, `<details>` and hyperlinks
-  work as before, and other links show the text pointer.
+  events and never take the keyboard. Their `input`, `select`, `textarea`
+  and `button` elements carry a `disabled` of the addon's own, which
+  inspection and morphs do not see, and which a patch cannot remove. Hover,
+  selection, `<details>` and hyperlinks work as before. Only a hyperlink
+  shows the hand, whatever the document's `cursor`; other links show the
+  text pointer.
 - **The browser's keys stay the browser's** (the `browserKeys` option):
   - reload (F5, and Ctrl or Cmd with R);
   - zoom (Ctrl or Cmd with +, − or 0);

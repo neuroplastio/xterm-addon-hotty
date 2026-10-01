@@ -85,15 +85,20 @@ export type Scheme = "dark" | "light";
 
 const TEXT_TYPES = new Set(["text", "email", "password", "search", "tel", "url", "number", "date", "datetime-local", "month", "time", "week"]);
 
-/** The form controls a detached surface disables (SPEC §5.5): the listed
- * elements that have a `disabled` attribute. */
-const CONTROLS = "button, fieldset, input, select, textarea";
+/** The form controls a detached surface disables (SPEC §5.5). */
+const CONTROLS = "input, select, textarea, button";
 
-/** A detached surface's pointer over a link that is not a hyperlink: the
- * one over text (SPEC §5.5). Important in the host's layer, the first, so
- * that it wins over the program's own rules. */
+/**
+ * A detached surface shows no pointer that promises a click (SPEC §5.5),
+ * whatever the document's `cursor` asks for, except over a hyperlink, which
+ * is the terminal's and still opens. Over another link the pointer is the
+ * one over text: `auto` would be the hand there. Important in the host's
+ * layer, the first, so that it wins over the program's own rules.
+ */
 const DETACHED_CSS = `@layer hotty-host {
-a[href]:not([target="_blank"]), a[href]:not([target="_blank"]) * { cursor: text !important; }
+* { cursor: auto !important; }
+a[href], a[href] * { cursor: text !important; }
+a[href][target="_blank"], a[href][target="_blank"] * { cursor: pointer !important; }
 }`;
 
 export class Surface {
@@ -630,10 +635,6 @@ export class Surface {
     return url.startsWith(NO_BASE) ? "" : url;
   }
 
-  private static isHyperlink(link: Element): boolean {
-    return link.getAttribute("target") === "_blank";
-  }
-
   /** The link's box in the page (the iframe may be offset for a window). */
   private pageBox(el: Element): DOMRect {
     const f = this.frame.getBoundingClientRect();
@@ -647,7 +648,7 @@ export class Surface {
   private onLink(link: Element, e: MouseEvent) {
     e.preventDefault();
     const url = this.urlOf(link);
-    if (Surface.isHyperlink(link)) {
+    if (isHyperlink(link)) {
       if (url && e.button === 0) this.host.hyperlink("activate", e, url, this.pageBox(link));
       return;
     }
@@ -667,7 +668,7 @@ export class Surface {
    * an OSC 8 one. */
   private onOver(e: MouseEvent) {
     const link = this.linkIn(e);
-    const hyper = link && Surface.isHyperlink(link) ? link : null;
+    const hyper = link && isHyperlink(link) ? link : null;
     if (hyper === this.hovered?.link) return;
     this.onLeave(e);
     const url = hyper ? this.urlOf(hyper) : "";
@@ -757,11 +758,16 @@ function isElement(n: EventTarget): n is Element {
   return (n as Node).nodeType === 1;
 }
 
+/** A link with target="_blank": a hyperlink, the terminal's (SPEC §9). */
+function isHyperlink(link: Element): boolean {
+  return link.getAttribute("target") === "_blank";
+}
+
 /**
- * Whether a click focuses `el` (SPEC §10.1): a form control, a link with an
- * href, a summary, or an element with a tabindex of 0 or more, unless it is
- * disabled. An editing host too (§10.2 has `contenteditable` take keys),
- * which a browser focuses on a click as it does a control.
+ * Whether a click focuses `el` (SPEC §10.1), unless it is disabled: `input`,
+ * `select`, `textarea` and `button`; a link with an href, except a
+ * hyperlink, which is the terminal's; the first summary of a details; an
+ * editing host; any element with a tabindex of 0 or more.
  */
 function takesFocus(el: Element): boolean {
   if (el.matches(":disabled")) return false;
@@ -774,10 +780,9 @@ function takesFocus(el: Element): boolean {
       return (el as HTMLInputElement).type !== "hidden";
     case "a":
     case "area":
-      if (el.hasAttribute("href")) return true;
+      if (el.hasAttribute("href")) return !isHyperlink(el);
       break;
     case "summary": {
-      // A browser focuses only its details' summary.
       const d = el.parentElement;
       if (d?.localName === "details" && d.querySelector(":scope > summary") === el) return true;
       break;
@@ -790,10 +795,12 @@ function takesFocus(el: Element): boolean {
 }
 
 /** The element a press focuses: the nearest one, from its target outward,
- * that takes focus, or a label's control; null if there is none. */
+ * that takes focus, or a label's control; null if there is none, or if the
+ * press is on a hyperlink. */
 function focusTargetAt(e: Event): HTMLElement | null {
   for (const n of e.composedPath()) {
     if (!isElement(n)) continue;
+    if (n.localName === "a" && n.hasAttribute("href") && isHyperlink(n)) return null;
     if (takesFocus(n)) return n as HTMLElement;
     const control = n.localName === "label" ? (n as HTMLLabelElement).control : null;
     if (control) return takesFocus(control) ? control : null;

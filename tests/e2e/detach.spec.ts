@@ -44,8 +44,10 @@ async function place(page: Page, s: string, html: string, extra: Record<string, 
   await take(page);
 }
 
+const opened = (page: Page) => page.evaluate(() => [...(window.hotty as unknown as { opened: string[] }).opened]);
+
 test.describe("§10.1: a click takes the keyboard only through an element that takes focus", () => {
-  test.beforeEach(async ({ page }) => open(page));
+  test.beforeEach(async ({ page }) => open(page, "?pty=0&record-links"));
 
   test("a click on text takes nothing: no focus, and the terminal keeps the keyboard", async ({ page }) => {
     await place(page, "p", `<p id=p>printed text</p><div id=neg tabindex=-1>tabindex -1</div><span id=s data-on=click>s</span><button id=b>b</button>`);
@@ -77,6 +79,37 @@ test.describe("§10.1: a click takes the keyboard only through an element that t
     const { msgs, raw } = await take(page);
     expect(evs(msgs)).toEqual([["change", "i", { value: "Ada" }], ["blur", "", null]]);
     expect(raw).toBe("y");
+  });
+
+  test("a hyperlink takes nothing: it opens, and the program hears no focus; another link takes the keyboard", async ({ page }) => {
+    await place(page, "h", `<input id=i><a id=hyper target=_blank href="https://example.com/x">hyper</a> <a id=own href="/own">own</a>`);
+    await page.evaluate(() => window.hotty.term.focus());
+    const d = surface(page, "h");
+    await d.locator("#hyper").click();
+    await terminalHasKeyboard(page);
+    expect(evs((await take(page)).msgs)).toEqual([]);
+    expect(await opened(page)).toEqual(["https://example.com/x"]);
+    await d.locator("#own").click();
+    expect(evs((await take(page)).msgs)).toEqual([["focus", "", null], ["click", "own", { href: "/own" }]]);
+    // Holding the keyboard, a click on a hyperlink gives it back.
+    await d.locator("#i").click();
+    await page.keyboard.type("x");
+    await d.locator("#hyper").click();
+    await terminalHasKeyboard(page);
+    expect(evs((await take(page)).msgs)).toEqual([["change", "i", { value: "x" }], ["blur", "", null]]);
+    expect(await opened(page)).toEqual(["https://example.com/x", "https://example.com/x"]);
+  });
+
+  test("a click on another surface is elsewhere: the keyboard goes back, and that surface takes nothing", async ({ page }) => {
+    await place(page, "a", `<input id=i>`);
+    await send(page, { a: "doc", s: "b", q: "2" }, `<p id=p>other text</p>`);
+    await send(page, { a: "place", s: "b", c: "60", r: "4", q: "2" });
+    await surface(page, "a").locator("#i").click();
+    await take(page);
+    await surface(page, "b").locator("#p").click();
+    await terminalHasKeyboard(page);
+    const got = (await take(page)).msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("s"), m.get("e")]);
+    expect(got).toEqual([["a", "blur"]]);
   });
 });
 
@@ -136,11 +169,13 @@ test.describe("§5.5: a detached surface", () => {
   });
 
   test("its controls are disabled, those patches add too, and the document reports the program's attributes", async ({ page }) => {
-    await place(page, "x", UI + `<button id=off disabled>off</button>`);
+    await place(page, "x", UI + `<button id=off disabled>off</button><select id=sel><option>o</option></select><textarea id=ta></textarea><fieldset id=fs></fieldset>`);
     await send(page, { a: "detach", s: "x", q: "2" });
     const d = surface(page, "x");
-    for (const id of ["b", "t", "c", "go"]) await expect(d.locator(`#${id}`)).toBeDisabled();
+    for (const id of ["b", "t", "c", "go", "sel", "ta"]) await expect(d.locator(`#${id}`)).toBeDisabled();
     expect(await d.locator("#go").evaluate((el) => el.matches(":disabled"))).toBe(true);
+    // Only input, select, textarea and button.
+    expect(await d.locator("#fs").evaluate((el) => el.matches(":disabled"))).toBe(false);
     const inspect = (id: string) => page.evaluate((id) => (window.hotty as unknown as { addon: { inspect(s: string, id: string): { attrs: Record<string, string> } } }).addon.inspect("x", id).attrs, id);
     expect(await inspect("b")).toEqual({ id: "b", value: "v" });
     expect(await inspect("off")).toEqual({ id: "off", disabled: "" });
@@ -156,12 +191,13 @@ test.describe("§5.5: a detached surface", () => {
     expect(evs((await take(page)).msgs)).toEqual([]);
   });
 
-  test("keeps hyperlinks, hover and selection; a link that is no hyperlink shows the text pointer", async ({ page, context, browserName }) => {
+  test("keeps hyperlinks, hover and selection; only a hyperlink shows the hand", async ({ page, context, browserName }) => {
     await place(
       page,
       "x",
-      `<base href="https://example.com/"><style>a { display: block; height: 30px }</style>` +
-        `<p id=p>Some printed output, to select.</p><a id=hyper target=_blank href="spec">spec</a><a id=own href="own">own</a>`,
+      `<base href="https://example.com/"><style>a { display: block; height: 30px } a, span, .hand { cursor: pointer !important }</style>` +
+        `<p id=p>Some printed output, to select.</p><a id=hyper target=_blank href="spec">spec</a><a id=own href="own"><span id=inner>own</span></a>` +
+        `<button id=btn>b</button><span id=on data-on=click>on</span><p id=hand class=hand>hand</p>`,
       { d: "1" },
     );
     const d = surface(page, "x");
@@ -175,8 +211,12 @@ test.describe("§5.5: a detached surface", () => {
     await d.locator("#own").click();
     expect((await rec()).opened).toEqual(["https://example.com/spec"]);
     expect(context.pages()).toHaveLength(1);
-    expect(await d.locator("#own").evaluate((a) => getComputedStyle(a).cursor)).toBe("text");
-    expect(await d.locator("#hyper").evaluate((a) => getComputedStyle(a).cursor)).toBe("pointer");
+    // The hand over the hyperlink only, whatever the document's cursor asks for.
+    const cursor = (id: string) => d.locator(`#${id}`).evaluate((el) => getComputedStyle(el).cursor);
+    expect(await cursor("hyper")).toBe("pointer");
+    expect(await cursor("own")).toBe("text");
+    expect(await cursor("inner")).toBe("text");
+    for (const id of ["btn", "on", "hand"]) expect(await cursor(id), id).toBe("auto");
     // Selecting text: a drag across the paragraph, while the terminal takes
     // the keyboard back.
     const p = (await d.locator("#p").boundingBox())!;
@@ -190,8 +230,13 @@ test.describe("§5.5: a detached surface", () => {
     const html = `<button id=b>b</button>`;
     await place(page, "x", html, { d: "1" });
     const d = surface(page, "x");
+    // EDETACHED whatever t names, and a=blur does nothing.
     await send(page, { a: "focus", s: "x", t: "b" });
-    expect((await take(page)).msgs.map((m) => (m.json as { code?: string } | null)?.code)).toEqual(["EDETACHED"]);
+    await send(page, { a: "focus", s: "x", t: "nope" });
+    await send(page, { a: "focus", s: "x" });
+    expect((await take(page)).msgs.map((m) => (m.json as { code?: string } | null)?.code)).toEqual(["EDETACHED", "EDETACHED", "EDETACHED"]);
+    await send(page, { a: "blur", s: "x" });
+    expect((await take(page)).msgs.map((m) => [m.get("a"), m.get("re") ?? m.get("e")])).toEqual([["ok", "blur"]]);
     await d.locator("#b").click({ force: true });
     expect(evs((await take(page)).msgs)).toEqual([]);
     await send(page, { a: "doc", s: "x", q: "2" }, html);
