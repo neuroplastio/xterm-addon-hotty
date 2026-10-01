@@ -68,7 +68,11 @@ test.describe("without a pty", () => {
       ["focus", "", null],
       ["click", "b", { value: "v" }],
       ["click", "l", { href: "/docs" }],
+      // A span takes no focus: the click gives the keyboard back (§10.1),
+      // and the summary takes it again.
+      ["blur", "", null],
       ["click", "s", null],
+      ["focus", "", null],
       ["click", "sum", null],
       ["change", "c", { checked: true, value: "yes" }],
       ["input", "t", { value: "h" }],

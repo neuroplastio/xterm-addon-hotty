@@ -85,6 +85,17 @@ export type Scheme = "dark" | "light";
 
 const TEXT_TYPES = new Set(["text", "email", "password", "search", "tel", "url", "number", "date", "datetime-local", "month", "time", "week"]);
 
+/** The form controls a detached surface disables (SPEC §5.5): the listed
+ * elements that have a `disabled` attribute. */
+const CONTROLS = "button, fieldset, input, select, textarea";
+
+/** A detached surface's pointer over a link that is not a hyperlink: the
+ * one over text (SPEC §5.5). Important in the host's layer, the first, so
+ * that it wins over the program's own rules. */
+const DETACHED_CSS = `@layer hotty-host {
+a[href]:not([target="_blank"]), a[href]:not([target="_blank"]) * { cursor: text !important; }
+}`;
+
 export class Surface {
   readonly name: string;
   readonly box: HTMLDivElement;
@@ -104,6 +115,18 @@ export class Surface {
   /** The document's base URL (SPEC §7.3). */
   private base = NO_BASE;
   private keyboard = false;
+  /** Detached (SPEC §5.5): nothing in the surface reaches the program. */
+  private detachedState = false;
+  /** A press is on something that takes no focus (SPEC §10.1): the focus
+   * the browser gives the frame for it is not the surface's. */
+  private pressNothing = false;
+  /** The element a press focuses, until the browser is done with it. */
+  private pressed: HTMLElement | null = null;
+  /** A press of another button than the primary one, until the browser is
+   * done with it: it neither takes nor gives back the keyboard. */
+  private auxPress = false;
+  private settling: ReturnType<typeof setTimeout> | null = null;
+  private css = "";
   /** Keys whose keydown went to the program, so their keyup follows. */
   private forwarded = new Set<string>();
 
@@ -156,19 +179,29 @@ export class Surface {
     doc.close();
     this.doc = doc;
     this.hostStyle = doc.getElementById("hotty-host") as HTMLStyleElement;
-    this.hostStyle.textContent = hostCss;
+    this.css = hostCss;
+    this.restyle();
     this.resolver = new Resolver(host.store);
     this.patcher = new Patcher(doc, this.resolver);
     this.listen();
   }
 
   setHostCss(css: string, scheme: Scheme) {
-    if (this.hostStyle.textContent !== css) this.hostStyle.textContent = css;
+    this.css = css;
+    this.restyle();
     if (this.frame.style.colorScheme !== scheme) this.frame.style.colorScheme = scheme;
   }
 
-  /** Replaces the whole document (`a=doc`): its head's styles and its body. */
-  setDocument(html: string) {
+  private restyle() {
+    const css = this.detachedState ? `${this.css}\n${DETACHED_CSS}` : this.css;
+    if (this.hostStyle.textContent !== css) this.hostStyle.textContent = css;
+  }
+
+  /** Replaces the whole document (`a=doc`): its head's styles and its body.
+   * `detached` (`d=1`) detaches the surface first; without it, the surface
+   * is the program's again (SPEC §5.1, §5.5). */
+  setDocument(html: string, detached = false) {
+    if (detached) this.detach();
     const parsed = new DOMParser().parseFromString(html, "text/html");
     // The document's base and its network request (SPEC §7.2, §7.3) are read
     // before the resolver drops its <base> and <meta> elements; patches can
@@ -189,6 +222,49 @@ export class Surface {
     this.copyAttributes(parsed.documentElement, this.doc.documentElement);
     this.copyAttributes(parsed.body, this.doc.body);
     this.doc.body.replaceChildren(...Array.from(parsed.body.childNodes));
+    this.detachedState = detached;
+    this.sync();
+  }
+
+  /** A patch (SPEC §6). On a detached surface, the controls it adds are
+   * disabled too, and so is one whose `disabled` it removes. */
+  patch(op: string, target: string | undefined, key: string | undefined, payload: string) {
+    try {
+      this.patcher.apply(op, target, key, payload);
+    } finally {
+      if (this.detachedState) this.sync();
+    }
+  }
+
+  // --- Ownership (SPEC §5.5) -----------------------------------------------
+
+  get detached(): boolean {
+    return this.detachedState;
+  }
+
+  /** `a=detach`: nothing in the surface reaches the program any more. A
+   * surface that has the keyboard gives it back silently, with no `change`
+   * and no `blur`, and its form controls act disabled. */
+  detach() {
+    if (!this.detachedState) {
+      this.detachedState = true; // from here on, emit() sends nothing
+      const had = this.keyboard || this.frameFocused();
+      this.keyboard = false;
+      this.focusedControl()?.blur();
+      if (had) this.giveBack();
+    }
+    this.sync();
+  }
+
+  /** Disables the form controls of a detached surface, as if each had the
+   * `disabled` attribute, or enables those it disabled. The attribute is
+   * the host's own: the document reports the program's (SPEC §16). */
+  private sync() {
+    for (const el of Array.from(this.doc.querySelectorAll(CONTROLS))) {
+      if (!this.detachedState) this.resolver.removeOwn(el, "disabled");
+      else if (!el.hasAttribute("disabled")) this.resolver.setOwn(el, "disabled", "");
+    }
+    this.restyle();
   }
 
   private copyAttributes(from: Element, to: Element) {
@@ -248,7 +324,8 @@ export class Surface {
   }
 
   destroy() {
-    if (this.keyboard) this.host.focusTerminal();
+    if (this.settling) clearTimeout(this.settling);
+    if (this.keyboard || this.frameFocused()) this.host.focusTerminal();
     this.box.remove();
   }
 
@@ -277,7 +354,14 @@ export class Surface {
   /** `a=blur`, or the keyboard leaving: the edited control commits first. */
   blur() {
     this.commit();
-    if (this.keyboard) this.host.focusTerminal();
+    if (this.keyboard) this.giveBack();
+  }
+
+  /** The browser's focus goes from the frame to the terminal. The frame lets
+   * go of it first: Firefox can leave the frame focused otherwise. */
+  private giveBack() {
+    this.frame.blur();
+    this.host.focusTerminal();
   }
 
   private commit() {
@@ -288,6 +372,80 @@ export class Surface {
   private focusedControl(): HTMLElement | null {
     const a = this.doc.activeElement;
     return a && a !== this.doc.body && a !== this.doc.documentElement ? (a as HTMLElement) : null;
+  }
+
+  /** Whether the browser's focus is in this surface's frame. */
+  private frameFocused(): boolean {
+    return this.frame.ownerDocument.activeElement === this.frame;
+  }
+
+  /**
+   * A press (SPEC §10.1). On an element that takes focus, the focus that
+   * follows gives the surface the keyboard (`onFocusIn`). On anything else,
+   * or anywhere in a detached surface, it takes nothing: a surface that had
+   * the keyboard gives it back (its control commits, then `blur`), and the
+   * focus the browser gives the frame anyway goes back to the terminal.
+   */
+  private onPress(e: MouseEvent) {
+    // A touch is a click only once it lifts, as a tap: its mousedown.
+    if (e.type === "pointerdown" && (e as PointerEvent).pointerType === "touch") return;
+    // Only a click (the primary button) moves the keyboard. Focus stays where
+    // the browser puts it for the others: a context menu's Copy copies the
+    // selection of the frame that has it.
+    if (e.button !== 0) {
+      this.auxPress = true;
+      setTimeout(() => (this.auxPress = false), 0);
+      return;
+    }
+    const el = this.detachedState ? null : focusTargetAt(e);
+    if (el) {
+      this.pressed = el;
+      this.settle();
+      return;
+    }
+    this.pressNothing = true;
+    if (this.keyboard) {
+      this.commit();
+      this.keyboard = false;
+      this.emit("blur", "");
+    }
+    this.settle();
+  }
+
+  /**
+   * Once the browser is done with a press (its default action focuses the
+   * frame): an element that takes focus has it, even where the browser does
+   * not focus one on a click (a button on a Mac, say); and focus the
+   * surface does not hold goes back to the terminal. The frame keeps it
+   * until then, so text selection starts as usual.
+   */
+  private settle() {
+    if (this.settling) return;
+    this.settling = setTimeout(() => {
+      this.settling = null;
+      const el = this.pressed;
+      this.pressed = null;
+      this.pressNothing = false;
+      if (el && !this.keyboard && !this.detachedState && el.isConnected && this.doc.activeElement !== el) {
+        this.frame.focus();
+        el.focus({ preventScroll: true });
+      }
+      if (!this.keyboard && this.frameFocused()) this.giveBack();
+    }, 0);
+  }
+
+  /** An element got focus: the surface takes the keyboard if the element is
+   * one that takes focus, and the focus is neither the program's (no echo)
+   * nor a detached surface's. */
+  private onFocusIn(e: FocusEvent) {
+    if (this.programFocus || this.auxPress) return;
+    if (this.detachedState || this.pressNothing || !isElement(e.target as EventTarget) || !takesFocus(e.target as Element)) {
+      this.settle();
+      return;
+    }
+    if (this.keyboard) return;
+    this.keyboard = true;
+    this.emit("focus", "");
   }
 
   private tabbable(): HTMLElement[] {
@@ -335,6 +493,14 @@ export class Surface {
 
   private onKey(e: KeyboardEvent) {
     if (e.isComposing || e.defaultPrevented) return;
+    if (!this.keyboard) {
+      // The frame has the browser's focus without the keyboard, for a moment
+      // (a press that took nothing): every key is the terminal's.
+      this.settle();
+      if (this.host.browserKey(e)) return;
+      this.forward(e);
+      return;
+    }
     if (e.key === "Tab" && !e.ctrlKey && !e.altKey && !e.metaKey) {
       // Tab moves between controls; past the last one it leaves the surface.
       const order = this.tabbable();
@@ -348,6 +514,10 @@ export class Surface {
     }
     if (this.consumes(e, this.controlKind(this.doc.activeElement))) return;
     if (this.host.browserKey(e)) return; // the browser's: reload, zoom, …
+    this.forward(e);
+  }
+
+  private forward(e: KeyboardEvent) {
     e.preventDefault();
     e.stopPropagation();
     this.forwarded.add(e.code);
@@ -368,6 +538,9 @@ export class Surface {
   private listen() {
     const d = this.doc;
     const win = this.frame.contentWindow!;
+    d.addEventListener("pointerdown", (e) => this.onPress(e), true);
+    d.addEventListener("mousedown", (e) => this.onPress(e), true);
+    d.addEventListener("focusin", (e) => this.onFocusIn(e), true);
     d.addEventListener("click", (e) => this.onClick(e), true);
     d.addEventListener("auxclick", (e) => this.onAuxClick(e), true);
     d.addEventListener("mouseover", (e) => this.onOver(e), true);
@@ -389,9 +562,10 @@ export class Surface {
         return [r.left + x, r.top + y];
       },
     });
+    // The frame's own focus gives no keyboard: an element in it that takes
+    // focus does (`onFocusIn`), or the program (SPEC §10.1).
     win.addEventListener("focus", () => {
-      this.keyboard = true;
-      if (!this.programFocus) this.emit("focus", "");
+      if (!this.programFocus && !this.auxPress && !this.keyboard) this.settle();
     });
     win.addEventListener("blur", () => {
       this.commit();
@@ -430,7 +604,9 @@ export class Surface {
   }
 
 
+  /** An event for the program (SPEC §9); a detached surface sends none (§5.5). */
   private emit(kind: string, target: string, detail?: unknown) {
+    if (this.detachedState) return;
     this.host.event(this.name, kind, target, detail);
   }
 
@@ -579,4 +755,48 @@ export class Surface {
 /** Elements from the iframe's realm fail `instanceof Element` here. */
 function isElement(n: EventTarget): n is Element {
   return (n as Node).nodeType === 1;
+}
+
+/**
+ * Whether a click focuses `el` (SPEC §10.1): a form control, a link with an
+ * href, a summary, or an element with a tabindex of 0 or more, unless it is
+ * disabled. An editing host too (§10.2 has `contenteditable` take keys),
+ * which a browser focuses on a click as it does a control.
+ */
+function takesFocus(el: Element): boolean {
+  if (el.matches(":disabled")) return false;
+  switch (el.localName) {
+    case "button":
+    case "select":
+    case "textarea":
+      return true;
+    case "input":
+      return (el as HTMLInputElement).type !== "hidden";
+    case "a":
+    case "area":
+      if (el.hasAttribute("href")) return true;
+      break;
+    case "summary": {
+      // A browser focuses only its details' summary.
+      const d = el.parentElement;
+      if (d?.localName === "details" && d.querySelector(":scope > summary") === el) return true;
+      break;
+    }
+  }
+  // An editing host: the element whose contenteditable makes it one.
+  const ce = el.getAttribute("contenteditable");
+  if (ce !== null && ce.toLowerCase() !== "false" && (el as HTMLElement).isContentEditable) return true;
+  return el.hasAttribute("tabindex") && (el as HTMLElement).tabIndex >= 0;
+}
+
+/** The element a press focuses: the nearest one, from its target outward,
+ * that takes focus, or a label's control; null if there is none. */
+function focusTargetAt(e: Event): HTMLElement | null {
+  for (const n of e.composedPath()) {
+    if (!isElement(n)) continue;
+    if (takesFocus(n)) return n as HTMLElement;
+    const control = n.localName === "label" ? (n as HTMLLabelElement).control : null;
+    if (control) return takesFocus(control) ? control : null;
+  }
+  return null;
 }

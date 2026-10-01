@@ -288,7 +288,8 @@ export class HottyAddon implements ITerminalAddon {
           s = new Surface(name, this.host(), this.hostCss(), this.scheme());
           this.surfaces.set(name, s);
         }
-        s.setDocument(text(cmd.payload));
+        // d=1: detached at once, for a document the program only shows (§5.5).
+        s.setDocument(text(cmd.payload), c.get("d") === "1");
         return;
       }
       case "place":
@@ -302,7 +303,7 @@ export class HottyAddon implements ITerminalAddon {
       }
       case "patch": {
         const s = this.existing(c);
-        s.patcher.apply(c.get("op") ?? "morph", c.get("t"), c.get("k"), text(cmd.payload));
+        s.patch(c.get("op") ?? "morph", c.get("t"), c.get("k"), text(cmd.payload));
         return;
       }
       case "res": {
@@ -330,8 +331,14 @@ export class HottyAddon implements ITerminalAddon {
         this.remove(name);
         return;
       }
+      case "detach":
+        // The program is done with the surface: it reports nothing more,
+        // and never takes the keyboard (§5.5). Detaching twice does nothing.
+        this.existing(c).detach();
+        return;
       case "focus": {
         const s = this.existing(c);
+        if (s.detached) throw new Failure("EDETACHED", `surface ${s.name} is detached`);
         try {
           s.focus(c.get("t"));
         } catch (e) {
@@ -683,6 +690,7 @@ export class HottyAddon implements ITerminalAddon {
       this.resizeTimer = setTimeout(() => {
         for (const p of this.placements.values()) {
           const s = p.surface;
+          if (s.detached) continue; // it sends no events (§5.5)
           this.host().event(s.name, "resize", "", { w: Math.round(s.cols * cellW), h: s.rows * cellH });
         }
       }, 100);

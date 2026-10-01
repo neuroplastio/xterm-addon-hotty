@@ -23,6 +23,9 @@ export class Resolver {
   private css = new WeakMap<Element, string>();
   /** Elements that name resources, and which. */
   private refs = new Map<Element, Set<string>>();
+  /** Attributes the host set and the program did not write (a detached
+   * surface's `disabled`, SPEC §5.5): live, never reported. */
+  private own = new WeakMap<Element, Set<string>>();
   private readonly store: Store;
   /** The document's base URL and effective network policy (set per a=doc). */
   ctx: UrlContext | undefined;
@@ -74,13 +77,31 @@ export class Resolver {
 
   /** An attribute as the program wrote it. */
   get(el: Element, name: string): string | null {
+    if (this.own.get(el)?.has(name)) return null;
     return this.orig.get(el)?.get(name) ?? el.getAttribute(name);
   }
 
   /** Every attribute as the program wrote it, in order. */
   attributes(el: Element): [string, string][] {
     const o = this.orig.get(el);
-    return Array.from(el.attributes, (a): [string, string] => [a.name, o?.get(a.name) ?? a.value]);
+    const own = this.own.get(el);
+    const out: [string, string][] = [];
+    for (const a of Array.from(el.attributes)) if (!own?.has(a.name)) out.push([a.name, o?.get(a.name) ?? a.value]);
+    return out;
+  }
+
+  /** Sets an attribute of the host's own, which the program does not see. */
+  setOwn(el: Element, name: string, value: string): void {
+    el.setAttribute(name, value);
+    let own = this.own.get(el);
+    if (!own) this.own.set(el, (own = new Set()));
+    own.add(name);
+  }
+
+  /** Removes an attribute, if it is the host's own. */
+  removeOwn(el: Element, name: string): void {
+    if (!this.own.get(el)?.delete(name)) return;
+    el.removeAttribute(name);
   }
 
   /** Sets an attribute to the program's value, resolving URLs and CSS. */
@@ -103,12 +124,14 @@ export class Resolver {
     } catch {
       return; // an invalid attribute name from the parser's point of view
     }
+    this.own.get(el)?.delete(n); // the program's now
     this.remember(el, name, value, live, names);
   }
 
   remove(el: Element, name: string): void {
     el.removeAttribute(name);
     this.orig.get(el)?.delete(name);
+    this.own.get(el)?.delete(name.toLowerCase());
   }
 
   /** A `<style>`'s CSS as the program wrote it. */
