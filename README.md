@@ -103,6 +103,18 @@ runs programs for whoever connects.
   is done, the addon gives that focus back to the terminal, so text
   selection works as usual. A right click leaves focus where the browser
   put it, so the context menu's Copy copies the surface's selection.
+- **Drags** (SPEC §9.1, a draft on hotty's `drag` branch). A mouse's or a
+  pen's primary press on an element with `drag` in its `data-on` and an id
+  reports `dragstart`, then `drag` each time the element under the pointer
+  changes (each cell while there is none), then `dragend`, with the
+  surface's cell and the keys held. The frame's root element captures the
+  pointer (`setPointerCapture`) until the release, so the moves keep coming
+  over the cells, other surfaces and outside the page, and none reach
+  xterm.js's mouse reporting; the root is never replaced, so patches do not
+  lose the capture. The browser clicks the root on a captured release, so
+  the drag reports the click itself when it ends where it began. The host
+  stylesheet makes the elements that opt in unselectable, important in its
+  layer, whatever the document's CSS. A touch never drags.
 - **Detached surfaces** (SPEC §5.5: `a=detach`, or `d=1` on `a=doc`) send no
   events and never take the keyboard. Their `input`, `select`, `textarea`
   and `button` elements carry a `disabled` of the addon's own, which

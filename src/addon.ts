@@ -87,7 +87,8 @@ export interface Inspected {
   children: [string, string | null, string][];
 }
 
-export const EVENTS = ["click", "change", "input", "submit", "focus", "blur", "resize"];
+/** `drag` stands for `dragstart`, `drag` and `dragend` (SPEC §4, §9.1). */
+export const EVENTS = ["click", "change", "input", "submit", "drag", "focus", "blur", "resize"];
 
 interface Placement {
   surface: Surface;
@@ -288,6 +289,9 @@ export class HottyAddon implements ITerminalAddon {
           s = new Surface(name, this.host(), this.hostCss(), this.scheme());
           this.surfaces.set(name, s);
         }
+        // A new document ends a drag under way (SPEC §9.1); d=1 ends it
+        // silently, detaching the surface.
+        if (c.get("d") !== "1") s.cancelDrag();
         // d=1: detached at once, for a document the program only shows (§5.5).
         s.setDocument(text(cmd.payload), c.get("d") === "1");
         return;
@@ -295,8 +299,10 @@ export class HottyAddon implements ITerminalAddon {
       case "place":
         return this.place(this.existing(c), c);
       case "hide": {
-        // The document stays; the keyboard goes back to the terminal (§5.4).
+        // The document stays; the keyboard goes back to the terminal (§5.4),
+        // and a drag under way ends (§9.1).
         const s = this.existing(c);
+        s.cancelDrag();
         if (s.hasKeyboard()) s.blur();
         this.unplace(s.name);
         return;

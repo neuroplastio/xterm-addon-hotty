@@ -52,6 +52,10 @@ export function hostCss(theme: ITheme | undefined, m: Metrics): string {
     "  touch-action: none;",
     "}",
     "body { margin: 0; }",
+    // An element that opts in to drags selects no text, whatever the
+    // document's CSS (SPEC §9.1, §11): important in the host's layer, the
+    // first, wins over every rule of the document's.
+    "[data-on~=drag], [data-on~=drag] * { -webkit-user-select: none !important; user-select: none !important; }",
     "* { scrollbar-width: none !important; }",
     "::-webkit-scrollbar { display: none !important; }",
     "}",

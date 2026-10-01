@@ -80,6 +80,17 @@ export interface SurfaceHost {
 
 type Control = "none" | "text" | "textarea" | "select" | "activatable";
 
+/** A drag under way (SPEC §9.1): the pointer it holds, the element that
+ * started it, and the target, cell and keys the program heard of last. */
+interface Drag {
+  pointer: number;
+  start: string;
+  target: string;
+  c: number;
+  r: number;
+  keys: string[];
+}
+
 /** The theme's colour scheme, as the host stylesheet declares it. */
 export type Scheme = "dark" | "light";
 
@@ -136,6 +147,14 @@ export class Surface {
    * done with it: it neither takes nor gives back the keyboard. */
   private auxPress = false;
   private settling: ReturnType<typeof setTimeout> | null = null;
+  /** A drag under way (SPEC §9.1). */
+  private drag: Drag | null = null;
+  /** A drag just ended at a release: it reported its own click, so the
+   * browser's, which follows in the same task, is not reported. */
+  private dragReleased = false;
+  /** One cell, in CSS pixels: a drag's detail counts cells (SPEC §9.1). */
+  private cellW = 9;
+  private cellH = 17;
   private css = "";
   /** Keys whose keydown went to the program, so their keyup follows. */
   private forwarded = new Set<string>();
@@ -258,6 +277,7 @@ export class Surface {
   detach() {
     if (!this.detachedState) {
       this.detachedState = true; // from here on, emit() sends nothing
+      this.dropDrag(); // it ends with nothing more reported (SPEC §9.1)
       const had = this.keyboard || this.frameFocused();
       this.keyboard = false;
       this.focusedControl()?.blur();
@@ -306,6 +326,8 @@ export class Surface {
     this.cols = cols;
     this.rows = rows;
     this.win = win;
+    this.cellW = cellW;
+    this.cellH = cellH;
     Object.assign(this.frame.style, {
       left: `${-Math.round(win.x * cellW)}px`,
       top: `${-win.y * cellH}px`,
@@ -330,7 +352,10 @@ export class Surface {
     this.box.style.display = "block";
   }
 
+  /** Out of view (its line left the screen): a drag under way ends
+   * (SPEC §9.1). */
   hide() {
+    this.cancelDrag();
     this.box.style.display = "none";
   }
 
@@ -341,6 +366,7 @@ export class Surface {
   }
 
   destroy() {
+    this.dropDrag();
     if (this.settling) clearTimeout(this.settling);
     if (this.keyboard || this.frameFocused()) this.host.focusTerminal();
     this.box.remove();
@@ -550,12 +576,141 @@ export class Surface {
     this.host.key(e);
   }
 
+  // --- Drags (SPEC §9.1) ----------------------------------------------------
+
+  /**
+   * A press of a mouse's or a pen's primary button on an element with
+   * `drag` in its `data-on` (the nearest, from the pressed one outward, and
+   * only if it has an id) starts a drag. The surface then holds the pointer
+   * until the release: captured by its root element, which no patch
+   * replaces, so every move comes here wherever it is (over the cells,
+   * another surface, or outside the page), and nothing else hears it.
+   */
+  private onDragDown(e: PointerEvent) {
+    // A press while a drag is under way: its release was lost.
+    this.cancelDrag();
+    if (this.detachedState || e.pointerType === "touch" || e.button !== 0 || !e.isPrimary) return;
+    let start: Element | null = null;
+    for (const n of e.composedPath()) {
+      if (isElement(n) && listens(n, "drag")) {
+        start = n;
+        break;
+      }
+    }
+    const id = start?.getAttribute("id");
+    if (!id) return;
+    const [c, r] = this.cellOf(e);
+    const keys = keysOf(e);
+    this.drag = { pointer: e.pointerId, start: id, target: id, c, r, keys };
+    this.emit("dragstart", id, { c, r, keys });
+    try {
+      this.doc.documentElement.setPointerCapture(e.pointerId);
+    } catch {
+      /* the browser routes a pressed mouse to the frame anyway */
+    }
+  }
+
+  /** A move during a drag: an event each time its target changes, and
+   * while it has none, each time its cell does. */
+  private onDragMove(e: PointerEvent) {
+    const d = this.drag;
+    if (!d || e.pointerId !== d.pointer) return;
+    const [c, r] = this.cellOf(e);
+    const target = this.dragTarget(this.elementAt(e, c, r));
+    const keys = keysOf(e);
+    if (target !== d.target || (target === "" && (c !== d.c || r !== d.r))) {
+      this.emit("drag", target, { c, r, keys });
+    }
+    Object.assign(d, { target, c, r, keys });
+  }
+
+  /** The release ends the drag, wherever it is. Where it began, it is the
+   * click it would have been without the drag; anywhere else, no click. */
+  private onDragUp(e: PointerEvent) {
+    const d = this.drag;
+    if (!d || e.pointerId !== d.pointer || e.button !== 0) return;
+    this.drag = null;
+    const [c, r] = this.cellOf(e);
+    const at = this.elementAt(e, c, r);
+    const target = this.dragTarget(at);
+    this.emit("dragend", target, { c, r, keys: keysOf(e) });
+    // The browser's click goes where the capture was (the root), or to
+    // where the press and the release meet: the drag reports its own.
+    this.dragReleased = true;
+    setTimeout(() => (this.dragReleased = false), 0);
+    if (target === d.start && at) this.reportClick(ancestry(at));
+  }
+
+  /** The browser took the pointer away before the release. */
+  private lostPointer(e: PointerEvent) {
+    if (this.drag && e.pointerId === this.drag.pointer) this.cancelDrag();
+  }
+
+  /**
+   * Ends a drag under way without a release (SPEC §9.1: its placement went
+   * away, a new document came, or the pointer was lost): `dragend` with no
+   * target, at the last cell the program heard of.
+   */
+  cancelDrag() {
+    const d = this.drag;
+    if (!d) return;
+    this.dropDrag();
+    this.emit("dragend", "", { c: d.c, r: d.r, keys: d.keys });
+  }
+
+  /** Ends a drag under way, silently (a detached or deleted surface). */
+  private dropDrag() {
+    const d = this.drag;
+    if (!d) return;
+    this.drag = null;
+    try {
+      if (this.doc.documentElement.hasPointerCapture(d.pointer)) this.doc.documentElement.releasePointerCapture(d.pointer);
+    } catch {
+      /* already released */
+    }
+  }
+
+  /** The surface's cell under the pointer, from its top left (the frame's
+   * origin), counting on past its edges. */
+  private cellOf(e: MouseEvent): [number, number] {
+    return [Math.floor(e.clientX / this.cellW), Math.floor(e.clientY / this.cellH)];
+  }
+
+  /** The element under the pointer, if it is in the window (SPEC §5.2). */
+  private elementAt(e: MouseEvent, c: number, r: number): Element | null {
+    const w = this.win;
+    if (c < w.x || c >= w.x + w.w || r < w.y || r >= w.y + w.h) return null;
+    return this.doc.elementFromPoint(e.clientX, e.clientY);
+  }
+
+  /** A drag's target: the nearest element with an id and `drag` in its
+   * `data-on`, from `el` outward; "" where there is none. */
+  private dragTarget(el: Element | null): string {
+    for (let n = el; n; n = n.parentElement) {
+      const id = n.getAttribute("id");
+      if (id && listens(n, "drag")) return id;
+    }
+    return "";
+  }
+
   // --- Events for the program (PROTOCOL §8) --------------------------------
 
   private listen() {
     const d = this.doc;
     const win = this.frame.contentWindow!;
-    d.addEventListener("pointerdown", (e) => this.onPress(e), true);
+    // A drag's start comes before what the press causes (SPEC §9.1).
+    d.addEventListener(
+      "pointerdown",
+      (e) => {
+        this.onDragDown(e);
+        this.onPress(e);
+      },
+      true,
+    );
+    d.addEventListener("pointermove", (e) => this.onDragMove(e), true);
+    d.addEventListener("pointerup", (e) => this.onDragUp(e), true);
+    d.addEventListener("pointercancel", (e) => this.lostPointer(e), true);
+    d.addEventListener("lostpointercapture", (e) => this.lostPointer(e), true);
     d.addEventListener("mousedown", (e) => this.onPress(e), true);
     d.addEventListener("focusin", (e) => this.onFocusIn(e), true);
     d.addEventListener("click", (e) => this.onClick(e), true);
@@ -713,12 +868,33 @@ export class Surface {
 
   private onClick(e: MouseEvent) {
     const link = this.linkIn(e);
+    if (this.dragReleased) {
+      // A drag's release: it reported its click itself (onDragUp).
+      this.dragReleased = false;
+      if (link) e.preventDefault();
+      return;
+    }
     if (link) {
       this.onLink(link, e);
       return;
     }
-    for (const n of e.composedPath()) {
+    this.reportClick(e.composedPath());
+  }
+
+  /** The click of the nearest element on `path` that reports one (SPEC §9). */
+  private reportClick(path: EventTarget[]) {
+    for (const n of path) {
       if (!isElement(n)) continue;
+      if (n.localName === "a" && n.hasAttribute("href")) {
+        // A link's own click (a drag's release on one): the program's, unless
+        // it is a hyperlink, which is the terminal's.
+        if (this.isHyperlink(n)) return;
+        const url = this.urlOf(n);
+        const detail: Record<string, unknown> = { href: this.resolver.get(n, "href") ?? "" };
+        if (url) detail.url = url;
+        this.emit("click", n.getAttribute("id") ?? "", detail);
+        return;
+      }
       const el = n;
       const tag = el.localName;
       const type = (el.getAttribute("type") ?? "").toLowerCase();
@@ -776,6 +952,28 @@ export class Surface {
 /** Elements from the iframe's realm fail `instanceof Element` here. */
 function isElement(n: EventTarget): n is Element {
   return (n as Node).nodeType === 1;
+}
+
+/** Whether `el`'s `data-on` lists `what`. */
+function listens(el: Element, what: string): boolean {
+  return (el.getAttribute("data-on") ?? "").split(/\s+/).includes(what);
+}
+
+/** `el` and its ancestors, as an event's path would have them. */
+function ancestry(el: Element): Element[] {
+  const out: Element[] = [];
+  for (let n: Element | null = el; n; n = n.parentElement) out.push(n);
+  return out;
+}
+
+/** The modifier keys held, in the spec's order (SPEC §9.1). */
+function keysOf(e: MouseEvent): string[] {
+  const keys: string[] = [];
+  if (e.shiftKey) keys.push("shift");
+  if (e.ctrlKey) keys.push("ctrl");
+  if (e.altKey) keys.push("alt");
+  if (e.metaKey) keys.push("meta");
+  return keys;
 }
 
 /**
