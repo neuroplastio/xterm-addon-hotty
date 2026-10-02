@@ -12,7 +12,7 @@
 // in the addon's layer, and placement only changes the position of its box.
 
 import { Touch } from "./touch.ts";
-import { Patcher } from "./patch.ts";
+import { Deltas } from "./delta.ts";
 import { Resolver } from "./resolver.ts";
 import { cspSources, intersect, parse, type Policy } from "./network.ts";
 import { NO_BASE, type Store } from "./resources.ts";
@@ -127,7 +127,7 @@ export class Surface {
   readonly frame: HTMLIFrameElement;
   readonly doc: Document;
   readonly resolver: Resolver;
-  readonly patcher: Patcher;
+  readonly deltas: Deltas;
   cols = 80;
   rows = 24;
   /** The part of the surface on screen, in cells (SPEC §5.2). */
@@ -234,7 +234,7 @@ export class Surface {
     this.css = hostCss;
     this.restyle();
     this.resolver = new Resolver(host.store);
-    this.patcher = new Patcher(doc, this.resolver);
+    this.deltas = new Deltas(doc, this.resolver);
     this.listen();
   }
 
@@ -257,7 +257,7 @@ export class Surface {
     if (detached) this.detach();
     const parsed = new DOMParser().parseFromString(html, "text/html");
     // The document's base and its network request (SPEC §7.2, §7.3) are read
-    // before the resolver drops its <base> and <meta> elements; patches can
+    // before the resolver drops its <base> and <meta> elements; deltas can
     // add neither, so both hold until the next a=doc.
     this.base = baseOf(parsed);
     const request = parse(parsed.querySelector('meta[name="hotty-network" i]')?.getAttribute("content") ?? "");
@@ -280,11 +280,11 @@ export class Surface {
     this.refit();
   }
 
-  /** A patch (SPEC §6). On a detached surface, the controls it adds are
+  /** A delta (SPEC §6). On a detached surface, the controls it adds are
    * disabled too, and so is one whose `disabled` it removes. */
-  patch(op: string, target: string | undefined, key: string | undefined, payload: string) {
+  delta(op: string, target: string | undefined, key: string | undefined, payload: string) {
     try {
-      this.patcher.apply(op, target, key, payload);
+      this.deltas.apply(op, target, key, payload);
     } finally {
       if (this.detachedState) this.sync();
       this.refit();
@@ -367,7 +367,7 @@ export class Surface {
    * heard last. `null`: the placement did not ask (or is gone).
    *
    * What can change the height asks for a check in the next frame drawn:
-   * a document, a patch, a resource (`refresh`), the host stylesheet (cell
+   * a document, a delta, a resource (`refresh`), the host stylesheet (cell
    * size, font), an image, stylesheet or font loading, and, for whatever
    * else does (the user opening a `<details>`, say), the root's and the
    * body's boxes changing size. One check per frame, so one `fit` at most.
@@ -683,7 +683,7 @@ export class Surface {
    * A press of a mouse's or a pen's primary button on an element with
    * `drag` in its `data-on` (the nearest, from the pressed one outward, and
    * only if it has an id) starts a drag. The surface then holds the pointer
-   * until the release: captured by its root element, which no patch
+   * until the release: captured by its root element, which no delta
    * replaces, so every move comes here wherever it is (over the cells,
    * another surface, or outside the page), and nothing else hears it.
    */

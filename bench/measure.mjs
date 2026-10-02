@@ -154,7 +154,7 @@ if (only !== "surfaces") {
     ["grid flat 10,000 · full", "run=grid&args=--cells+10000+--fanout+0+--hz+100000"],
     ["grid flat 50,000 · full", "run=grid&args=--cells+50000+--fanout+0+--hz+100000"],
   ];
-  console.log("\nworkload                        patches/s  frames/s  main ms/frame  style  layout  apply ms/batch  chromium CPU");
+  console.log("\nworkload                         deltas/s  frames/s  main ms/frame  style  layout  apply ms/batch  chromium CPU");
   for (const [label, q] of workloads) {
     await page.goto(base + "?" + q);
     await page.waitForFunction(() => window.hotty?.frames.length > 5, null, { timeout: 60000 });
@@ -180,14 +180,14 @@ if (only !== "surfaces") {
     const m1 = await metrics();
     const rendered = (await page.evaluate(() => window.__raf)) - r0;
     const batches = await page.evaluate((f0) => window.hotty.frames.slice(f0), f0);
-    const patches = batches.reduce((a, f) => a + f.commands, 0);
+    const deltas = batches.reduce((a, f) => a + f.commands, 0);
     const apply = batches.reduce((a, f) => a + f.applyMs, 0) / Math.max(batches.length, 1);
     // Frames that actually changed something: at most one per batch.
     const frames = Math.max(Math.min(rendered, batches.length), 1);
     const per = (k) => (((m1[k] ?? 0) - (m0[k] ?? 0)) * 1000) / frames;
     const cpu = ((t1 - t0) / HZ / wall) * 100;
     console.log(
-      `${label.padEnd(31)} ${(patches / wall).toFixed(0).padStart(9)}  ${(frames / wall).toFixed(0).padStart(8)}  ${per("TaskDuration").toFixed(2).padStart(13)}  ${per("RecalcStyleDuration").toFixed(2).padStart(5)}  ${per("LayoutDuration").toFixed(2).padStart(6)}  ${apply.toFixed(3).padStart(14)}  ${cpu.toFixed(0).padStart(11)}%`,
+      `${label.padEnd(31)} ${(deltas / wall).toFixed(0).padStart(9)}  ${(frames / wall).toFixed(0).padStart(8)}  ${per("TaskDuration").toFixed(2).padStart(13)}  ${per("RecalcStyleDuration").toFixed(2).padStart(5)}  ${per("LayoutDuration").toFixed(2).padStart(6)}  ${apply.toFixed(3).padStart(14)}  ${cpu.toFixed(0).padStart(11)}%`,
     );
   }
 }

@@ -1,5 +1,5 @@
 // Bub-n-Bros (examples/bubbros.py), unchanged game, through the bridge:
-// hundreds of sprites, a handful of patches a frame, and key releases from the
+// hundreds of sprites, a handful of deltas a frame, and key releases from the
 // kitty keyboard protocol (SPEC §10.3). Skipped when the game is not fetched
 // (scripts/bubbros-fetch.sh in the hotty repository).
 
@@ -11,7 +11,7 @@ import { HOTTY_DIR } from "../hotty.ts";
 const game = join(HOTTY_DIR, "..", "bubbros", "bubbob");
 test.skip(!existsSync(game), "the game is not fetched: scripts/bubbros-fetch.sh");
 
-test("the game runs, patches a few sprites a frame, and hears key presses and releases", async ({ page }, info) => {
+test("the game runs, sends deltas to a few sprites a frame, and hears key presses and releases", async ({ page }, info) => {
   test.setTimeout(60_000);
   const log = info.outputPath("keys.log");
   rmSync(log, { force: true });

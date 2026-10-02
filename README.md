@@ -78,7 +78,7 @@ runs programs for whoever connects.
 | wire | `src/wire.ts` | OSC 7279 control parsing, chunk reassembly, base64, zlib through `DecompressionStream`, and reply encoding |
 | addon | `src/addon.ts` | OSC handler, replies through `term.input(…, false)`, placement, synchronized output, RIS, the alternate screen, zoom and theme, and keys a surface does not use, through xterm.js's own keyboard handling |
 | surface | `src/surface.ts` | one sandboxed iframe per surface; events, focus and key routing |
-| patches | `src/patch.ts` | SPEC §6: the ops and morph |
+| deltas | `src/delta.ts` | SPEC §6: the ops and morph |
 | resources | `src/resources.ts`, `src/resolver.ts` | `cid:` as `blob:` URLs; sanitizing everything before it reaches a live document |
 | host stylesheet | `src/hostcss.ts` | §7 from `term.options` (theme, font, cell size), in a cascade layer |
 
@@ -117,7 +117,7 @@ runs programs for whoever connects.
   surface's cell and the keys held. The frame's root element captures the
   pointer (`setPointerCapture`) until the release, so the moves keep coming
   over the cells, other surfaces and outside the page, and none reach
-  xterm.js's mouse reporting; the root is never replaced, so patches do not
+  xterm.js's mouse reporting; the root is never replaced, so deltas do not
   lose the capture. The browser clicks the root on a captured release, so
   the drag reports the click itself when it ends where it began. The host
   stylesheet makes the elements that opt in unselectable, important in its
@@ -133,7 +133,7 @@ runs programs for whoever connects.
   frame is laid out at that width and 1px high, then restored in the same
   task. A check waits for the next frame, so a frame sends one `fit` at
   most, with the rows it draws. Each of these asks for a check:
-  - a document or a patch;
+  - a document or a delta;
   - a resource arriving or changing;
   - the host stylesheet changing (cell size, font);
   - an image, a stylesheet or a font loading, whether a `cid:` resource or
@@ -155,7 +155,7 @@ runs programs for whoever connects.
 - **Detached surfaces** (SPEC §5.5: `a=detach`, or `d=1` on `a=doc`) send no
   events and never take the keyboard. Their `input`, `select`, `textarea`
   and `button` elements carry a `disabled` of the addon's own, which
-  inspection and morphs do not see, and which a patch cannot remove. Hover,
+  inspection and morphs do not see, and which a delta cannot remove. Hover,
   selection, `<details>` and hyperlinks work as before. Only a hyperlink
   shows the hand, whatever the document's `cursor`; other links show the
   text pointer.
@@ -270,11 +270,11 @@ Measured 2026-09-29 in headless Chromium 153 (`bench/`):
   with its first frame, and 1.2 MB of memory.
 - **The dashboard** costs 4.9 ms of main-thread time per frame at 10 Hz.
 - **Large documents** cost Chrome more per frame as they grow: its PrePaint
-  walks the tree. A one-cell patch costs 8.4 ms of main-thread time per frame
+  walks the tree. A one-cell delta costs 8.4 ms of main-thread time per frame
   at 4,096 cells and 46 ms at 262,144. CSS containment brings the latter to
   30 ms; hotty-blitz does it in about 0.1 ms.
-- **Bub-n-Bros** (`examples/bubbros.py`) costs about 4 ms per frame: seven
-  sprites patched out of about 380.
+- **Bub-n-Bros** (`examples/bubbros.py`) costs about 4 ms per frame: deltas to
+  seven sprites out of about 380.
 
 ## Tests
 

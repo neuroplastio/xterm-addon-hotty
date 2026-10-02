@@ -8,9 +8,9 @@ import { Assembler, Control, decodeAll, encode, text, CHUNK } from "../../src/wi
 const CLIENT = join(HOTTY_DIR, "clients", "python");
 
 test("control pairs parse, encode and mangle reserved characters", () => {
-  const c = Control.parse("a=patch:s=x:op=text:t=clock");
+  const c = Control.parse("a=delta:s=x:op=text:t=clock");
   assert.equal(c.get("op"), "text");
-  assert.equal(c.encode(), "a=patch:s=x:op=text:t=clock");
+  assert.equal(c.encode(), "a=delta:s=x:op=text:t=clock");
   assert.equal(new Control().set("t", "a:b;c=d").encode(), "t=a_b_c_d");
   assert.throws(() => Control.parse("a=q:broken"));
 });

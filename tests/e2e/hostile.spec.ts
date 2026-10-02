@@ -59,13 +59,13 @@ test("script, requests, navigation, popups and focus theft all fail", async ({ p
   await send(page, { a: "doc", s: "h", q: "2" }, doc);
   await send(page, { a: "place", s: "h", c: "60", r: "12", q: "2" });
 
-  // Patches and resources carry hostile content too.
-  await send(page, { a: "patch", s: "h", op: "append", t: "bg", q: "2" }, `<img src="${L("patch-img")}" onerror="parent.document.title='pwned-patch'">`);
-  await send(page, { a: "patch", s: "h", op: "attr", t: "bg", k: "onclick", q: "2" }, "parent.document.title='pwned-attr'");
-  await send(page, { a: "patch", s: "h", op: "attr", t: "auto", k: "src", q: "2" }, L("attr-src"));
-  await send(page, { a: "patch", s: "h", op: "var", t: "var", k: "u", q: "2" }, `url('${L("var-patch")}')`);
+  // Deltas and resources carry hostile content too.
+  await send(page, { a: "delta", s: "h", op: "append", t: "bg", q: "2" }, `<img src="${L("delta-img")}" onerror="parent.document.title='pwned-delta'">`);
+  await send(page, { a: "delta", s: "h", op: "attr", t: "bg", k: "onclick", q: "2" }, "parent.document.title='pwned-attr'");
+  await send(page, { a: "delta", s: "h", op: "attr", t: "auto", k: "src", q: "2" }, L("attr-src"));
+  await send(page, { a: "delta", s: "h", op: "var", t: "var", k: "u", q: "2" }, `url('${L("var-delta")}')`);
   await write(page, encode(new Control([["a", "res"], ["id", "evil"], ["type", "text/css"], ["q", "2"]]), `@import url("${L("res-import")}"); body { background: url("${L("res-bg")}") }`));
-  await send(page, { a: "patch", s: "h", op: "append", t: "bg", q: "2" }, `<link rel=stylesheet href=cid:evil>`);
+  await send(page, { a: "delta", s: "h", op: "append", t: "bg", q: "2" }, `<link rel=stylesheet href=cid:evil>`);
 
   // Autofocus did not take the keyboard from the terminal.
   expect(await page.evaluate(() => document.activeElement?.className)).toContain("xterm-helper-textarea");

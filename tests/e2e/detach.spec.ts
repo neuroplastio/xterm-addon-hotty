@@ -177,7 +177,7 @@ test.describe("§5.5: a detached surface", () => {
     await expect(surface(page, "x").locator("#t")).toHaveValue("!old");
   });
 
-  test("its controls are disabled, those patches add too, and the document reports the program's attributes", async ({ page }) => {
+  test("its controls are disabled, those deltas add too, and the document reports the program's attributes", async ({ page }) => {
     await place(page, "x", UI + `<button id=off disabled>off</button><select id=sel><option>o</option></select><textarea id=ta></textarea><fieldset id=fs></fieldset>`);
     await send(page, { a: "detach", s: "x", q: "2" });
     const d = surface(page, "x");
@@ -188,14 +188,14 @@ test.describe("§5.5: a detached surface", () => {
     const inspect = (id: string) => page.evaluate((id) => (window.hotty as unknown as { addon: { inspect(s: string, id: string): { attrs: Record<string, string> } } }).addon.inspect("x", id).attrs, id);
     expect(await inspect("b")).toEqual({ id: "b", value: "v" });
     expect(await inspect("off")).toEqual({ id: "off", disabled: "" });
-    // A control a patch adds is disabled too; the program's unattr does not enable one.
-    await send(page, { a: "patch", s: "x", op: "append", t: "f", q: "2" }, "<input id=late>");
-    await send(page, { a: "patch", s: "x", op: "unattr", t: "b", k: "disabled", q: "2" });
+    // A control a delta adds is disabled too; the program's unattr does not enable one.
+    await send(page, { a: "delta", s: "x", op: "append", t: "f", q: "2" }, "<input id=late>");
+    await send(page, { a: "delta", s: "x", op: "unattr", t: "b", k: "disabled", q: "2" });
     await expect(d.locator("#late")).toBeDisabled();
     await expect(d.locator("#b")).toBeDisabled();
     expect(await inspect("late")).toEqual({ id: "late" });
     // A disabled the program writes is its own, and reported.
-    await send(page, { a: "patch", s: "x", op: "attr", t: "c", k: "disabled", q: "2" }, "");
+    await send(page, { a: "delta", s: "x", op: "attr", t: "c", k: "disabled", q: "2" }, "");
     expect(await inspect("c")).toEqual({ id: "c", type: "checkbox", value: "yes", disabled: "" });
     expect(evs((await take(page)).msgs)).toEqual([]);
   });

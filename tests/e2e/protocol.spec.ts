@@ -31,34 +31,34 @@ test("r=auto fits the content and reports its rows", async ({ page }) => {
 
 test("a missing target is an error, and q quiets replies", async ({ page }) => {
   await send(page, { a: "doc", s: "x", q: "1" }, "<p id=p>hi</p>");
-  await send(page, { a: "patch", s: "x", op: "text", t: "nope", q: "1" }, "x");
-  await send(page, { a: "patch", s: "x", op: "text", t: "nope", q: "2" }, "x");
+  await send(page, { a: "delta", s: "x", op: "text", t: "nope", q: "1" }, "x");
+  await send(page, { a: "delta", s: "x", op: "text", t: "nope", q: "2" }, "x");
   const { msgs } = await take(page);
   expect(msgs).toHaveLength(1);
   expect(msgs[0]!.get("a")).toBe("err");
   expect((msgs[0]!.json as { code: string }).code).toBe("ENOTARGET");
 });
 
-test("patch ops change the document as §5 says", async ({ page }) => {
+test("delta ops change the document as §6 says", async ({ page }) => {
   await send(page, { a: "doc", s: "x", q: "2" }, "<ul id=list><li id=a>a</li><li id=b>b</li></ul><p id=p style='color: red'>p</p>");
   await send(page, { a: "place", s: "x", c: "40", r: "10", q: "2" });
   const d = surface(page, "x");
   const q = { s: "x", q: "2" };
-  await send(page, { a: "patch", ...q, op: "text", t: "a" }, "A");
-  await send(page, { a: "patch", ...q, op: "append", t: "list" }, "<li id=c>c</li><li id=b>B</li>");
-  await send(page, { a: "patch", ...q, op: "prepend", t: "list" }, "<li id=z>z</li>");
-  await send(page, { a: "patch", ...q, op: "attr", t: "p", k: "class" }, "note");
-  await send(page, { a: "patch", ...q, op: "unattr", t: "p", k: "style" });
-  await send(page, { a: "patch", ...q, op: "var", t: "p", k: "w" }, "42");
-  await send(page, { a: "patch", ...q, op: "after", t: "p" }, "<p id=q>q</p>");
-  await send(page, { a: "patch", ...q, op: "remove", t: "z" });
+  await send(page, { a: "delta", ...q, op: "text", t: "a" }, "A");
+  await send(page, { a: "delta", ...q, op: "append", t: "list" }, "<li id=c>c</li><li id=b>B</li>");
+  await send(page, { a: "delta", ...q, op: "prepend", t: "list" }, "<li id=z>z</li>");
+  await send(page, { a: "delta", ...q, op: "attr", t: "p", k: "class" }, "note");
+  await send(page, { a: "delta", ...q, op: "unattr", t: "p", k: "style" });
+  await send(page, { a: "delta", ...q, op: "var", t: "p", k: "w" }, "42");
+  await send(page, { a: "delta", ...q, op: "after", t: "p" }, "<p id=q>q</p>");
+  await send(page, { a: "delta", ...q, op: "remove", t: "z" });
   await expect(d.locator("#list li")).toHaveText(["A", "B", "c"]);
   await expect(d.locator("#p")).toHaveAttribute("class", "note");
   await expect(d.locator("#p")).not.toHaveAttribute("style", /color/);
   expect(await d.locator("#p").evaluate((el) => (el as HTMLElement).style.getPropertyValue("--w"))).toBe("42");
   await expect(d.locator("#q")).toHaveText("q");
   // morph by id with no target; a missing id is reported.
-  await send(page, { a: "patch", s: "x", op: "morph" }, "<p id=q>Q!</p><p id=missing></p>");
+  await send(page, { a: "delta", s: "x", op: "morph" }, "<p id=q>Q!</p><p id=missing></p>");
   const { msgs } = await take(page);
   expect(msgs.at(-1)!.get("a")).toBe("err");
   expect((msgs.at(-1)!.json as { detail: string }).detail).toBe("missing");
@@ -71,7 +71,7 @@ test("morph keeps element identity and what the user typed", async ({ page }) =>
   await send(page, { a: "focus", s: "f", t: "name", q: "2" });
   await page.keyboard.type("Ada");
   const before = await surface(page, "f").locator("#name").evaluate((el) => ((el as unknown as { mark: number }).mark = 1));
-  await send(page, { a: "patch", s: "f", t: "f", q: "2" }, "<form id=f><input id=name value='server'><span id=n>1</span></form>");
+  await send(page, { a: "delta", s: "f", t: "f", q: "2" }, "<form id=f><input id=name value='server'><span id=n>1</span></form>");
   const input = surface(page, "f").locator("#name");
   expect(await input.evaluate((el) => (el as unknown as { mark: number }).mark)).toBe(before);
   await expect(input).toHaveValue("Ada");
@@ -115,7 +115,7 @@ test("synchronized output holds a batch until it ends", async ({ page }) => {
   await send(page, { a: "place", s: "x", c: "20", r: "2", q: "2" });
   const p = surface(page, "x").locator("#p");
   await write(page, "\x1b[?2026h");
-  await send(page, { a: "patch", s: "x", op: "text", t: "p", q: "2" }, "1");
+  await send(page, { a: "delta", s: "x", op: "text", t: "p", q: "2" }, "1");
   await expect(p).toHaveText("0");
   await write(page, "\x1b[?2026l");
   await expect(p).toHaveText("1");
@@ -233,8 +233,8 @@ test("hide removes the placement and keeps the document for the next place", asy
   expect(msgs.map((m) => [m.get("a"), m.get("re") ?? m.get("e")])).toEqual(
     expect.arrayContaining([["ok", "hide"], ["ev", "blur"]]),
   );
-  // Patches apply while hidden; placing again shows it as it is, input kept.
-  await send(page, { a: "patch", s: "x", op: "text", t: "p", q: "2" }, "two");
+  // Deltas apply while hidden; placing again shows it as it is, input kept.
+  await send(page, { a: "delta", s: "x", op: "text", t: "p", q: "2" }, "two");
   await send(page, { a: "place", s: "x", c: "20", r: "2", q: "2" });
   await expect(box).toBeVisible();
   await expect(d.locator("#p")).toHaveText("two");
@@ -353,15 +353,15 @@ test("f=1: the user opening a details is heard as `fit`, and the placement keeps
   expect(Math.round((await page.locator('.hotty-surface[data-surface="x"]').boundingBox())!.height)).toBe(Math.round(h));
 });
 
-test("f=1: patches in one frame are heard once, with the rows drawn", async ({ page }) => {
+test("f=1: deltas in one frame are heard once, with the rows drawn", async ({ page }) => {
   await send(page, { a: "doc", s: "x", q: "2" }, `<style>body{margin:0}</style><div id=d style="height: calc(var(--n, 1) * var(--hotty-cell-h))"></div>`);
   await send(page, { a: "place", s: "x", c: "20", r: "auto", f: "1", q: "2" });
   await fits(page, 0);
-  const patch = (n: string) => cmd({ a: "patch", s: "x", op: "var", t: "d", k: "n", q: "2" }, n);
-  await write(page, patch("3") + patch("5"));
+  const delta = (n: string) => cmd({ a: "delta", s: "x", op: "var", t: "d", k: "n", q: "2" }, n);
+  await write(page, delta("3") + delta("5"));
   expect(await fits(page, 1)).toEqual([{ r: 5 }]);
   // Back to what the program heard within a frame: nothing to hear.
-  await write(page, patch("2") + patch("5"));
+  await write(page, delta("2") + delta("5"));
   await fits(page, 0);
 });
 

@@ -1,4 +1,4 @@
-// Patches (PROTOCOL §5): operations on one surface's document, addressed by
+// Deltas (SPEC §6): operations on one surface's document, addressed by
 // element id, and the morph that keeps element identity.
 //
 // SPEC §6's rules (as hotty-blitz implements them), for the browser's DOM:
@@ -8,7 +8,7 @@
 
 import type { Resolver } from "./resolver.ts";
 
-export class PatchError extends Error {
+export class DeltaError extends Error {
   readonly code: string;
   constructor(code: string, detail: string) {
     super(detail);
@@ -18,7 +18,7 @@ export class PatchError extends Error {
 
 export const OPS = ["morph", "inner", "replace", "append", "prepend", "before", "after", "remove", "attr", "unattr", "text", "var"];
 
-export class Patcher {
+export class Deltas {
   private readonly doc: Document;
   private readonly resolver: Resolver;
 
@@ -37,13 +37,13 @@ export class Patcher {
 
   apply(op: string, target: string | undefined, key: string | undefined, payload: string): void {
     const find = (): Element => {
-      if (!target) throw new PatchError("EINVAL", `op=${op} needs t=<element id>`);
+      if (!target) throw new DeltaError("EINVAL", `op=${op} needs t=<element id>`);
       const el = this.doc.getElementById(target);
-      if (!el) throw new PatchError("ENOTARGET", target);
+      if (!el) throw new DeltaError("ENOTARGET", target);
       return el;
     };
     const needKey = (): string => {
-      if (!key) throw new PatchError("EINVAL", `op=${op} needs k=<name>`);
+      if (!key) throw new DeltaError("EINVAL", `op=${op} needs k=<name>`);
       return key;
     };
     switch (op) {
@@ -58,7 +58,7 @@ export class Patcher {
             if (old) this.morphNode(old, k);
             else missing.push(id ?? "(element without id)");
           }
-          if (missing.length) throw new PatchError("ENOTARGET", missing.join(","));
+          if (missing.length) throw new DeltaError("ENOTARGET", missing.join(","));
           return;
         }
         const t = find();
@@ -134,7 +134,7 @@ export class Patcher {
         return;
       }
       default:
-        throw new PatchError("EINVAL", `unknown op=${op}`);
+        throw new DeltaError("EINVAL", `unknown op=${op}`);
     }
   }
 

@@ -28,6 +28,6 @@ for (const e of events) {
   sum.set(e.name, (sum.get(e.name) ?? 0) + (e.dur ?? 0) / 1000);
 }
 const top = [...sum].sort((a, b) => b[1] - a[1]).slice(0, 14);
-console.log(`${q}: ${frames} patch batches, ${draws} commits in ${secs} s; main-thread ms per commit:`);
+console.log(`${q}: ${frames} delta batches, ${draws} commits in ${secs} s; main-thread ms per commit:`);
 for (const [n, ms] of top) console.log(`  ${n.padEnd(40)} ${(ms / Math.max(draws, 1)).toFixed(3)}`);
 await browser.close();

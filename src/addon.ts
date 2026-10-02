@@ -15,7 +15,7 @@
 
 import type { IBufferRange, IDisposable, IMarker, ITerminalAddon, Terminal } from "@xterm/xterm";
 import { hostCss, palette } from "./hostcss.ts";
-import { OPS, PatchError } from "./patch.ts";
+import { OPS, DeltaError } from "./delta.ts";
 import { clean, type Policy } from "./network.ts";
 import { Store } from "./resources.ts";
 import { type Scheme, Surface, type SurfaceHost } from "./surface.ts";
@@ -253,7 +253,7 @@ export class HottyAddon implements ITerminalAddon {
       if (quiet === 0) this.reply("ok", cmd, r ?? {});
     };
     const fail = (e: unknown) => {
-      const code = e instanceof Failure || e instanceof PatchError ? e.code : "EINVAL";
+      const code = e instanceof Failure || e instanceof DeltaError ? e.code : "EINVAL";
       const detail = e instanceof Error ? e.message : String(e);
       if (quiet < 2) this.reply("err", cmd, { body: JSON.stringify({ code, detail }) });
     };
@@ -314,9 +314,9 @@ export class HottyAddon implements ITerminalAddon {
         this.unplace(s.name);
         return;
       }
-      case "patch": {
+      case "delta": {
         const s = this.existing(c);
-        s.patch(c.get("op") ?? "morph", c.get("t"), c.get("k"), text(cmd.payload));
+        s.delta(c.get("op") ?? "morph", c.get("t"), c.get("k"), text(cmd.payload));
         return;
       }
       case "res": {
