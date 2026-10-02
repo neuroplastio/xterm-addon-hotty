@@ -1,2 +1,2 @@
-export { HottyAddon, EVENTS, type HottyOptions, type FrameStats, type Inspected } from "./addon.ts";
+export { HottyAddon, EVENTS, browserKeys, type HottyOptions, type FrameStats, type Inspected } from "./addon.ts";
 export { encode, decodeAll, Control, OSC } from "./wire.ts";

@@ -3,7 +3,7 @@
 
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { HottyAddon, type FrameStats } from "../src/index.ts";
+import { HottyAddon, browserKeys, type FrameStats } from "../src/index.ts";
 
 const params = new URLSearchParams(location.search);
 const term = new Terminal({
@@ -56,10 +56,13 @@ if (params.has("record-links")) {
     hover: (_e, uri) => void hovered.push(uri),
   };
 }
+// `?page-key=k`: Ctrl+K is the page's too, on top of the browser's own keys.
+const pageKey = params.get("page-key");
 const hotty = new HottyAddon({
   onFrame: (f) => frames.push(f),
   onInvalid: (r) => invalid.push(r),
   network,
+  browserKeys: pageKey ? (e) => browserKeys(e) || (e.ctrlKey && e.key === pageKey) : undefined,
 });
 const fit = new FitAddon();
 term.loadAddon(fit);

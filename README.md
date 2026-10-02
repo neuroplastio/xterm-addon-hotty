@@ -170,7 +170,14 @@ runs programs for whoever connects.
   program, and the browser acts on them. A terminal cannot know which keys
   a program binds, so these are the browser's own. The addon installs
   xterm.js's custom key handler for this, so a page passes its own list
-  here, not to xterm.js.
+  here, not to xterm.js. The default is exported, so a page can add keys
+  of its own:
+
+  ```ts
+  import { HottyAddon, browserKeys } from "xterm-addon-hotty";
+
+  new HottyAddon({ browserKeys: (e) => browserKeys(e) || (e.ctrlKey && e.key === "k") });
+  ```
 - **Nothing in a surface scrolls** (SPEC §5.3, §9):
   - It shows no scrollbars, and pans nothing on a touch
     (`touch-action: none`). Any scroll offset the browser sets goes back to

@@ -29,6 +29,25 @@ test("the terminal leaves the browser's keys to the browser", async ({ page }) =
   expect((await take(page)).raw).toBe("\x1b[A");
 });
 
+test("a page adds keys of its own to the browser's, with the exported default", async ({ page }) => {
+  await open(page, "?pty=0&page-key=k");
+  await take(page);
+  const ctrlK: Init = { key: "k", code: "KeyK", keyCode: 75, ctrlKey: true };
+  const prevented = await page.evaluate(
+    (keys) => {
+      const ta = (window.hotty.term as unknown as { textarea: HTMLTextAreaElement }).textarea;
+      return keys.map((init) => {
+        const ev = new KeyboardEvent("keydown", { ...init, bubbles: true, cancelable: true });
+        ta.dispatchEvent(ev);
+        return ev.defaultPrevented;
+      });
+    },
+    [ctrlK, F5, up],
+  );
+  expect(prevented).toEqual([false, false, true]);
+  expect((await take(page)).raw).toBe("\x1b[A");
+});
+
 test("a surface holding the keyboard leaves them to the browser too", async ({ page }) => {
   await open(page, "?pty=0");
   await send(page, { a: "doc", s: "k", q: "2" }, `<input id=i>`);
