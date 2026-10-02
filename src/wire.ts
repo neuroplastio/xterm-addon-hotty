@@ -57,9 +57,13 @@ export class Control {
   }
 }
 
-/** Control values cannot hold `:`, `;`, `=` or control characters. */
+/**
+ * A control value is printable ASCII (SPEC §3.2): each character it may not
+ * hold (`:`, `;`, `=`, a control character, anything outside ASCII) becomes
+ * one `_`, one per code point.
+ */
 export function clean(value: string): string {
-  return value.replace(/[:;=\u0000-\u001f\u007f]/g, "_");
+  return value.replace(/[^\x20-\x7e]|[:;=]/gu, "_");
 }
 
 export interface Command {

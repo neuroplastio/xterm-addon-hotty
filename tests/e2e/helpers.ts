@@ -42,6 +42,10 @@ export interface Msg {
 /** Everything the terminal sent to the program, decoded; `sent` is cleared. */
 export async function take(page: Page): Promise<{ msgs: Msg[]; raw: string }> {
   const raw = await page.evaluate(() => window.hotty.sent.splice(0).join(""));
+  // A host never compresses what it sends (SPEC §3.3).
+  for (const [, ctl] of raw.matchAll(/\x1b\]7279;([^;\x07\x1b]*)/g)) {
+    if (Control.parse(ctl!).get("o") !== undefined) throw new Error(`the host compressed: ${ctl}`);
+  }
   const msgs = (await decodeAll(raw)).map((c) => {
     const body = text(c.payload);
     let json: unknown = null;
