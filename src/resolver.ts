@@ -149,20 +149,24 @@ export class Resolver {
     if (names.size > 0) this.track(el, names);
   }
 
-  /** Re-resolves everything that names one of `names` (a resource changed). */
-  refresh(names: Set<string>): void {
+  /** Re-resolves everything that names one of `names` (a resource changed);
+   * whether anything did. */
+  refresh(names: Set<string>): boolean {
+    let any = false;
     for (const [el, uses] of Array.from(this.refs)) {
       if (!el.isConnected) {
         this.refs.delete(el);
         continue;
       }
       if (![...uses].some((u) => names.has(u))) continue;
+      any = true;
       this.refs.delete(el);
       const o = this.orig.get(el);
       if (o) for (const [attr, value] of Array.from(o)) this.set(el, attr, value);
       const css = this.css.get(el);
       if (css !== undefined) this.setCss(el, css);
     }
+    return any;
   }
 
   private srcset(value: string, names: Set<string>): string {

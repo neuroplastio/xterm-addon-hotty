@@ -1,9 +1,9 @@
 // The protocol, command by command (SPEC §3-§7), as hotty-blitz's
 // tests/host.rs checks it on the other hosts.
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { Control, encode } from "../../src/wire.ts";
-import { cell, open, send, surface, take, write } from "./helpers.ts";
+import { cell, cmd, open, send, surface, take, write } from "./helpers.ts";
 
 test.beforeEach(async ({ page }) => open(page));
 
@@ -318,4 +318,61 @@ test("a font or theme change re-lays out every surface, and the program hears `r
   await expect.poll(() => root.evaluate((el) => getComputedStyle(el).getPropertyValue("--hotty-bg").trim())).toBe("#fdf6e3");
   await expect.poll(() => root.evaluate((el) => getComputedStyle(el).colorScheme)).toBe("light");
   await expect.poll(async () => (await take(page)).msgs.some((m) => m.get("e") === "resize")).toBe(true);
+});
+
+/** The `fit` events the program heard (SPEC §5.2), once there are `n`; a
+ * few frames later, none more. */
+async function fits(page: Page, n: number): Promise<unknown[]> {
+  const got: unknown[] = [];
+  const poll = async () => {
+    for (const m of (await take(page)).msgs) if (m.get("a") === "ev" && m.get("e") === "fit") got.push(m.json);
+    return got.length;
+  };
+  await expect.poll(poll).toBe(n);
+  await page.waitForTimeout(100);
+  expect(await poll()).toBe(n);
+  return got;
+}
+
+/** The cell height the addon lays surfaces out with, in CSS pixels. */
+const cellH = (page: Page) =>
+  page.evaluate(() => (window.hotty.term as unknown as { _core: { _renderService: { dimensions: { css: { cell: { height: number } } } } } })._core._renderService.dimensions.css.cell.height);
+
+test("f=1: the user opening a details is heard as `fit`, and the placement keeps its size", async ({ page }) => {
+  const h = await cellH(page);
+  await send(
+    page,
+    { a: "doc", s: "x", q: "2" },
+    "<style>body{margin:0} summary{display:block;height:var(--hotty-cell-h)} p{margin:0;height:calc(3 * var(--hotty-cell-h))}</style>" +
+      "<details><summary>more</summary><p>three rows</p></details>",
+  );
+  await send(page, { a: "place", s: "x", c: "20", r: "auto", f: "1" });
+  expect((await take(page)).msgs.find((m) => m.get("re") === "place")!.get("r")).toBe("1");
+  await surface(page, "x").locator("summary").click();
+  expect(await fits(page, 1)).toEqual([{ r: 4 }]);
+  expect(Math.round((await page.locator('.hotty-surface[data-surface="x"]').boundingBox())!.height)).toBe(Math.round(h));
+});
+
+test("f=1: patches in one frame are heard once, with the rows drawn", async ({ page }) => {
+  await send(page, { a: "doc", s: "x", q: "2" }, `<style>body{margin:0}</style><div id=d style="height: calc(var(--n, 1) * var(--hotty-cell-h))"></div>`);
+  await send(page, { a: "place", s: "x", c: "20", r: "auto", f: "1", q: "2" });
+  await fits(page, 0);
+  const patch = (n: string) => cmd({ a: "patch", s: "x", op: "var", t: "d", k: "n", q: "2" }, n);
+  await write(page, patch("3") + patch("5"));
+  expect(await fits(page, 1)).toEqual([{ r: 5 }]);
+  // Back to what the program heard within a frame: nothing to hear.
+  await write(page, patch("2") + patch("5"));
+  await fits(page, 0);
+});
+
+test("f=1: a new cell size is heard when the rows the document needs change", async ({ page }) => {
+  const h0 = await cellH(page);
+  await send(page, { a: "doc", s: "x", q: "2" }, "<style>body{margin:0}</style><div style='height: 120px'></div>");
+  await send(page, { a: "place", s: "x", c: "20", r: "auto", f: "1" });
+  expect((await take(page)).msgs.find((m) => m.get("re") === "place")!.get("r")).toBe(String(Math.ceil(120 / h0)));
+  await page.evaluate(() => ((window.hotty.term as unknown as { options: { fontSize: number } }).options.fontSize = 30));
+  await expect.poll(() => cellH(page)).toBeGreaterThan(h0 * 1.5);
+  const want = Math.ceil(120 / (await cellH(page)));
+  expect(want).toBeLessThan(Math.ceil(120 / h0));
+  expect(await fits(page, 1)).toEqual([{ r: want }]);
 });

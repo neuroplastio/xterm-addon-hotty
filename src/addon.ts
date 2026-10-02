@@ -88,7 +88,7 @@ export interface Inspected {
 }
 
 /** `drag` stands for `dragstart`, `drag` and `dragend` (SPEC §4, §9.1). */
-export const EVENTS = ["click", "change", "input", "submit", "press", "drag", "focus", "blur", "resize"];
+export const EVENTS = ["click", "change", "input", "submit", "press", "drag", "focus", "blur", "resize", "fit"];
 
 interface Placement {
   surface: Surface;
@@ -138,7 +138,7 @@ export class HottyAddon implements ITerminalAddon {
     this.policy = clean(options.network);
     this.store = new Store(this.opts.resourceQuota);
     this.store.onChange = (names) => {
-      for (const s of this.surfaces.values()) s.resolver.refresh(names);
+      for (const s of this.surfaces.values()) s.refresh(names);
     };
   }
 
@@ -432,6 +432,9 @@ export class HottyAddon implements ITerminalAddon {
     this.unplace(s.name);
     // Presses (SPEC §5.2): like z, the placement's.
     s.presses = c.get("p") === "1";
+    // Fit (SPEC §5.2): the placement's too, from its own rows. The
+    // placement keeps its size: re-placing is the program's to do.
+    s.setFit(c.get("f") === "1" ? rows : null);
 
     const buf = this.term.buffer.active;
     const col = buf.cursorX;
@@ -497,6 +500,7 @@ export class HottyAddon implements ITerminalAddon {
     for (const d of p.disposables) d.dispose();
     p.marker?.dispose();
     p.surface.presses = false;
+    p.surface.setFit(null);
     p.surface.park();
   }
 

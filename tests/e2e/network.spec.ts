@@ -3,7 +3,7 @@
 // and copy as themselves, every click is an event, and only a gesture opens
 // one.
 import { expect, test, type Page } from "@playwright/test";
-import { open, send, surface, take } from "./helpers.ts";
+import { cell, open, send, surface, take } from "./helpers.ts";
 
 // Only this spec's requests (/leak/net-…): others record theirs in parallel.
 async function leaks(page: Page): Promise<string[]> {
@@ -123,4 +123,35 @@ test("without a base, a relative link reports its href and no url", async ({ pag
   await surface(page, "r").locator("#r").click({ modifiers: ["Control"] });
   expect(await clicks(page, 1)).toEqual([{ t: "r", detail: { href: "docs/intro" } }]);
   expect(await page.evaluate(() => (window.hotty as unknown as { opened: string[] }).opened)).toEqual([]);
+});
+
+test("an image from the network that loads after the placement and changes the height is heard as `fit` (f=1)", async ({ page }) => {
+  await open(page, "?pty=0&net=img-src%20self");
+  const o = origin(page);
+  const { h } = await cell(page);
+  // The image answers once the placement has been answered.
+  let answer = () => {};
+  const answered = new Promise<void>((resolve) => (answer = resolve));
+  await page.route("**/fit-late/tall.svg", async (route) => {
+    await answered;
+    await route.fulfill({ contentType: "image/svg+xml", body: `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="100"></svg>` });
+  });
+  await send(
+    page,
+    { a: "doc", s: "i", q: "2" },
+    `<base href="${o}/fit-late/"><meta name="hotty-network" content="img-src ${o}"><style>body{margin:0} img{display:block}</style><img id=i src="tall.svg">`,
+  );
+  await send(page, { a: "place", s: "i", c: "20", r: "auto", f: "1" });
+  const placed = Number((await take(page)).msgs.find((m) => m.get("re") === "place")!.get("r"));
+  const want = Math.ceil(100 / h);
+  expect(placed).toBeLessThan(want);
+  answer();
+  const fits: unknown[] = [];
+  await expect
+    .poll(async () => {
+      for (const m of (await take(page)).msgs) if (m.get("a") === "ev" && m.get("e") === "fit") fits.push(m.json);
+      return fits.length;
+    })
+    .toBe(1);
+  expect(fits).toEqual([{ r: want }]);
 });

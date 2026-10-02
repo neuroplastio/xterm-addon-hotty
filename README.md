@@ -119,6 +119,23 @@ runs programs for whoever connects.
   mouse or a pen in the window reports `press` on its pointerdown, before
   the drag and the focus it causes; a tap reports it on the mousedown the
   browser makes for it. A press on a hyperlink is the terminal's.
+- **Fit** (SPEC §5.2, §9: `f=1` on `a=place`). The program hears `fit`
+  with the rows the document needs at the placement's width whenever they
+  differ from the rows it heard last, starting from the placement's own;
+  the placement keeps its size. The rows are measured as for `r=auto`: the
+  frame is laid out at that width and 1px high, then restored in the same
+  task. A check waits for the next frame, so a frame sends one `fit` at
+  most, with the rows it draws. Each of these asks for a check:
+  - a document or a patch;
+  - a resource arriving or changing;
+  - the host stylesheet changing (cell size, font);
+  - an image, a stylesheet or a font loading, whether a `cid:` resource or
+    one from the network;
+  - the root's or the body's box changing size (a `<details>` the user
+    opens, say).
+
+  A surface out of view checks once it is shown again. A check lays the
+  document out a second time, so only placements with `f=1` pay for it.
 - **Presses with Alt** (SPEC §9.2) are the program's. The frame cancels the
   press's mousedown (no focus, selection, drag or hyperlink), reports
   nothing, and captures the pointer on its root until the release; the

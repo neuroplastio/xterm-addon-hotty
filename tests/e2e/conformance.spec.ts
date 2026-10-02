@@ -39,6 +39,38 @@ function checkEvents(where: string, msgs: Msg[], want: Expected[] | undefined) {
 }
 
 /**
+ * What a send step made the host send. Some events follow the command by a
+ * frame or a load (`fit`, SPEC §5.2): a step that checks its events waits
+ * for as many as it expects (two seconds at most), then two frames more,
+ * so that one too many is seen too.
+ */
+async function sent(page: Page, want: Expected[] | undefined): Promise<Msg[]> {
+  const msgs = (await take(page)).msgs;
+  if (want === undefined) return msgs;
+  const events = () => msgs.filter((m) => m.get("a") === "ev").length;
+  const until = Date.now() + 2000;
+  while (events() < want.length && Date.now() < until) {
+    await frames(page, 1);
+    msgs.push(...(await take(page)).msgs);
+  }
+  await frames(page, 2);
+  msgs.push(...(await take(page)).msgs);
+  return msgs;
+}
+
+/** Waits for the page to draw `n` frames. */
+async function frames(page: Page, n: number) {
+  await page.evaluate(
+    (n) =>
+      new Promise<void>((done) => {
+        const next = (k: number) => (k ? requestAnimationFrame(() => next(k - 1)) : done());
+        next(n);
+      }),
+    n,
+  );
+}
+
+/**
  * The vectors' mouse (pointer steps), in the page's coordinates. In
  * Chromium through CDP: Playwright's own mouse stalls on a press that moves
  * inside a frame without scripts (detach.spec.ts). Keys are held as the
@@ -116,7 +148,7 @@ for (const vector of vectors.vectors) {
       } else if (step.send) {
         await take(page);
         await write(page, cmd(step.send, step.payload ?? ""));
-        const { msgs } = await take(page);
+        const msgs = await sent(page, step.events);
         checkEvents(where, msgs, step.events);
         const replies = msgs.filter((m) => m.get("a") !== "ev");
         if (step.reply === undefined) continue;

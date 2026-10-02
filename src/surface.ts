@@ -173,6 +173,14 @@ export class Surface {
   private css = "";
   /** Keys whose keydown went to the program, so their keyup follows. */
   private forwarded = new Set<string>();
+  /** The rows the program heard last, while the placement asked for `fit`
+   * (`f=1`, SPEC §5.2); null when it did not. */
+  private fitRows: number | null = null;
+  /** The height may have changed since the last check. */
+  private fitDirty = false;
+  /** The frame a check waits for. */
+  private fitFrame = 0;
+  private fitObserver: ResizeObserver | null = null;
 
   constructor(name: string, host: SurfaceHost, hostCss: string, scheme: Scheme) {
     this.name = name;
@@ -234,6 +242,7 @@ export class Surface {
     this.css = css;
     this.restyle();
     if (this.frame.style.colorScheme !== scheme) this.frame.style.colorScheme = scheme;
+    this.refit(); // the cell size or the font
   }
 
   private restyle() {
@@ -268,6 +277,7 @@ export class Surface {
     this.doc.body.replaceChildren(...Array.from(parsed.body.childNodes));
     this.detachedState = detached;
     this.sync();
+    this.refit();
   }
 
   /** A patch (SPEC §6). On a detached surface, the controls it adds are
@@ -277,6 +287,7 @@ export class Surface {
       this.patcher.apply(op, target, key, payload);
     } finally {
       if (this.detachedState) this.sync();
+      this.refit();
     }
   }
 
@@ -330,9 +341,80 @@ export class Surface {
   contentRows(cols: number, cellW: number, cellH: number): number {
     // Laid out, unseen, whatever the surface was showing.
     Object.assign(this.box.style, { display: "block", visibility: "hidden" });
-    Object.assign(this.frame.style, { width: `${cols * cellW}px`, height: "1px" });
+    return this.neededRows(cols, cellW, cellH);
+  }
+
+  /**
+   * Rows the document needs at `cols` columns: `r=auto`'s, and `fit`'s
+   * (SPEC §5.2). The frame is laid out at the width a placement gives it
+   * and a height of 1px, so the viewport adds nothing, then restored in the
+   * same task: nothing is drawn in between.
+   */
+  private neededRows(cols: number, cellW: number, cellH: number): number {
+    const f = this.frame.style;
+    const [width, height] = [f.width, f.height];
+    Object.assign(f, { width: `${Math.round(cols * cellW)}px`, height: "1px" });
     const h = this.doc.documentElement.scrollHeight;
+    Object.assign(f, { width, height });
     return Math.max(1, Math.min(1000, Math.ceil(h / cellH)));
+  }
+
+  // --- Fit (SPEC §5.2: f=1 on a=place) --------------------------------------
+
+  /**
+   * `f=1` on the placement: from `rows`, the placement's own, the program
+   * hears `fit` whenever the rows the document needs differ from those it
+   * heard last. `null`: the placement did not ask (or is gone).
+   *
+   * What can change the height asks for a check in the next frame drawn:
+   * a document, a patch, a resource (`refresh`), the host stylesheet (cell
+   * size, font), an image, stylesheet or font loading, and, for whatever
+   * else does (the user opening a `<details>`, say), the root's and the
+   * body's boxes changing size. One check per frame, so one `fit` at most.
+   */
+  setFit(rows: number | null) {
+    this.fitRows = rows;
+    if (rows === null) {
+      this.fitObserver?.disconnect();
+      this.fitObserver = null;
+      if (this.fitFrame) this.frame.ownerDocument.defaultView?.cancelAnimationFrame(this.fitFrame);
+      this.fitFrame = 0;
+      this.fitDirty = false;
+      return;
+    }
+    if (!this.fitObserver) {
+      this.fitObserver = new ResizeObserver(() => this.refit());
+      this.fitObserver.observe(this.doc.documentElement);
+      this.fitObserver.observe(this.doc.body);
+    }
+    this.refit();
+  }
+
+  /** The document's height may have changed: a check in the next frame
+   * drawn. A surface out of view draws none; it checks once shown. */
+  private refit() {
+    if (this.fitRows === null) return;
+    this.fitDirty = true;
+    if (this.fitFrame || this.box.style.display === "none") return;
+    this.fitFrame = this.frame.ownerDocument.defaultView!.requestAnimationFrame(() => {
+      this.fitFrame = 0;
+      this.checkFit();
+    });
+  }
+
+  private checkFit() {
+    if (this.fitRows === null || !this.fitDirty || this.box.style.display === "none") return;
+    this.fitDirty = false;
+    if (this.detachedState) return; // it sends no events (§5.5)
+    const rows = this.neededRows(this.cols, this.cellW, this.cellH);
+    if (rows === this.fitRows) return;
+    this.fitRows = rows;
+    this.emit("fit", "", { r: rows });
+  }
+
+  /** A resource changed (`a=res`, `a=del`): what names it resolves again. */
+  refresh(names: Set<string>) {
+    if (this.resolver.refresh(names)) this.refit();
   }
 
   /** The surface is `cols`×`rows` cells, and the box shows `win` of it:
@@ -365,6 +447,7 @@ export class Surface {
     this.box.style.top = `${y}px`;
     this.box.style.visibility = "visible";
     this.box.style.display = "block";
+    if (this.fitDirty) this.refit(); // what changed while out of view
   }
 
   /** Out of view (its line left the screen): a drag under way ends
@@ -382,6 +465,7 @@ export class Surface {
   }
 
   destroy() {
+    this.setFit(null);
     this.dropDrag();
     this.dropAlt();
     if (this.settling) clearTimeout(this.settling);
@@ -842,6 +926,11 @@ export class Surface {
     d.addEventListener("dragstart", (e) => e.preventDefault(), true);
     d.addEventListener("wheel", (e) => this.onWheel(e), { capture: true, passive: false });
     d.addEventListener("scroll", (e) => this.onScroll(e), true);
+    // An image or a stylesheet that loads late, a resource's or one fetched
+    // from the network (SPEC §7.1, §7.2), and a font: the height may change.
+    d.addEventListener("load", () => this.refit(), true);
+    d.addEventListener("error", () => this.refit(), true);
+    d.fonts.addEventListener("loadingdone", () => this.refit());
     // A touch drag is the terminal's, as a wheel is (SPEC §9); taps and long
     // presses stay the surface's.
     new Touch(d, this.frame.ownerDocument.defaultView!, {
