@@ -125,6 +125,13 @@ export class HottyAddon implements ITerminalAddon {
   private readonly policy: Policy;
   private metrics = { cellW: 0, cellH: 0, key: "" };
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** A surface's key is being forwarded to the terminal (`key`), and the
+   * terminal's own focus is held off meanwhile. A program in the page may
+   * answer the key inside its dispatch, since xterm.js parses what follows
+   * user input at once: a surface that gives the keyboard back then has
+   * its focus carried out once the key is through. */
+  private forwarding = false;
+  private focusAfter = false;
 
   constructor(options: HottyOptions = {}) {
     this.opts = { maxSurfaces: 64, resourceQuota: 64 << 20, ...options };
@@ -544,6 +551,7 @@ export class HottyAddon implements ITerminalAddon {
         // xterm.js focuses the terminal on every keyup; the surface keeps
         // the keyboard, so its focus does nothing meanwhile.
         Object.defineProperty(ta, "focus", { value: () => {}, configurable: true });
+        this.forwarding = true;
         try {
           const ev = new KeyboardEvent(e.type, init);
           ta.dispatchEvent(ev);
@@ -553,9 +561,17 @@ export class HottyAddon implements ITerminalAddon {
           }
         } finally {
           delete (ta as { focus?: unknown }).focus;
+          this.forwarding = false;
+          if (this.focusAfter) {
+            this.focusAfter = false;
+            this.term.focus();
+          }
         }
       },
-      focusTerminal: () => this.term.focus(),
+      focusTerminal: () => {
+        if (this.forwarding) this.focusAfter = true;
+        else this.term.focus();
+      },
       policy: this.policy,
       // A hyperlink (SPEC §9) goes where xterm.js sends an OSC 8 one: the
       // terminal's linkHandler, or its confirm-then-open default, and only

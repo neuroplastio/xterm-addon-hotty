@@ -3,7 +3,7 @@
 // reload, zoom and the developer tools work. Every other key is the
 // program's.
 import { expect, test } from "@playwright/test";
-import { open, send, surface, take } from "./helpers.ts";
+import { cmd, open, send, surface, take } from "./helpers.ts";
 
 type Init = { key: string; code: string; keyCode: number; ctrlKey?: boolean };
 const F5: Init = { key: "F5", code: "F5", keyCode: 116 };
@@ -43,4 +43,28 @@ test("a surface holding the keyboard leaves them to the browser too", async ({ p
   }, F5);
   expect(prevented).toBe(false);
   expect((await take(page)).raw).toBe("");
+});
+
+// A program in the page (the WebAssembly shell, say) answers a key at once:
+// xterm.js parses what it writes right after user input, inside the key's
+// own dispatch. A surface the program blurs and deletes in that answer
+// still gives the keyboard back to the terminal.
+test("a surface blurred and deleted in answer to a key gives the keyboard back", async ({ page }) => {
+  await open(page, "?pty=0");
+  await send(page, { a: "doc", s: "k", q: "2" }, `<input id=i>`);
+  await send(page, { a: "place", s: "k", c: "20", r: "2", q: "2" });
+  await send(page, { a: "focus", s: "k", t: "i", q: "2" });
+  const answer = cmd({ a: "blur", s: "k", q: "2" }) + cmd({ a: "del", s: "k", q: "2" });
+  await page.evaluate((answer) => {
+    const term = window.hotty.term as unknown as { write(d: string): void; onData(f: (d: string) => void): void };
+    term.onData((d) => {
+      if (d === "\x04") term.write(answer);
+    });
+  }, answer);
+  await expect(surface(page, "k").locator("#i")).toBeFocused();
+  await page.keyboard.press("Control+d");
+  await expect(page.locator(".hotty-surface")).toHaveCount(0);
+  await expect(page.locator(".xterm-helper-textarea")).toBeFocused();
+  await page.keyboard.type("x");
+  expect((await take(page)).raw).toContain("x");
 });
