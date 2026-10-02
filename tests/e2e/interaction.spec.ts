@@ -129,3 +129,35 @@ test.describe("without a pty", () => {
     expect((await take(page)).raw).toBe("z");
   });
 });
+
+test("p=1: every press in the window is reported, first, until a placement without it", async ({ page }) => {
+  await open(page, "?pty=0&record-links");
+  await send(
+    page,
+    { a: "doc", s: "pp", q: "2" },
+    `<style>body{margin:0}</style><div id=card><p>plain <b>text</b></p><input id=t></div>` +
+      `<a id=h href="https://example.com/" target=_blank>hyper</a><div style="height:40px">nothing with an id</div>`,
+  );
+  await send(page, { a: "place", s: "pp", c: "60", r: "6", p: "1", q: "2" });
+  await take(page);
+  const d = surface(page, "pp");
+  await d.locator("b").click();
+  await d.locator("#t").click();
+  await d.getByText("nothing with an id").click();
+  // A hyperlink's press is the terminal's: it opens, and is not reported.
+  await d.locator("#h").click();
+  expect(evs((await take(page)).msgs)).toEqual([
+    ["press", "card", null],
+    // The press comes before the focus it causes, and before the blur.
+    ["press", "t", null],
+    ["focus", "", null],
+    ["press", "", null],
+    ["blur", "", null],
+  ]);
+  expect(await page.evaluate(() => [...(window.hotty as unknown as { opened: string[] }).opened])).toEqual(["https://example.com/"]);
+  // Placed again without p: no more presses.
+  await send(page, { a: "place", s: "pp", c: "60", r: "6", q: "2" });
+  await take(page);
+  await d.locator("b").click();
+  expect(evs((await take(page)).msgs)).toEqual([]);
+});

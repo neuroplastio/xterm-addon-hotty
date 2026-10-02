@@ -2,7 +2,8 @@
 // outside the terminal and away from other surfaces and the program's mouse
 // reporting, no text selected whatever the document's CSS, a new placement
 // that keeps a drag, the order against the blur a press causes, and touch,
-// which never drags.
+// which never drags. And presses with Alt (§9.2), which are the program's:
+// its mouse reports or the terminal's selection, and the keyboard back.
 
 import { expect, test, type Page } from "@playwright/test";
 import { open, send, surface, take, write } from "./helpers.ts";
@@ -16,26 +17,30 @@ const CELLS =
   `<i id=a data-on="click drag" style="left:0">Alpha</i><i id=b data-on=drag style="left:calc(3*var(--hotty-cell-w))">Beta</i>` +
   `<p id=prose style="position:absolute;top:var(--hotty-cell-h);margin:0">some plain prose to select</p>`;
 
-/** A mouse in the page's coordinates. In Chromium through CDP: Playwright's
- * own mouse stalls on a press that moves inside a frame without scripts. */
+/** A mouse in the page's coordinates, with Alt held when `alt` says so. In
+ * Chromium through CDP: Playwright's own mouse stalls on a press that moves
+ * inside a frame without scripts. Firefox's mouse events carry the
+ * keyboard's modifiers: Alt is pressed on the keyboard there. */
 async function mouse(page: Page, browser: string) {
   const cdp = browser === "chromium" ? await page.context().newCDPSession(page) : null;
   let down = false;
-  const go = async (type: "mouseMoved" | "mousePressed" | "mouseReleased", x: number, y: number) => {
+  const go = async (type: "mouseMoved" | "mousePressed" | "mouseReleased", x: number, y: number, alt: boolean) => {
     if (type === "mousePressed") down = true;
     if (type === "mouseReleased") down = false;
     if (cdp) {
-      await cdp.send("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons: down ? 1 : 0, clickCount: 1 });
+      await cdp.send("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons: down ? 1 : 0, clickCount: 1, modifiers: alt ? 1 : 0 });
       return;
     }
+    if (alt) await page.keyboard.down("Alt");
     if (type === "mouseMoved") await page.mouse.move(x, y);
     else if (type === "mousePressed") await page.mouse.down();
     else await page.mouse.up();
+    if (alt) await page.keyboard.up("Alt");
   };
   return {
-    move: (x: number, y: number) => go("mouseMoved", x, y),
-    down: (x: number, y: number) => go("mouseMoved", x, y).then(() => go("mousePressed", x, y)),
-    up: (x: number, y: number) => go("mouseMoved", x, y).then(() => go("mouseReleased", x, y)),
+    move: (x: number, y: number, alt = false) => go("mouseMoved", x, y, alt),
+    down: (x: number, y: number, alt = false) => go("mouseMoved", x, y, alt).then(() => go("mousePressed", x, y, alt)),
+    up: (x: number, y: number, alt = false) => go("mouseMoved", x, y, alt).then(() => go("mouseReleased", x, y, alt)),
   };
 }
 
@@ -144,10 +149,10 @@ test("dragstart comes before the change and the blur its press causes", async ({
 test.describe("on a touch screen", () => {
   test.use({ hasTouch: true });
 
-  test("a touch never drags: it scrolls, and a tap is a click", async ({ page, browserName }) => {
+  test("a touch never drags: it scrolls, and a tap is a press and a click", async ({ page, browserName }) => {
     test.skip(browserName !== "chromium", "touch input comes from CDP");
     await write(page, Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\r\n") + "\r\n");
-    await place(page, "x", CELLS, "2");
+    await place(page, "x", CELLS, "2", { p: "1" });
     const cdp = await page.context().newCDPSession(page);
     const touch = (type: "touchStart" | "touchMove" | "touchEnd", points: { x: number; y: number }[]) =>
       cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
@@ -165,6 +170,116 @@ test.describe("on a touch screen", () => {
     const [tx, ty] = await centre(page, "x", "a");
     await touch("touchStart", [{ x: tx, y: ty }]);
     await touch("touchEnd", []);
-    await expect.poll(async () => evs((await take(page)).msgs)).toEqual([["x", "click", "a", null]]);
+    await expect.poll(async () => evs((await take(page)).msgs)).toEqual([
+      ["x", "press", "a", null],
+      ["x", "click", "a", null],
+    ]);
+  });
+});
+
+test.describe("§9.2: a press with Alt is the program's", () => {
+  /** The terminal's cell under a point in the page, 1-based, as mouse
+   * reports count. */
+  const cellAt = (page: Page, x: number, y: number) =>
+    page.evaluate(
+      ([x, y]) => {
+        const r = document.querySelector(".xterm-screen")!.getBoundingClientRect();
+        const t = window.hotty.term;
+        return [Math.floor(((x - r.left) / r.width) * t.cols) + 1, Math.floor(((y - r.top) / r.height) * t.rows) + 1];
+      },
+      [x, y] as const,
+    );
+
+  test("with mouse reporting on, the program hears the press, its moves over the surface and its release, with Alt; the surface hears nothing", async ({ page, browserName }) => {
+    // Button motion and SGR.
+    await write(page, "\x1b[?1002h\x1b[?1006h");
+    await place(page, "x", CELLS, "2", { p: "1" });
+    const m = await mouse(page, browserName);
+    const [ax, ay] = await centre(page, "x", "a");
+    const [bx, by] = await centre(page, "x", "b");
+    await m.down(ax, ay, true);
+    await m.move(bx, by, true);
+    // The surface under the pointer is no longer hovered.
+    expect(await surface(page, "x").locator("#b").evaluate((e) => e.matches(":hover"))).toBe(false);
+    await m.up(bx, by, true);
+    const { msgs, raw } = await take(page);
+    expect(evs(msgs)).toEqual([]);
+    const [ac, ar] = await cellAt(page, ax, ay);
+    const [bc, br] = await cellAt(page, bx, by);
+    // Button 0 with Alt (8); motion adds 32. A release ends in `m`.
+    expect(raw).toContain(`\x1b[<8;${ac};${ar}M`);
+    expect(raw).toContain(`\x1b[<40;${bc};${br}M`);
+    expect(raw).toMatch(new RegExp(`\\x1b\\[<8;${bc};${br}m$`));
+    // The surface took no focus: the terminal has it.
+    await expect.poll(() => page.evaluate(() => document.activeElement?.className ?? "")).toContain("xterm-helper-textarea");
+    // The gesture over: a press without Alt is the surface's again.
+    await m.down(ax, ay);
+    await m.up(ax, ay);
+    const after = await take(page);
+    expect(evs(after.msgs).map((e) => [e[1], e[2]])).toEqual([
+      ["press", "a"],
+      ["dragstart", "a"],
+      ["dragend", "a"],
+      ["click", "a"],
+    ]);
+    expect(after.raw).not.toMatch(/\x1b\[</);
+  });
+
+  test("Alt let go during the gesture keeps it the program's, outside the surface too", async ({ page, browserName }) => {
+    await write(page, "\x1b[?1003h\x1b[?1006h");
+    await place(page, "x", CELLS);
+    const m = await mouse(page, browserName);
+    const [ax, ay] = await centre(page, "x", "a");
+    await m.down(ax, ay, true);
+    await m.move(ax, ay + 100); // over the cells, without Alt
+    await m.up(ax, ay + 100);
+    const { msgs, raw } = await take(page);
+    expect(evs(msgs)).toEqual([]);
+    const [c, r] = await cellAt(page, ax, ay + 100);
+    expect(raw).toContain(`\x1b[<32;${c};${r}M`);
+    expect(raw).toContain(`\x1b[<0;${c};${r}m`);
+  });
+
+  test("with mouse reporting off, the terminal selects, as on the cells; nothing in the surface is selected", async ({ page, browserName }) => {
+    await write(page, Array.from({ length: 4 }, (_, i) => `row ${i} of text under the surface`).join("\r\n") + "\x1b[H");
+    await send(page, { a: "doc", s: "x", q: "2" }, CELLS);
+    await send(page, { a: "place", s: "x", c: "30", r: "2", C: "1", q: "2" });
+    await take(page);
+    const m = await mouse(page, browserName);
+    const [ax, ay] = await centre(page, "x", "a");
+    await m.down(ax - 8, ay, true);
+    await m.move(ax + 60, ay + 40, true);
+    await m.up(ax + 60, ay + 40, true);
+    expect(evs((await take(page)).msgs)).toEqual([]);
+    const selected = await page.evaluate(() => (window.hotty.term as unknown as { getSelection(): string }).getSelection());
+    expect(selected).toMatch(/ow 0[^]*ow 1/);
+    const inSurface = await surface(page, "x").locator("body").evaluate((b) => b.ownerDocument.getSelection()?.toString() ?? "");
+    expect(inSurface).toBe("");
+  });
+
+  test("a surface with the keyboard gives it back: blur, and no focus for the pressed one", async ({ page, browserName }) => {
+    await write(page, "\x1b[?1002h\x1b[?1006h");
+    await place(page, "f", `<input id=name value=x>`);
+    await place(page, "x", `<input id=other value=y>`, "2", { p: "1" });
+    await send(page, { a: "focus", s: "f", t: "name", q: "2" });
+    await page.keyboard.press("End");
+    await page.keyboard.type("z");
+    await take(page);
+    const m = await mouse(page, browserName);
+    const r = (await surface(page, "x").locator("#other").boundingBox())!;
+    await m.down(r.x + 4, r.y + r.height / 2, true);
+    await m.up(r.x + 4, r.y + r.height / 2, true);
+    await page.waitForTimeout(50);
+    const { msgs, raw } = await take(page);
+    // The edited field commits, as it does whenever the keyboard leaves.
+    expect(evs(msgs)).toEqual([
+      ["f", "change", "name", { value: "xz" }],
+      ["f", "blur", "", null],
+    ]);
+    expect(raw).toMatch(/\x1b\[<8;\d+;\d+M/);
+    await expect.poll(() => page.evaluate(() => document.activeElement?.className ?? "")).toContain("xterm-helper-textarea");
+    // Keys are the terminal's now.
+    await page.keyboard.type("q");
+    expect((await take(page)).raw).toBe("q");
   });
 });

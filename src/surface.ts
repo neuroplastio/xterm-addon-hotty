@@ -76,6 +76,10 @@ export interface SurfaceHost {
   /** A wheel event over the surface, or a touch drag made one: the
    *  terminal's (SPEC §9), at a point in the page. */
   wheel(e: WheelEvent, pageX: number, pageY: number): void;
+  /** A press with Alt held, a move of the gesture it began, or its release
+   *  (SPEC §9.2): the program's, as on the cells beneath, at a point in the
+   *  page. */
+  cells(kind: "down" | "move" | "up", e: MouseEvent, pageX: number, pageY: number): void;
 }
 
 type Control = "none" | "text" | "textarea" | "select" | "activatable";
@@ -152,6 +156,17 @@ export class Surface {
   /** A drag just ended at a release: it reported its own click, so the
    * browser's, which follows in the same task, is not reported. */
   private dragReleased = false;
+  /** The placement asked for presses (`p=1`, SPEC §5.2). */
+  presses = false;
+  /** A mouse's or a pen's pointerdown came first: the mousedown that
+   * follows is the same press, not a tap's. */
+  private pointerPress = false;
+  /** The pointer of a press with Alt held (SPEC §9.2), until its release:
+   * the gesture is the program's. */
+  private altPointer: number | null = null;
+  /** Such a gesture just ended at a release: the browser's click that
+   * follows in the same task is not the surface's. */
+  private altReleased = false;
   /** One cell, in CSS pixels: a drag's detail counts cells (SPEC §9.1). */
   private cellW = 9;
   private cellH = 17;
@@ -356,6 +371,7 @@ export class Surface {
    * (SPEC §9.1). */
   hide() {
     this.cancelDrag();
+    this.dropAlt();
     this.box.style.display = "none";
   }
 
@@ -367,6 +383,7 @@ export class Surface {
 
   destroy() {
     this.dropDrag();
+    this.dropAlt();
     if (this.settling) clearTimeout(this.settling);
     if (this.keyboard || this.frameFocused()) this.host.focusTerminal();
     this.box.remove();
@@ -644,6 +661,7 @@ export class Surface {
   /** The browser took the pointer away before the release. */
   private lostPointer(e: PointerEvent) {
     if (this.drag && e.pointerId === this.drag.pointer) this.cancelDrag();
+    if (e.pointerId === this.altPointer) this.altPointer = null;
   }
 
   /**
@@ -693,6 +711,87 @@ export class Surface {
     return "";
   }
 
+  // --- Presses with Alt (SPEC §9.2) ---------------------------------------
+
+  /**
+   * A press of a mouse's or a pen's primary button with Alt held is the
+   * program's: the addon replays it on the cells beneath, and the surface
+   * hears nothing of it (no press, drag, click, focus or selection; its
+   * mousedown is cancelled). It holds the pointer until the release, as a
+   * drag does, so every move and the release go to the cells, wherever the
+   * pointer is. Whether it is the program's is decided here, at the press:
+   * Alt let go later changes nothing.
+   */
+  private onAltDown(e: PointerEvent): boolean {
+    if (e.pointerType === "touch" || e.button !== 0 || !e.altKey || !e.isPrimary) return false;
+    this.cancelDrag(); // a drag whose release was lost
+    this.dropAlt();
+    this.pointerPress = true;
+    this.altPointer = e.pointerId;
+    // No longer hovered: a hyperlink under the pointer is left.
+    this.onLeave(e);
+    try {
+      this.doc.documentElement.setPointerCapture(e.pointerId);
+    } catch {
+      /* the browser routes a pressed mouse to the frame anyway */
+    }
+    const [x, y] = this.toPage(e);
+    this.host.cells("down", e, x, y);
+    return true;
+  }
+
+  private onAltMove(e: PointerEvent): boolean {
+    if (e.pointerId !== this.altPointer) return false;
+    const [x, y] = this.toPage(e);
+    this.host.cells("move", e, x, y);
+    return true;
+  }
+
+  private onAltUp(e: PointerEvent): boolean {
+    if (e.pointerId !== this.altPointer || e.button !== 0) return false;
+    this.dropAlt();
+    this.altReleased = true;
+    setTimeout(() => (this.altReleased = false), 0);
+    const [x, y] = this.toPage(e);
+    this.host.cells("up", e, x, y);
+    return true;
+  }
+
+  /** Ends such a gesture without a release: the frame goes away. */
+  private dropAlt() {
+    const p = this.altPointer;
+    if (p === null) return;
+    this.altPointer = null;
+    try {
+      if (this.doc.documentElement.hasPointerCapture(p)) this.doc.documentElement.releasePointerCapture(p);
+    } catch {
+      /* already released */
+    }
+  }
+
+  /** A point of the frame's document in the page. */
+  private toPage(e: MouseEvent): [number, number] {
+    const r = this.frame.getBoundingClientRect();
+    return [r.left + e.clientX, r.top + e.clientY];
+  }
+
+  /** `press` (SPEC §9), if the placement asked for it: `t` is the nearest
+   * element with an id. A press on a hyperlink is the terminal's. */
+  private reportPress(e: Event) {
+    if (!this.presses) return;
+    const link = this.linkIn(e);
+    if (link && this.isHyperlink(link)) return;
+    let id = "";
+    for (const n of e.composedPath()) {
+      const at = isElement(n) ? n.getAttribute("id") : null;
+      if (at) {
+        id = at;
+        break;
+      }
+    }
+    this.emit("press", id);
+  }
+
   // --- Events for the program (PROTOCOL §8) --------------------------------
 
   private listen() {
@@ -702,16 +801,34 @@ export class Surface {
     d.addEventListener(
       "pointerdown",
       (e) => {
+        if (this.onAltDown(e)) return;
+        this.pointerPress = e.pointerType !== "touch";
+        if (this.pointerPress && e.button === 0 && e.isPrimary) this.reportPress(e);
         this.onDragDown(e);
         this.onPress(e);
       },
       true,
     );
-    d.addEventListener("pointermove", (e) => this.onDragMove(e), true);
-    d.addEventListener("pointerup", (e) => this.onDragUp(e), true);
+    d.addEventListener("pointermove", (e) => this.onAltMove(e) || this.onDragMove(e), true);
+    d.addEventListener("pointerup", (e) => this.onAltUp(e) || this.onDragUp(e), true);
     d.addEventListener("pointercancel", (e) => this.lostPointer(e), true);
     d.addEventListener("lostpointercapture", (e) => this.lostPointer(e), true);
-    d.addEventListener("mousedown", (e) => this.onPress(e), true);
+    d.addEventListener(
+      "mousedown",
+      (e) => {
+        if (this.altPointer !== null) {
+          // The program's press (SPEC §9.2): no focus, no selection, no drag.
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          return;
+        }
+        // A press with no pointerdown before it is a tap's (SPEC §9).
+        if (!this.pointerPress && e.button === 0) this.reportPress(e);
+        this.pointerPress = false;
+        this.onPress(e);
+      },
+      true,
+    );
     d.addEventListener("focusin", (e) => this.onFocusIn(e), true);
     d.addEventListener("click", (e) => this.onClick(e), true);
     d.addEventListener("auxclick", (e) => this.onAuxClick(e), true);
@@ -842,6 +959,7 @@ export class Surface {
   /** The pointer onto a hyperlink: the terminal hears it, as it does over
    * an OSC 8 one. */
   private onOver(e: MouseEvent) {
+    if (this.altPointer !== null) return; // the program's gesture (SPEC §9.2)
     const link = this.linkIn(e);
     const hyper = link && this.isHyperlink(link) ? link : null;
     if (hyper === this.hovered?.link) return;
@@ -854,6 +972,7 @@ export class Surface {
   }
 
   private onOut(e: MouseEvent) {
+    if (this.altPointer !== null) return;
     const to = e.relatedTarget as Node | null;
     if (this.hovered && to && this.hovered.link.contains(to)) return;
     this.onLeave(e);
@@ -868,6 +987,13 @@ export class Surface {
 
   private onClick(e: MouseEvent) {
     const link = this.linkIn(e);
+    if (this.altReleased) {
+      // The release of a press with Alt held: the program's (SPEC §9.2).
+      this.altReleased = false;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      return;
+    }
     if (this.dragReleased) {
       // A drag's release: it reported its click itself (onDragUp).
       this.dragReleased = false;

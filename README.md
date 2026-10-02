@@ -115,6 +115,19 @@ runs programs for whoever connects.
   the drag reports the click itself when it ends where it began. The host
   stylesheet makes the elements that opt in unselectable, important in its
   layer, whatever the document's CSS. A touch never drags.
+- **Presses** (SPEC §5.2, §9: `p=1` on `a=place`). Every primary press of a
+  mouse or a pen in the window reports `press` on its pointerdown, before
+  the drag and the focus it causes; a tap reports it on the mousedown the
+  browser makes for it. A press on a hyperlink is the terminal's.
+- **Presses with Alt** (SPEC §9.2) are the program's. The frame cancels the
+  press's mousedown (no focus, selection, drag or hyperlink), reports
+  nothing, and captures the pointer on its root until the release; the
+  addon replays the press on xterm.js's screen and the moves and release on
+  its document, where xterm.js listens, as it replays wheels: a mouse report
+  with Alt, or with reporting off, xterm.js's rectangular selection. A
+  surface that had the keyboard gives it back first (`blur`). The browser's
+  click on the release is not the surface's. Firefox drops the pressed
+  element's `:hover` only at the next move.
 - **Detached surfaces** (SPEC §5.5: `a=detach`, or `d=1` on `a=doc`) send no
   events and never take the keyboard. Their `input`, `select`, `textarea`
   and `button` elements carry a `disabled` of the addon's own, which

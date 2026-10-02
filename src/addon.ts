@@ -88,7 +88,7 @@ export interface Inspected {
 }
 
 /** `drag` stands for `dragstart`, `drag` and `dragend` (SPEC §4, §9.1). */
-export const EVENTS = ["click", "change", "input", "submit", "drag", "focus", "blur", "resize"];
+export const EVENTS = ["click", "change", "input", "submit", "press", "drag", "focus", "blur", "resize"];
 
 interface Placement {
   surface: Surface;
@@ -430,6 +430,8 @@ export class HottyAddon implements ITerminalAddon {
     s.setSize(cols, rows, cellW, cellH, win);
     s.setZ(z);
     this.unplace(s.name);
+    // Presses (SPEC §5.2): like z, the placement's.
+    s.presses = c.get("p") === "1";
 
     const buf = this.term.buffer.active;
     const col = buf.cursorX;
@@ -494,6 +496,7 @@ export class HottyAddon implements ITerminalAddon {
     this.placements.delete(name);
     for (const d of p.disposables) d.dispose();
     p.marker?.dispose();
+    p.surface.presses = false;
     p.surface.park();
   }
 
@@ -595,6 +598,7 @@ export class HottyAddon implements ITerminalAddon {
       // Replayed on the terminal's screen, where xterm handles it as its own:
       // scrollback, or mouse reports and arrow keys on the alternate screen.
       wheel: (e, x, y) => this.forwardWheel(e, x, y),
+      cells: (kind, e, x, y) => this.pressCells(kind, e, x, y),
     };
   }
 
@@ -641,6 +645,44 @@ export class HottyAddon implements ITerminalAddon {
     });
     legacyWheelDelta(ev, e);
     this.term.element?.querySelector(".xterm-screen")?.dispatchEvent(ev);
+  }
+
+  /**
+   * A press with Alt held on a surface, a move of its gesture, or its
+   * release (SPEC §9.2), replayed on the cells beneath, where xterm.js
+   * handles them as its own mouse: a report to the program, with Alt, or
+   * its selection (rectangular, with Alt). The press goes to the screen,
+   * where xterm.js listens for presses; the moves and the release to its
+   * document, where it listens while a button is held. The keyboard goes
+   * back to the terminal first, as on a click on the cells (§10.1): a
+   * surface that had it sends `blur`.
+   */
+  private pressCells(kind: "down" | "move" | "up", e: MouseEvent, x: number, y: number) {
+    const el = this.term.element;
+    if (!el) return;
+    const init: MouseEventInit = {
+      clientX: x,
+      clientY: y,
+      screenX: e.screenX,
+      screenY: e.screenY,
+      button: 0,
+      buttons: e.buttons,
+      // xterm.js selects on a press whose detail is the click count.
+      detail: kind === "down" ? e.detail || 1 : e.detail,
+      altKey: e.altKey,
+      ctrlKey: e.ctrlKey,
+      shiftKey: e.shiftKey,
+      metaKey: e.metaKey,
+      bubbles: true,
+      cancelable: true,
+      view: el.ownerDocument.defaultView,
+    };
+    if (kind === "down") {
+      for (const s of this.surfaces.values()) if (s.hasKeyboard()) s.blur();
+      el.querySelector(".xterm-screen")?.dispatchEvent(new MouseEvent("mousedown", init));
+      return;
+    }
+    el.ownerDocument.dispatchEvent(new MouseEvent(kind === "move" ? "mousemove" : "mouseup", init));
   }
 
   private ensureLayer(): HTMLDivElement {
