@@ -20,6 +20,7 @@ import { clean, type Policy } from "./network.ts";
 import { Store } from "./resources.ts";
 import { type Scheme, Surface, type SurfaceHost } from "./surface.ts";
 import { Touch } from "./touch.ts";
+import { VERSION } from "./version.ts";
 import { Assembler, Control, encode, OSC, text, type Command, type Decoded } from "./wire.ts";
 
 export interface HottyOptions {
@@ -382,6 +383,7 @@ export class HottyAddon implements ITerminalAddon {
       limits: { resources: this.store.quota, surfaces: this.opts.maxSurfaces },
       net: this.policy,
       host: "xterm-addon-hotty",
+      version: VERSION,
     };
   }
 
