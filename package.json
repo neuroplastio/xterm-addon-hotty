@@ -1,19 +1,30 @@
 {
   "name": "xterm-addon-hotty",
-  "version": "0.0.1",
-  "private": true,
+  "version": "0.1.0",
   "description": "HOTTY (HTML Over The TTY) for xterm.js: surfaces rendered by the browser, each in a sandboxed iframe",
   "type": "module",
   "license": "Apache-2.0",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/hotty-xterm.js"
+    }
   },
+  "types": "./dist/types/index.d.ts",
+  "files": [
+    "dist/hotty-xterm.js",
+    "dist/hotty-xterm.js.map",
+    "dist/types"
+  ],
+  "sideEffects": false,
   "scripts": {
     "build": "node build.mjs",
+    "types": "tsc -p tsconfig.types.json",
     "typecheck": "tsc --noEmit -p .",
     "test:unit": "node --test tests/unit/*.test.ts",
     "test:e2e": "playwright test",
-    "check": "npm run typecheck && npm run build && npm run test:unit && npm run test:e2e"
+    "check": "npm run typecheck && npm run build && npm run types && npm run test:unit && npm run test:e2e",
+    "prepack": "npm run build && npm run types"
   },
   "peerDependencies": {
     "@xterm/xterm": "^6.0.0 || ^6.1.0-0"
@@ -28,8 +39,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/neuroplastio/xterm-addon-hotty.git"
+    "url": "git+https://github.com/neuroplastio/xterm-addon-hotty.git"
   },
+  "homepage": "https://github.com/neuroplastio/xterm-addon-hotty#readme",
+  "bugs": "https://github.com/neuroplastio/xterm-addon-hotty/issues",
   "keywords": [
     "xterm.js",
     "xterm",

@@ -1,7 +1,10 @@
-// Builds the addon (dist/hotty-xterm.js) and the demo page (dist/).
+// Builds the addon (dist/hotty-xterm.js) and the demo page (dist/), from an
+// empty dist/, so that nothing stale is packed. `npm run types` adds the
+// declarations (dist/types).
 import * as esbuild from "esbuild";
-import { cpSync, mkdirSync } from "node:fs";
+import { cpSync, mkdirSync, rmSync } from "node:fs";
 
+rmSync("dist", { recursive: true, force: true });
 mkdirSync("dist", { recursive: true });
 const common = { bundle: true, format: "esm", target: "es2022", sourcemap: true, logLevel: "warning" };
 await esbuild.build({ ...common, entryPoints: ["src/index.ts"], outfile: "dist/hotty-xterm.js", external: ["@xterm/xterm"] });

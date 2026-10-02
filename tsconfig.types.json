@@ -1,0 +1,14 @@
+// The declarations that ship in the package (dist/types), next to the bundle.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "src",
+    "outDir": "dist/types",
+    "types": []
+  },
+  "include": ["src"]
+}

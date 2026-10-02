@@ -6,6 +6,13 @@ document in a sandboxed iframe. It shares no code with hotty-blitz, the
 other implementation, and passes the same conformance vectors. The HOTTY
 repository's example programs run unchanged in a browser tab.
 
+```
+npm install xterm-addon-hotty @xterm/xterm
+```
+
+The package is an ES module with its TypeScript declarations, for xterm.js
+6, and has no dependencies.
+
 ```ts
 import { Terminal } from "@xterm/xterm";
 import { HottyAddon } from "xterm-addon-hotty";
@@ -266,7 +273,7 @@ Measured 2026-09-29 in headless Chromium 153 (`bench/`):
 
 `npm run check` runs:
 
-- the typecheck and the build;
+- the typecheck, the build and the declarations (what `npm pack` ships);
 - the unit tests (`node --test`: the wire, keys, decoding the reference Python
   client, and the conformance vectors' wire section);
 - the Playwright tests, against Chromium (and Firefox once installed:
