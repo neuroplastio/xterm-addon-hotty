@@ -21,7 +21,7 @@ type Step = {
   events?: Expected[];
 };
 const vectors = JSON.parse(readFileSync(join(HOTTY_DIR, "conformance", "vectors.json"), "utf8")) as {
-  vectors: { name: string; requires?: string; steps: Step[] }[];
+  vectors: { name: string; requires?: string | string[]; steps: Step[] }[];
 };
 
 /** Every event a step sent, against its `events`, in order and nothing more. */
@@ -131,12 +131,14 @@ async function point(page: Page, s: string, at: string | [number, number]): Prom
 }
 
 // Capabilities this addon reports that vectors may require (SPEC §4): it
-// does not let the pointer through surfaces yet (§9.3, `passthrough`).
+// does not let the pointer through surfaces yet (§9.3, `passthrough`), and
+// does not send `hover` yet (§9.4: not in `EVENTS`).
 const reported = new Set<string>();
 
 for (const vector of vectors.vectors) {
   test(vector.name, async ({ page, browserName }) => {
-    test.skip(vector.requires !== undefined && !reported.has(vector.requires), `needs ${vector.requires}`);
+    const requires = vector.requires === undefined ? [] : [vector.requires].flat();
+    test.skip(!requires.every((r) => reported.has(r)), `needs ${requires.join(", ")}`);
     await open(page);
     const mouse = new Mouse(page, browserName);
     for (const [i, step] of vector.steps.entries()) {

@@ -241,7 +241,12 @@ img-src 'self' data: blob:; font-src 'self' data: blob:; media-src 'self' data: 
   - §9's text in xterm's buffer (search, serialize, and a selection across a
     surface);
   - following content that scrolls on the alternate screen;
-  - the embedder's web fonts inside surfaces (system fonts work).
+  - the embedder's web fonts inside surfaces (system fonts work);
+  - `hover` (§9.4, `v=1` on `a=place`): `EVENTS` does not list it, so a
+    program never asks, and the vectors that require it are skipped. The
+    frame would report the nearest id on `pointerover` with no button
+    down, and out on leaving the frame, an Alt press, or a release
+    outside it.
 
 ## Costs
 
