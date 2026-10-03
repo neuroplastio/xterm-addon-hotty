@@ -11,7 +11,9 @@ npm install xterm-addon-hotty @xterm/xterm
 ```
 
 The package is an ES module with its TypeScript declarations, for xterm.js
-6, and has no dependencies.
+6, and has no dependencies. A commit not yet released installs from git
+(`github:neuroplastio/xterm-addon-hotty#<commit>`): npm builds it as it
+installs it (`prepare`).
 
 ```ts
 import { Terminal } from "@xterm/xterm";
