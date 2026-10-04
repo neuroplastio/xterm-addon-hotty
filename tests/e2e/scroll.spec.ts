@@ -17,7 +17,7 @@ async function setup(page: Page) {
   await expect(surface(page, "s").locator("#box")).toBeVisible();
 }
 
-type Scrolling = { buffer: { active: { viewportY: number } }; scrollToBottom(): void };
+type Scrolling = { rows: number; buffer: { active: { viewportY: number } }; scrollToBottom(): void; scrollToLine(line: number): void };
 const viewportY = (page: Page) => page.evaluate(() => (window.hotty.term as unknown as Scrolling).buffer.active.viewportY);
 
 test("nothing in a surface scrolls: no scrollbar, no offset, and a wheel over it moves the terminal", async ({ page }) => {
@@ -71,6 +71,32 @@ test.describe("on a touch screen", () => {
       .toBe(true);
   });
 
+  test("a drag over a surface moves the scrollback the way the finger goes, as far as it goes", async ({ page, browserName }) => {
+    test.skip(browserName !== "chromium", "touch input comes from CDP");
+    await open(page, "?pty=0");
+    // A surface in the middle of the scrollback, and the screen on it.
+    await write(page, Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\r\n") + "\r\n");
+    await send(page, { a: "doc", s: "s", q: "2" }, DOC);
+    await send(page, { a: "place", s: "s", c: "30", r: "6", q: "2" });
+    await write(page, Array.from({ length: 100 }, (_, i) => `more ${i}`).join("\r\n"));
+    await page.evaluate(() => (window.hotty.term as unknown as Scrolling).scrollToLine(95));
+    await expect(surface(page, "s").locator("#box")).toBeInViewport();
+    const cellH = await page.evaluate(() => document.querySelector(".xterm-screen")!.clientHeight / (window.hotty.term as unknown as Scrolling).rows);
+    const r = (await page.locator('.hotty-surface[data-surface="s"]').boundingBox())!;
+    const cdp = await page.context().newCDPSession(page);
+    const touch = (type: "touchStart" | "touchMove" | "touchEnd", points: { x: number; y: number }[]) =>
+      cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
+    // The finger goes up 120 pixels, and rests before it lifts: no fling.
+    const x = r.x + r.width / 2;
+    const y = r.y + r.height / 2;
+    await touch("touchStart", [{ x, y }]);
+    for (let i = 1; i <= 8; i++) await touch("touchMove", [{ x, y: y - i * 15 }]);
+    await page.waitForTimeout(150);
+    await touch("touchEnd", []);
+    const moved = (await viewportY(page)) - 95;
+    expect(Math.abs(moved - 120 / cellH)).toBeLessThanOrEqual(1);
+  });
+
   test("on the cells, a tap is a click and a drag is wheel input, at the finger", async ({ page, browserName }) => {
     test.skip(browserName !== "chromium", "touch input comes from CDP");
     await open(page, "?pty=0");
@@ -103,5 +129,73 @@ test.describe("on a touch screen", () => {
       })
       .toMatch(/\x1b\[<64;\d+;\d+M/);
     expect(raw).not.toContain("NaN");
+  });
+});
+
+// `scroll: "page"`: the page scrolls, natively, from the surfaces and the
+// cells alike, and the terminal, as tall as what it shows, never does.
+test.describe("where the page scrolls", () => {
+  /** A surface near the top of a terminal three windows tall. */
+  async function tall(page: Page) {
+    await open(page, "?pty=0&scroll=page");
+    await write(page, "top\r\n");
+    await send(page, { a: "doc", s: "s", q: "2" }, DOC);
+    await send(page, { a: "place", s: "s", c: "30", r: "6", q: "2" });
+    await expect(surface(page, "s").locator("#box")).toBeVisible();
+    await take(page);
+  }
+  const scrollY = (page: Page) => page.evaluate(() => window.scrollY);
+
+  test("a wheel over a surface scrolls the page, over an element that would scroll too", async ({ page }) => {
+    await tall(page);
+    // Over the box (overflow: auto), which nothing scrolls.
+    const box = (await surface(page, "s").locator("#box").boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, 100);
+    await expect.poll(() => scrollY(page)).toBeGreaterThan(50);
+    expect(await surface(page, "s").locator("#box").evaluate((el) => el.scrollTop)).toBe(0);
+    // Over the button below it.
+    const before = await scrollY(page);
+    const b = (await surface(page, "s").locator("#b").boundingBox())!;
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.mouse.wheel(0, 100);
+    await expect.poll(() => scrollY(page)).toBeGreaterThan(before + 50);
+    expect(await viewportY(page)).toBe(0);
+    expect((await take(page)).raw).toBe("");
+  });
+
+  test.describe("on a touch screen", () => {
+    test.use({ hasTouch: true });
+
+    test("a drag over a surface or the cells scrolls the page, and the program hears nothing", async ({ page, browserName }) => {
+      test.skip(browserName !== "chromium", "touch input comes from CDP");
+      await tall(page);
+      const cdp = await page.context().newCDPSession(page);
+      const touch = (type: "touchStart" | "touchMove" | "touchEnd", points: { x: number; y: number }[]) =>
+        cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
+      const drag = async (at: { x: number; y: number }) => {
+        await touch("touchStart", [at]);
+        for (let i = 1; i <= 8; i++) await touch("touchMove", [{ x: at.x, y: at.y - i * 15 }]);
+        await page.waitForTimeout(150);
+        await touch("touchEnd", []);
+      };
+      // On the box (overflow: auto), which nothing scrolls.
+      const box = (await surface(page, "s").locator("#box").boundingBox())!;
+      await drag({ x: box.x + box.width / 2, y: box.y + box.height / 2 });
+      await expect.poll(() => scrollY(page)).toBeGreaterThan(60);
+      // On the button below it.
+      let before = await scrollY(page);
+      const b = (await surface(page, "s").locator("#b").boundingBox())!;
+      await drag({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
+      await expect.poll(() => scrollY(page)).toBeGreaterThan(before + 60);
+      // On the cells, right of the surface.
+      before = await scrollY(page);
+      const screen = (await page.locator(".xterm-screen").boundingBox())!;
+      await drag({ x: screen.x + screen.width - 40, y: 400 });
+      await expect.poll(() => scrollY(page)).toBeGreaterThan(before + 60);
+      expect(await surface(page, "s").locator("#box").evaluate((el) => el.scrollTop)).toBe(0);
+      expect(await viewportY(page)).toBe(0);
+      expect((await take(page)).raw).toBe("");
+    });
   });
 });

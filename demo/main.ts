@@ -58,11 +58,16 @@ if (params.has("record-links")) {
 }
 // `?page-key=k`: Ctrl+K is the page's too, on top of the browser's own keys.
 const pageKey = params.get("page-key");
+// `?scroll=page`: the page scrolls, not the terminal, which is as tall as
+// three windows.
+const pageScrolls = params.get("scroll") === "page";
+if (pageScrolls) Object.assign(document.getElementById("term")!.style, { position: "static", margin: "8px", height: "300vh" });
 const hotty = new HottyAddon({
   onFrame: (f) => frames.push(f),
   onInvalid: (r) => invalid.push(r),
   network,
   browserKeys: pageKey ? (e) => browserKeys(e) || (e.ctrlKey && e.key === pageKey) : undefined,
+  scroll: pageScrolls ? "page" : undefined,
 });
 const fit = new FitAddon();
 term.loadAddon(fit);

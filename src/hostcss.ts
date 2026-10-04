@@ -26,7 +26,9 @@ export function palette(theme: ITheme | undefined) {
   return { fg, bg, ansi, dark: luminance(bg) < 0.5 };
 }
 
-export function hostCss(theme: ITheme | undefined, m: Metrics): string {
+/** The host stylesheet. `pageScrolls`: the page scrolls, not the terminal
+ * (the addon's `scroll` option), and the browser pans it from a surface. */
+export function hostCss(theme: ITheme | undefined, m: Metrics, pageScrolls = false): string {
   const p = palette(theme);
   const lines = [
     "@layer hotty-host {",
@@ -47,9 +49,10 @@ export function hostCss(theme: ITheme | undefined, m: Metrics): string {
     // A surface is a fixed rectangle of cells, and nothing in it scrolls
     // (SPEC §5.3): what does not fit is clipped. The browser pans nothing
     // on a touch (a drag is the terminal's, SPEC §9; the surface forwards
-    // it), and nothing shows a scrollbar, even with `overflow: auto`.
+    // it), unless the page scrolls, which the browser pans as from the
+    // cells. Nothing shows a scrollbar, even with `overflow: auto`.
     "  overflow: hidden;",
-    "  touch-action: none;",
+    `  touch-action: ${pageScrolls ? "manipulation" : "none"};`,
     "}",
     "body { margin: 0; }",
     // An element that opts in to drags selects no text, whatever the

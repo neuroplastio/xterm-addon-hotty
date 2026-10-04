@@ -195,7 +195,24 @@ runs programs for whoever connects.
     (`NaN`, which a program reads as typing) and turns taps into nothing.
   - Ctrl and the wheel stay the browser's zoom.
   - xterm.js's scrollable reads the legacy `wheelDeltaY` where browsers have
-    it, so a forwarded wheel carries one.
+    it, so a forwarded wheel carries one, worked out from the drag: on a
+    constructed event the browser's own has the wrong sign in Chromium 15x.
+  - A drag is measured in the page, not in the surface, which moves as the
+    terminal scrolls.
+  - **A page that scrolls itself** (`scroll: "page"`): for a page that shows
+    a program's output whole, with the terminal as tall as what it shows,
+    such as a document printed by a program. Wheels and touch drags over
+    the surfaces and the cells are left to the browser, which scrolls the
+    page natively, with its own momentum, and the program hears no wheel.
+    xterm.js never sees them, since it would take a drag for its
+    scrollback, or turn it into arrow keys. Surfaces pan on a touch
+    (`touch-action: manipulation`), and over an element of the document
+    that the browser would scroll instead (`overflow: auto`), the addon
+    scrolls the page itself.
+
+    ```ts
+    new HottyAddon({ scroll: "page" });
+    ```
 - **Cursor.** After `a=place` the cursor moves below the surface, as in the
   native host. xterm.js has no public API for that, so the addon uses the same
   private calls as the official image addon.

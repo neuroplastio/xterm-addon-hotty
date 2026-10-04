@@ -69,6 +69,12 @@ export interface SurfaceHost {
   focusTerminal(): void;
   /** The host's half of the network policy (SPEC §7.2). */
   policy: Policy;
+  /** The page scrolls, not the terminal (the `scroll` option): wheels and
+   *  touch drags over the surface are left to the browser. */
+  pageScrolls: boolean;
+  /** Scrolls the page by dx, dy pixels, where the page scrolls: for a
+   *  gesture the browser would give an element of the document instead. */
+  scrollPage(dx: number, dy: number): void;
   /** A hyperlink (SPEC §9: a link with target="_blank") was hovered, left
    *  or clicked: the terminal's, as an OSC 8 hyperlink is. `box` is the
    *  link's box in the page. */
@@ -932,14 +938,23 @@ export class Surface {
     d.addEventListener("error", () => this.refit(), true);
     d.fonts.addEventListener("loadingdone", () => this.refit());
     // A touch drag is the terminal's, as a wheel is (SPEC §9); taps and long
-    // presses stay the surface's.
-    new Touch(d, this.frame.ownerDocument.defaultView!, {
-      scroll: (dx, dy, x, y) => this.host.wheel(new WheelEvent("wheel", { deltaX: dx, deltaY: dy, deltaMode: 0, clientX: x, clientY: y }), x, y),
-      toPage: (x, y) => {
-        const r = this.frame.getBoundingClientRect();
-        return [r.left + x, r.top + y];
-      },
-    });
+    // presses stay the surface's. Where the page scrolls, the browser
+    // scrolls it from here, as from the cells, but for a drag on an element
+    // it would scroll instead (`inScroller`).
+    const toPage = (x: number, y: number): [number, number] => {
+      const r = this.frame.getBoundingClientRect();
+      return [r.left + x, r.top + y];
+    };
+    if (this.host.pageScrolls) {
+      new Touch(d, this.frame.ownerDocument.defaultView!, { scroll: (dx, dy) => this.host.scrollPage(dx, dy), toPage }, false, (e) =>
+        this.inScroller(e.target),
+      );
+    } else {
+      new Touch(d, this.frame.ownerDocument.defaultView!, {
+        scroll: (dx, dy, x, y) => this.host.wheel(new WheelEvent("wheel", { deltaX: dx, deltaY: dy, deltaMode: 0, clientX: x, clientY: y }), x, y),
+        toPage,
+      });
+    }
     // The frame's own focus gives no keyboard: an element in it that takes
     // focus does (`onFocusIn`), or the program (SPEC §10.1).
     win.addEventListener("focus", () => {
@@ -959,13 +974,37 @@ export class Surface {
    * (SPEC §5.3, §9). Wheel events never leave an iframe, so without this
    * the terminal's scrollback (or, on the alternate screen, the program's
    * wheel input) would stall under the pointer. Ctrl and the wheel stay the
-   * browser's: its zoom.
+   * browser's: its zoom. Where the page scrolls (the `scroll` option), the
+   * wheel is the browser's too: nothing in the frame scrolls, so it scrolls
+   * the page, as over the cells; but over an element it would scroll
+   * instead, the surface scrolls the page itself.
    */
   private onWheel(e: WheelEvent) {
     if (e.ctrlKey) return;
+    if (this.host.pageScrolls) {
+      if (!this.inScroller(e.target)) return;
+      e.preventDefault();
+      const px = e.deltaMode === WheelEvent.DOM_DELTA_PIXEL ? 1 : e.deltaMode === WheelEvent.DOM_DELTA_LINE ? 20 : 400;
+      this.host.scrollPage(e.deltaX * px, e.deltaY * px);
+      return;
+    }
     e.preventDefault();
     const r = this.frame.getBoundingClientRect();
     this.host.wheel(e, r.left + e.clientX, r.top + e.clientY);
+  }
+
+  /** Whether a wheel or a touch at target would scroll an element of the
+   * document, overflowing with `overflow: auto` or `scroll`: the browser
+   * gives the gesture to it before the page, and nothing in a surface
+   * scrolls (SPEC §5.3), so the gesture would go nowhere. */
+  private inScroller(target: EventTarget | null): boolean {
+    for (let n = target && isElement(target) ? target : null; n; n = n.parentElement) {
+      const s = n.ownerDocument.defaultView!.getComputedStyle(n);
+      const y = /auto|scroll/.test(s.overflowY) && n.scrollHeight > n.clientHeight;
+      const x = /auto|scroll/.test(s.overflowX) && n.scrollWidth > n.clientWidth;
+      if (x || y) return true;
+    }
+    return false;
   }
 
   /** Whatever the browser scrolled (a focused element into view, say) goes

@@ -49,6 +49,16 @@ export interface HottyOptions {
    */
   touch?: boolean;
   /**
+   * What a wheel or a touch drag scrolls, over the cells and the surfaces
+   * alike (SPEC §9). `"terminal"` (the default): the terminal's scrollback,
+   * or on the alternate screen the program's wheel input. `"page"`: the page
+   * the terminal is in, for a page that shows a program's output whole, with
+   * the terminal as tall as what it shows. Neither the addon nor xterm.js
+   * takes a wheel or a touch then: the browser scrolls the page, natively,
+   * and the program hears no wheel. `touch` does nothing in this mode.
+   */
+  scroll?: "terminal" | "page";
+  /**
    * Keys the browser keeps: they never reach the program, from the terminal
    * or from a surface holding the keyboard, and the browser acts on them.
    * A terminal cannot know which keys a program binds, so these are the
@@ -582,6 +592,8 @@ export class HottyAddon implements ITerminalAddon {
         else this.term.focus();
       },
       policy: this.policy,
+      pageScrolls: this.pageScrolls,
+      scrollPage: (dx, dy) => this.scrollPage(dx, dy),
       // A hyperlink (SPEC §9) goes where xterm.js sends an OSC 8 one: the
       // terminal's linkHandler, or its confirm-then-open default, and only
       // for http and https unless the handler allows other schemes.
@@ -609,10 +621,44 @@ export class HottyAddon implements ITerminalAddon {
   }
 
   private cellTouch: Touch | null = null;
+  private pageScrollBound = false;
+
+  /** Whether the page scrolls, not the terminal (the `scroll` option). */
+  private get pageScrolls(): boolean {
+    return this.opts.scroll === "page";
+  }
+
+  /**
+   * Wheels and touches on the cells left to the browser, which scrolls the
+   * page (`scroll: "page"`): they stop at the terminal's element, before
+   * xterm.js, which would take them for its scrollback, or turn a drag into
+   * arrow keys, and cancel the browser's scroll. Nothing here cancels it.
+   */
+  private bindPageScroll(el: HTMLElement) {
+    if (this.pageScrollBound) return;
+    this.pageScrollBound = true;
+    const stop = (e: Event) => e.stopPropagation();
+    for (const type of ["wheel", "touchstart", "touchmove", "touchend", "touchcancel"]) {
+      el.addEventListener(type, stop, { capture: true, passive: true });
+      this.disposables.push({ dispose: () => el.removeEventListener(type, stop, { capture: true }) });
+    }
+  }
+
+  /** Scrolls what scrolls the terminal's page: its nearest ancestor that
+   * scrolls, or the document. */
+  private scrollPage(dx: number, dy: number) {
+    let el = this.term.element?.parentElement ?? null;
+    for (; el; el = el.parentElement) {
+      const o = getComputedStyle(el).overflowY;
+      if (/auto|scroll/.test(o) && el.scrollHeight > el.clientHeight) break;
+    }
+    (el ?? document.scrollingElement ?? document.documentElement).scrollBy(dx, dy);
+  }
 
   /** Touch on the cells (the `touch` option), once the terminal is open. */
   private bindTouch() {
     const el = this.term.element;
+    if (el && this.pageScrolls) return this.bindPageScroll(el);
     if (this.cellTouch || !el || this.opts.touch === false) return;
     const screen = () => el.querySelector(".xterm-screen");
     this.cellTouch = new Touch(
@@ -733,7 +779,7 @@ export class HottyAddon implements ITerminalAddon {
   private hostCss(): string {
     const { cellW, cellH } = this.cell();
     const o = this.term.options;
-    this.css = hostCss(o.theme, { cellW, cellH, fontFamily: o.fontFamily ?? "monospace", fontSize: o.fontSize ?? 15 });
+    this.css = hostCss(o.theme, { cellW, cellH, fontFamily: o.fontFamily ?? "monospace", fontSize: o.fontSize ?? 15 }, this.pageScrolls);
     return this.css;
   }
 
@@ -795,17 +841,20 @@ function openAfterConfirm(uri: string): void {
 /**
  * xterm.js scrolls its scrollback with VS Code's scrollable, which reads the
  * legacy `wheelDeltaX`/`wheelDeltaY` wherever the browser has them (Chromium,
- * WebKit), and those are 0 on a constructed event: without this, a forwarded
- * wheel moves nothing there. A real wheel's own values are kept. A drag's
- * (pixels) are chosen so the scrollback moves as far as the finger: the
- * scrollable moves 50 pixels per 120 of wheelDelta.
+ * WebKit), before `deltaX`/`deltaY`. A real wheel's own values are kept. On
+ * a constructed event (a touch drag's) they are the browser's guess: 0 in
+ * some versions, in Chromium 15x the delta itself, with the sign of a wheel
+ * the other way, so the drag scrolled backwards. Its values are worked out
+ * here instead, so that the scrollback moves as far as the finger, and the
+ * way it moves: the scrollable moves 50 pixels per 120 of wheelDelta.
  */
 function legacyWheelDelta(ev: WheelEvent, from: WheelEvent) {
   if (!("wheelDeltaY" in WheelEvent.prototype)) return; // Firefox reads deltaY
   const legacy = from as WheelEvent & { wheelDeltaX?: number; wheelDeltaY?: number };
+  const real = from.isTrusted;
   const pixels = from.deltaMode === WheelEvent.DOM_DELTA_PIXEL ? 1 : from.deltaMode === WheelEvent.DOM_DELTA_LINE ? 20 : 400;
-  const x = legacy.wheelDeltaX || -from.deltaX * pixels * (120 / 50);
-  const y = legacy.wheelDeltaY || -from.deltaY * pixels * (120 / 50);
+  const x = (real && legacy.wheelDeltaX) || -from.deltaX * pixels * (120 / 50);
+  const y = (real && legacy.wheelDeltaY) || -from.deltaY * pixels * (120 / 50);
   Object.defineProperty(ev, "wheelDeltaX", { value: x });
   Object.defineProperty(ev, "wheelDeltaY", { value: y });
 }

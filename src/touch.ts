@@ -29,13 +29,16 @@ export class Touch {
   /**
    * `exclusive`: every touch here is this Touch's (the cells: xterm.js's own
    * touch handling, which listens on the document, never sees it). Otherwise
-   * (a surface) a touch is left alone until it moves.
+   * (a surface) a touch is left alone until it moves. `engage`, if given,
+   * says on a touch's start whether it is this Touch's at all: one it
+   * declines is the browser's, from start to end.
    */
   constructor(
     target: EventTarget,
     private readonly win: Window,
     private readonly host: TouchHost,
     private readonly exclusive = false,
+    private readonly engage?: (e: TouchEvent) => boolean,
   ) {
     const on = (type: string, f: (e: TouchEvent) => void, passive: boolean) => {
       const l = (e: Event) => f(e as TouchEvent);
@@ -64,7 +67,12 @@ export class Touch {
     this.keep(e);
     this.stopFling();
     const t = e.touches.length === 1 ? e.touches[0] : undefined;
-    this.touch = t ? { id: t.identifier, x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY, t: e.timeStamp, t0: e.timeStamp, vx: 0, vy: 0, dragging: false } : null;
+    if (!t || (this.engage && !this.engage(e))) {
+      this.touch = null;
+      return;
+    }
+    const [x, y] = this.host.toPage(t.clientX, t.clientY);
+    this.touch = { id: t.identifier, x0: x, y0: y, x, y, t: e.timeStamp, t0: e.timeStamp, vx: 0, vy: 0, dragging: false };
   }
 
   private move(e: TouchEvent) {
@@ -77,18 +85,23 @@ export class Touch {
     }
     const t = [...e.changedTouches].find((c) => c.identifier === s.id);
     if (!t) return;
-    if (!s.dragging && Math.hypot(t.clientX - s.x0, t.clientY - s.y0) < DRAG_SLOP) return;
+    // In the page, not in the listened-to document: a surface moves as the
+    // terminal scrolls, and the finger, in its own coordinates, with it.
+    // Measured there, each step of the scroll would read as the finger
+    // moving back, and scroll again.
+    const [x, y] = this.host.toPage(t.clientX, t.clientY);
+    if (!s.dragging && Math.hypot(x - s.x0, y - s.y0) < DRAG_SLOP) return;
     s.dragging = true;
     e.preventDefault();
-    const dx = t.clientX - s.x;
-    const dy = t.clientY - s.y;
+    const dx = x - s.x;
+    const dy = y - s.y;
     const dt = Math.max(1, e.timeStamp - s.t);
     s.vx = 0.7 * (dx / dt) + 0.3 * s.vx;
     s.vy = 0.7 * (dy / dt) + 0.3 * s.vy;
-    s.x = t.clientX;
-    s.y = t.clientY;
+    s.x = x;
+    s.y = y;
     s.t = e.timeStamp;
-    this.scroll(-dx, -dy, s.x, s.y);
+    this.host.scroll(-dx, -dy, x, y);
   }
 
   private end(e: TouchEvent) {
@@ -103,14 +116,8 @@ export class Touch {
     if (this.host.tap && e.timeStamp - s.t0 < 500) {
       // The tap is the click: not the browser's own mouse events as well.
       e.preventDefault();
-      const [x, y] = this.host.toPage(s.x, s.y);
-      this.host.tap(x, y);
+      this.host.tap(s.x, s.y);
     }
-  }
-
-  private scroll(dx: number, dy: number, x: number, y: number) {
-    const [px, py] = this.host.toPage(x, y);
-    this.host.scroll(dx, dy, px, py);
   }
 
   private startFling(vx: number, vy: number, x: number, y: number) {
@@ -125,7 +132,7 @@ export class Touch {
         this.fling = 0;
         return;
       }
-      this.scroll(vx * dt, vy * dt, x, y);
+      this.host.scroll(vx * dt, vy * dt, x, y);
       this.fling = this.win.requestAnimationFrame(step);
     };
     this.fling = this.win.requestAnimationFrame(step);
