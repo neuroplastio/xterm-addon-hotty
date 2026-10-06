@@ -7,7 +7,7 @@ other implementation, and passes the same conformance vectors. The HOTTY
 repository's example programs run unchanged in a browser tab.
 
 ```
-npm install xterm-addon-hotty @xterm/xterm
+npm install @neuroplastio/xterm-addon-hotty @xterm/xterm
 ```
 
 The package is an ES module with its TypeScript declarations, for xterm.js
@@ -17,7 +17,7 @@ installs it (`prepare`).
 
 ```ts
 import { Terminal } from "@xterm/xterm";
-import { HottyAddon } from "xterm-addon-hotty";
+import { HottyAddon } from "@neuroplastio/xterm-addon-hotty";
 
 const term = new Terminal({
   // Optional: key releases for programs that need them (games), SPEC §10.3.
@@ -176,7 +176,7 @@ runs programs for whoever connects.
   of its own:
 
   ```ts
-  import { HottyAddon, browserKeys } from "xterm-addon-hotty";
+  import { HottyAddon, browserKeys } from "@neuroplastio/xterm-addon-hotty";
 
   new HottyAddon({ browserKeys: (e) => browserKeys(e) || (e.ctrlKey && e.key === "k") });
   ```

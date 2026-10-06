@@ -2,7 +2,7 @@
 // tests/host.rs checks it on the other hosts.
 
 import { expect, test, type Page } from "@playwright/test";
-import { VERSION } from "../../src/version.ts";
+import { HOST, VERSION } from "../../src/version.ts";
 import { Control, encode } from "../../src/wire.ts";
 import { cell, cmd, open, send, surface, take, write } from "./helpers.ts";
 
@@ -16,7 +16,7 @@ test("a=q answers with capabilities", async ({ page }) => {
   expect(msgs[0]!.get("n")).toBe("7");
   const caps = msgs[0]!.json as { v: string; ops: string[]; cell: { w: number; h: number }; host: string; version: string };
   expect(caps.v).toBe("0.1");
-  expect(caps.host).toBe("xterm-addon-hotty");
+  expect(caps.host).toBe(HOST);
   expect(caps.version).toBe(VERSION);
   expect(caps.ops).toContain("morph");
   expect(caps.cell.h).toBeGreaterThan(0);
