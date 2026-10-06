@@ -69,3 +69,18 @@ export async function cell(page: Page): Promise<{ w: number; h: number }> {
   const caps = msgs.find((m) => m.get("re") === "q")!.json as { cell: { w: number; h: number }; scale: number };
   return { w: caps.cell.w / caps.scale, h: caps.cell.h / caps.scale };
 }
+
+/**
+ * An event's detail without the `area` of a click or a press (SPEC §9),
+ * for tests of other things, which leave where elements are to
+ * `area.spec.ts`. The area is still checked to be whole cells, and a detail
+ * with nothing else is none.
+ */
+export function sansArea(json: unknown): unknown {
+  if (json === null || typeof json !== "object" || !("area" in json)) return json;
+  const { area, ...rest } = json as { area: Record<string, unknown> };
+  for (const k of ["c", "r", "w", "h"]) {
+    if (!Number.isInteger(area[k])) throw new Error(`area.${k} is not a whole number: ${JSON.stringify(area)}`);
+  }
+  return Object.keys(rest).length ? rest : null;
+}

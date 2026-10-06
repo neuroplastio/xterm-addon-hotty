@@ -3,10 +3,10 @@
 
 import { expect, test } from "@playwright/test";
 import { readFileSync, rmSync } from "node:fs";
-import { open, send, surface, take, write } from "./helpers.ts";
+import { open, sansArea, send, surface, take, write } from "./helpers.ts";
 
 const evs = (msgs: Awaited<ReturnType<typeof take>>["msgs"]) =>
-  msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("e"), m.get("t"), m.json]);
+  msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("e"), m.get("t"), sansArea(m.json)]);
 
 test("form.py runs unchanged: typing, Tab, Space, a click, Esc, q", async ({ page }, info) => {
   const log = info.outputPath("form-events.jsonl");
@@ -26,7 +26,7 @@ test("form.py runs unchanged: typing, Tab, Space, a click, Esc, q", async ({ pag
   await page.keyboard.press("q");
   await expect.poll(() => page.evaluate(() => (window as unknown as { hotty: { exited: boolean } }).hotty.exited)).toBe(true);
   const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-  const got = lines.filter((l) => l.kind === "event").map((l) => [l.e, l.t, l.detail]);
+  const got = lines.filter((l) => l.kind === "event").map((l) => [l.e, l.t, sansArea(l.detail)]);
   expect(got).toEqual([
     ["change", "name", { value: "Ada Lovelace" }],
     ["change", "email", { value: "ada@example.com" }],

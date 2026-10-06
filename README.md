@@ -180,7 +180,7 @@ runs programs for whoever connects.
 
   new HottyAddon({ browserKeys: (e) => browserKeys(e) || (e.ctrlKey && e.key === "k") });
   ```
-- **Nothing in a surface scrolls** (SPEC §5.3, §9):
+- **Nothing in a surface scrolls unless its document asks** (SPEC §5.3, §9):
   - It shows no scrollbars, and pans nothing on a touch
     (`touch-action: none`). Any scroll offset the browser sets goes back to
     zero, except a text field's own text.
@@ -213,6 +213,48 @@ runs programs for whoever connects.
     ```ts
     new HottyAddon({ scroll: "page" });
     ```
+- **A document that scrolls** (`scroll=1`, `2` or `3` on `a=doc`, SPEC
+  §5.1, §5.3; the capabilities say `"scroll": true`):
+  - Along the axes it asked for, the browser scrolls it as it scrolls a
+    page: the root and every `overflow: auto` or `scroll` element, with
+    the browser's scrollbars, which take pixels inside the frame, never
+    cells. The root pans on a touch along those axes (`touch-action:
+    pan-y`, `pan-x`).
+  - Along an axis it did not ask for, the root and every element whose
+    `overflow` there is `auto` or `scroll` are `overflow: hidden`, important
+    in the host's layer: no scrollbar, and nothing the user does moves it.
+    CSS cannot select by a computed value, so the addon reads it after each
+    document, delta and host stylesheet, and marks those elements with an
+    attribute of its own, which inspection and morphs do not see.
+  - **Gestures.** A wheel gesture's first event decides where it goes, as
+    a browser latches scrolling to what it began on (a gesture is wheels
+    less than 150ms apart): to the document while the innermost box under
+    the pointer that can move that way can (the browser scrolls it), else
+    on to the terminal, as over the cells, unless `overscroll-behavior`
+    stops it. A gesture begun over the cells stays the terminal's when a
+    surface comes under the pointer. A touch drag decides the same way once
+    it has a direction: the browser pans the document, or the drag goes to
+    the terminal as before.
+  - **Keys.** While the surface has the keyboard, the keys a browser
+    scrolls with and the focused element does not use (SPEC §10.2) scroll
+    the innermost box, from the focused element outward, that can move
+    that way: the arrows by 40 pixels, Page Up and Page Down, Space and
+    Shift+Space by seven eighths of the box, Home and End to the ends. The
+    addon scrolls the box itself, since the browser's own action may be the
+    element's (a radio button's arrows). Where nothing can move that way,
+    the key goes on to the program, as any key the surface does not use.
+  - Focus scrolls an element into view, as the browser does. The program
+    hears nothing of scrolling. A delta keeps the offsets, and so do hiding
+    and placing again; a new document starts at the top left. `r=auto` and
+    `fit` measure the document with its root clipped, so the root's
+    scrollbar does not make its lines wrap.
+  - Where the page scrolls (`scroll: "page"`), the browser chains a
+    gesture from the document to the page natively.
+- **Where an element is** (SPEC §9: `area` on `click` and `press`): the
+  cells of its bounding box in the frame, as the user sees it, scrolled
+  included, divided by the cell size. An edge within half a device pixel of
+  a cell's counts as on it, since layout rounds positions to fractions of a
+  pixel. A press with no id carries none.
 - **Cursor.** After `a=place` the cursor moves below the surface, as in the
   native host. xterm.js has no public API for that, so the addon uses the same
   private calls as the official image addon.

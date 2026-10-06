@@ -19,6 +19,10 @@ export interface TouchHost {
   tap?(pageX: number, pageY: number): void;
   /** The listened-to document's point in the page (an iframe's offset). */
   toPage(x: number, y: number): [number, number];
+  /** Whether a drag that has just begun, scrolling by dx, dy pixels so far,
+   *  is this Touch's. One it declines is the browser's to its end. Absent:
+   *  every drag is. */
+  claim?(dx: number, dy: number, e: TouchEvent): boolean;
 }
 
 export class Touch {
@@ -91,6 +95,10 @@ export class Touch {
     // moving back, and scroll again.
     const [x, y] = this.host.toPage(t.clientX, t.clientY);
     if (!s.dragging && Math.hypot(x - s.x0, y - s.y0) < DRAG_SLOP) return;
+    if (!s.dragging && this.host.claim && !this.host.claim(s.x0 - x, s.y0 - y, e)) {
+      this.touch = null;
+      return;
+    }
     s.dragging = true;
     e.preventDefault();
     const dx = x - s.x;

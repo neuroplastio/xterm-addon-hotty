@@ -26,9 +26,9 @@ export function palette(theme: ITheme | undefined) {
   return { fg, bg, ansi, dark: luminance(bg) < 0.5 };
 }
 
-/** The host stylesheet. `pageScrolls`: the page scrolls, not the terminal
- * (the addon's `scroll` option), and the browser pans it from a surface. */
-export function hostCss(theme: ITheme | undefined, m: Metrics, pageScrolls = false): string {
+/** The host stylesheet, the same for every surface. What scrolls is each
+ * document's own (`scrollCss`). */
+export function hostCss(theme: ITheme | undefined, m: Metrics): string {
   const p = palette(theme);
   const lines = [
     "@layer hotty-host {",
@@ -46,23 +46,70 @@ export function hostCss(theme: ITheme | undefined, m: Metrics, pageScrolls = fal
     `  line-height: ${m.cellH}px;`,
     "  color: var(--hotty-fg);",
     "  background: var(--hotty-bg);",
-    // A surface is a fixed rectangle of cells, and nothing in it scrolls
-    // (SPEC §5.3): what does not fit is clipped. The browser pans nothing
-    // on a touch (a drag is the terminal's, SPEC §9; the surface forwards
-    // it), unless the page scrolls, which the browser pans as from the
-    // cells. Nothing shows a scrollbar, even with `overflow: auto`.
-    "  overflow: hidden;",
-    `  touch-action: ${pageScrolls ? "manipulation" : "none"};`,
     "}",
     "body { margin: 0; }",
     // An element that opts in to drags selects no text, whatever the
     // document's CSS (SPEC §9.1, §11): important in the host's layer, the
     // first, wins over every rule of the document's.
     "[data-on~=drag], [data-on~=drag] * { -webkit-user-select: none !important; user-select: none !important; }",
-    "* { scrollbar-width: none !important; }",
-    "::-webkit-scrollbar { display: none !important; }",
+    // The rows a document needs are measured with no scrollbar of the root's
+    // in the way (`r=auto`, `fit`, SPEC §5.2).
+    `:root[${MEASURE}] { overflow: hidden !important; }`,
     "}",
   ];
+  return lines.join("\n");
+}
+
+/** The host's own attribute on the root while the rows a document needs are
+ * measured. Under the addon's vendor prefix: `data-hotty-*` is the spec's
+ * (§15). */
+export const MEASURE = "data-xterm-hotty-measure";
+
+/** The host's own attribute on an element of a document that scrolls along
+ * one axis, whose `overflow` along the other is `auto` or `scroll`: that
+ * axis is clipped as `overflow: hidden` clips it (SPEC §5.3). */
+export const CLIP = "data-xterm-hotty-clip";
+
+/** Set on the root while the addon reads which elements need `CLIP`: the
+ * values the document gives them, without the host's. */
+export const UNCLIPPED = "data-xterm-hotty-unclipped";
+
+/**
+ * What scrolls in a document (SPEC §5.1, §5.3): the axes it asked for, a
+ * bitmask (1 vertically, 2 horizontally). `pageScrolls`: the page scrolls,
+ * not the terminal (the addon's `scroll` option), and the browser pans it
+ * from a surface.
+ *
+ * - **None:** a surface is a fixed rectangle of cells, and nothing in it
+ *   scrolls: what does not fit is clipped. The browser pans nothing on a
+ *   touch (a drag is the terminal's, SPEC §9; the surface forwards it),
+ *   unless the page scrolls, which the browser pans as from the cells.
+ *   Nothing shows a scrollbar, even with `overflow: auto`.
+ * - **Along the axes asked for,** the document scrolls as a page does, with
+ *   the browser's scrollbars, inside the frame: they take pixels, never
+ *   cells. The browser pans those axes on a touch.
+ * - **Along an axis not asked for,** the root and every element `CLIP`
+ *   marks are `overflow: hidden` there, important in the host's layer, so
+ *   that the document's CSS cannot undo it: no scrollbar, and nothing the
+ *   user does moves it.
+ */
+export function scrollCss(axes: number, pageScrolls: boolean): string {
+  if (!axes) {
+    return [
+      "@layer hotty-host {",
+      `:root { overflow: hidden; touch-action: ${pageScrolls ? "manipulation" : "none"}; }`,
+      "* { scrollbar-width: none !important; }",
+      "::-webkit-scrollbar { display: none !important; }",
+      "}",
+    ].join("\n");
+  }
+  const pan = pageScrolls ? "manipulation" : axes === 3 ? "pan-x pan-y" : axes === 1 ? "pan-y" : "pan-x";
+  const lines = ["@layer hotty-host {", `:root { touch-action: ${pan}; }`];
+  if (axes !== 3) {
+    const clipped = axes === 1 ? "overflow-x" : "overflow-y";
+    lines.push(`:root, :root:not([${UNCLIPPED}]) [${CLIP}] { ${clipped}: hidden !important; }`);
+  }
+  lines.push("}");
   return lines.join("\n");
 }
 

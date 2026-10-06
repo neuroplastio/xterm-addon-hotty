@@ -18,7 +18,7 @@ import { hostCss, palette } from "./hostcss.ts";
 import { OPS, DeltaError } from "./delta.ts";
 import { clean, type Policy } from "./network.ts";
 import { Store } from "./resources.ts";
-import { type Scheme, Surface, type SurfaceHost } from "./surface.ts";
+import { type Route, type Scheme, Surface, type SurfaceHost } from "./surface.ts";
 import { Touch } from "./touch.ts";
 import { HOST, VERSION } from "./version.ts";
 import { Assembler, Control, encode, OSC, text, type Command, type Decoded } from "./wire.ts";
@@ -98,6 +98,10 @@ export interface Inspected {
   children: [string, string | null, string][];
 }
 
+/** A wheel this soon after the one before belongs to the same gesture, in
+ * milliseconds: a wheel's notches, or a touchpad's scroll and its momentum. */
+const GESTURE_MS = 150;
+
 /** `drag` stands for `dragstart`, `drag` and `dragend` (SPEC §4, §9.1). */
 export const EVENTS = ["click", "change", "input", "submit", "press", "drag", "focus", "blur", "resize", "fit"];
 
@@ -143,6 +147,9 @@ export class HottyAddon implements ITerminalAddon {
    * its focus carried out once the key is through. */
   private forwarding = false;
   private focusAfter = false;
+  /** The wheel gesture under way: the surface its last wheel was over ("" for
+   * the cells), where it goes, and when that wheel came. */
+  private gesture: { surface: string; route: Route; at: number } | null = null;
 
   constructor(options: HottyOptions = {}) {
     this.opts = { maxSurfaces: 64, resourceQuota: 64 << 20, ...options };
@@ -311,7 +318,9 @@ export class HottyAddon implements ITerminalAddon {
         // silently, detaching the surface.
         if (c.get("d") !== "1") s.cancelDrag();
         // d=1: detached at once, for a document the program only shows (§5.5).
-        s.setDocument(text(cmd.payload), c.get("d") === "1");
+        // scroll: the axes it scrolls along, a bitmask; anything else is none.
+        const scroll = c.get("scroll");
+        s.setDocument(text(cmd.payload), c.get("d") === "1", scroll === "1" || scroll === "2" || scroll === "3" ? Number(scroll) : 0);
         return;
       }
       case "place":
@@ -392,6 +401,7 @@ export class HottyAddon implements ITerminalAddon {
       scheme: this.scheme(),
       limits: { resources: this.store.quota, surfaces: this.opts.maxSurfaces },
       net: this.policy,
+      scroll: true,
       host: HOST,
       version: VERSION,
     };
@@ -594,6 +604,14 @@ export class HottyAddon implements ITerminalAddon {
       policy: this.policy,
       pageScrolls: this.pageScrolls,
       scrollPage: (dx, dy) => this.scrollPage(dx, dy),
+      wheelGesture: (surface, decide) => {
+        const now = performance.now();
+        const g = this.gesture;
+        const same = g !== null && now - g.at < GESTURE_MS && (g.surface === surface || g.route === "terminal");
+        const route = same ? g.route : decide();
+        this.gesture = { surface, route, at: now };
+        return route;
+      },
       // A hyperlink (SPEC §9) goes where xterm.js sends an OSC 8 one: the
       // terminal's linkHandler, or its confirm-then-open default, and only
       // for http and https unless the handler allows other schemes.
@@ -655,10 +673,26 @@ export class HottyAddon implements ITerminalAddon {
     (el ?? document.scrollingElement ?? document.documentElement).scrollBy(dx, dy);
   }
 
+  private cellWheelBound = false;
+
+  /** A wheel over the cells begins or goes on with a gesture of the
+   * terminal's: a document that scrolls under the pointer as the terminal
+   * scrolls takes none of it (`wheelGesture`). */
+  private bindCellWheel(el: HTMLElement) {
+    if (this.cellWheelBound) return;
+    this.cellWheelBound = true;
+    const wheel = (e: Event) => {
+      if (e.isTrusted) this.gesture = { surface: "", route: "terminal", at: performance.now() };
+    };
+    el.addEventListener("wheel", wheel, { capture: true, passive: true });
+    this.disposables.push({ dispose: () => el.removeEventListener("wheel", wheel, { capture: true }) });
+  }
+
   /** Touch on the cells (the `touch` option), once the terminal is open. */
   private bindTouch() {
     const el = this.term.element;
     if (el && this.pageScrolls) return this.bindPageScroll(el);
+    if (el) this.bindCellWheel(el);
     if (this.cellTouch || !el || this.opts.touch === false) return;
     const screen = () => el.querySelector(".xterm-screen");
     this.cellTouch = new Touch(
@@ -779,7 +813,7 @@ export class HottyAddon implements ITerminalAddon {
   private hostCss(): string {
     const { cellW, cellH } = this.cell();
     const o = this.term.options;
-    this.css = hostCss(o.theme, { cellW, cellH, fontFamily: o.fontFamily ?? "monospace", fontSize: o.fontSize ?? 15 }, this.pageScrolls);
+    this.css = hostCss(o.theme, { cellW, cellH, fontFamily: o.fontFamily ?? "monospace", fontSize: o.fontSize ?? 15 });
     return this.css;
   }
 

@@ -14,8 +14,9 @@ test("a=q answers with capabilities", async ({ page }) => {
   expect(msgs).toHaveLength(1);
   expect(msgs[0]!.get("a")).toBe("ok");
   expect(msgs[0]!.get("n")).toBe("7");
-  const caps = msgs[0]!.json as { v: string; ops: string[]; cell: { w: number; h: number }; host: string; version: string };
+  const caps = msgs[0]!.json as { v: string; ops: string[]; cell: { w: number; h: number }; scroll: boolean; host: string; version: string };
   expect(caps.v).toBe("0.1");
+  expect(caps.scroll).toBe(true);
   expect(caps.host).toBe(HOST);
   expect(caps.version).toBe(VERSION);
   expect(caps.ops).toContain("morph");

@@ -6,10 +6,10 @@
 // typed text.
 
 import { expect, test, type Page } from "@playwright/test";
-import { open, send, surface, take } from "./helpers.ts";
+import { open, sansArea, send, surface, take } from "./helpers.ts";
 
 const evs = (msgs: Awaited<ReturnType<typeof take>>["msgs"]) =>
-  msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("e"), m.get("t"), m.json]);
+  msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("e"), m.get("t"), sansArea(m.json)]);
 
 /** The terminal has the browser's focus (the surface gave it back). */
 async function terminalHasKeyboard(page: Page) {

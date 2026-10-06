@@ -12,6 +12,7 @@
 // in the addon's layer, and placement only changes the position of its box.
 
 import { Touch } from "./touch.ts";
+import { CLIP, MEASURE, scrollCss, UNCLIPPED } from "./hostcss.ts";
 import { Deltas } from "./delta.ts";
 import { Resolver } from "./resolver.ts";
 import { cspSources, intersect, parse, type Policy } from "./network.ts";
@@ -72,6 +73,11 @@ export interface SurfaceHost {
   /** The page scrolls, not the terminal (the `scroll` option): wheels and
    *  touch drags over the surface are left to the browser. */
   pageScrolls: boolean;
+  /** The wheel gesture a wheel over a document that scrolls belongs to:
+   *  where it began decides where the rest of it goes (`decide`, called for
+   *  a gesture's first wheel), as a browser latches scrolling to what it
+   *  began on. A gesture begun over the cells stays the terminal's. */
+  wheelGesture(surface: string, decide: () => Route): Route;
   /** Scrolls the page by dx, dy pixels, where the page scrolls: for a
    *  gesture the browser would give an element of the document instead. */
   scrollPage(dx: number, dy: number): void;
@@ -103,6 +109,34 @@ interface Drag {
 
 /** The theme's colour scheme, as the host stylesheet declares it. */
 export type Scheme = "dark" | "light";
+
+/** Where a gesture or a key that scrolls goes in a document that scrolls
+ * (SPEC §5.3): the document (an element of it that can still move that
+ * way), the terminal, or nowhere (`overscroll-behavior` stopped it). */
+export type Route = "doc" | "terminal" | "stop";
+
+/** An element's cells, as the user sees it (SPEC §9: `area`). */
+export interface Area {
+  c: number;
+  r: number;
+  w: number;
+  h: number;
+}
+
+/** A scroll by a key (SPEC §5.3: the keys a browser scrolls with), along
+ * `axis`, `sign` its way: by a line, a page, or to the end. */
+interface KeyScroll {
+  axis: Axis;
+  sign: 1 | -1;
+  by: "line" | "page" | "end";
+}
+
+type Axis = "x" | "y";
+
+/** A line of a key's scroll, in CSS pixels, as Chromium has it. */
+const LINE_PX = 40;
+/** The part of the box a page of a key's scroll moves, as Chromium has it. */
+const PAGE_FRACTION = 0.875;
 
 const TEXT_TYPES = new Set(["text", "email", "password", "search", "tel", "url", "number", "date", "datetime-local", "month", "time", "week"]);
 
@@ -187,6 +221,16 @@ export class Surface {
   /** The frame a check waits for. */
   private fitFrame = 0;
   private fitObserver: ResizeObserver | null = null;
+  /** The axes the document asked to scroll along (`scroll`, SPEC §5.1): 1
+   * vertically, 2 horizontally, 3 both; 0, nothing scrolls. */
+  private axes = 0;
+  /** Where the touch drag under way goes, once it has a direction. */
+  private touchRoute: Route = "terminal";
+  /** The box the wheel gesture under way scrolls, if it went to the
+   * document: the gesture moves no other (`scrollWheel`). */
+  private wheelBox: Element | null = null;
+  /** Some element may carry `CLIP`. */
+  private clipping = false;
 
   constructor(name: string, host: SurfaceHost, hostCss: string, scheme: Scheme) {
     this.name = name;
@@ -252,15 +296,19 @@ export class Surface {
   }
 
   private restyle() {
-    const css = this.detachedState ? `${this.css}\n${DETACHED_CSS}` : this.css;
+    const css = [this.css, scrollCss(this.axes, this.host.pageScrolls), ...(this.detachedState ? [DETACHED_CSS] : [])].join("\n");
     if (this.hostStyle.textContent !== css) this.hostStyle.textContent = css;
+    this.clip();
   }
 
   /** Replaces the whole document (`a=doc`): its head's styles and its body.
    * `detached` (`d=1`) detaches the surface first; without it, the surface
-   * is the program's again (SPEC §5.1, §5.5). */
-  setDocument(html: string, detached = false) {
+   * is the program's again (SPEC §5.1, §5.5). `axes` (`scroll`) are the
+   * axes it scrolls along, 0 for none (§5.3). */
+  setDocument(html: string, detached = false, axes = 0) {
     if (detached) this.detach();
+    const scrolled = this.axes !== 0;
+    this.axes = axes;
     const parsed = new DOMParser().parseFromString(html, "text/html");
     // The document's base and its network request (SPEC §7.2, §7.3) are read
     // before the resolver drops its <base> and <meta> elements; deltas can
@@ -283,6 +331,13 @@ export class Surface {
     this.doc.body.replaceChildren(...Array.from(parsed.body.childNodes));
     this.detachedState = detached;
     this.sync();
+    // A new document starts at the top left (SPEC §5.3). The root and the
+    // body stay from one document to the next, and so would their offsets;
+    // the previous document's are zero unless it scrolled.
+    if (scrolled) {
+      this.doc.documentElement.scrollTo(0, 0);
+      this.doc.body.scrollTo(0, 0);
+    }
     this.refit();
   }
 
@@ -293,6 +348,7 @@ export class Surface {
       this.deltas.apply(op, target, key, payload);
     } finally {
       if (this.detachedState) this.sync();
+      else this.clip();
       this.refit();
     }
   }
@@ -359,10 +415,44 @@ export class Surface {
   private neededRows(cols: number, cellW: number, cellH: number): number {
     const f = this.frame.style;
     const [width, height] = [f.width, f.height];
+    // A document that scrolls would show its root's scrollbar at 1px, and
+    // lay its content out narrower: the root is measured clipped.
+    const root = this.doc.documentElement;
+    if (this.axes) this.resolver.setOwn(root, MEASURE, "");
     Object.assign(f, { width: `${Math.round(cols * cellW)}px`, height: "1px" });
-    const h = this.doc.documentElement.scrollHeight;
+    const h = root.scrollHeight;
     Object.assign(f, { width, height });
+    if (this.axes) this.resolver.removeOwn(root, MEASURE);
     return Math.max(1, Math.min(1000, Math.ceil(h / cellH)));
+  }
+
+  /**
+   * In a document that scrolls along one axis only, the elements whose
+   * `overflow` along the other is `auto` or `scroll` are marked (`CLIP`), so
+   * that the host stylesheet clips that axis as `overflow: hidden` does
+   * (SPEC §5.3): no scrollbar, and nothing the user does scrolls it. CSS
+   * cannot select by a computed value, so the addon reads it, with its own
+   * rule off (`UNCLIPPED`), each time the document or its style may have
+   * changed: a document, a delta, the host stylesheet. Style only, no
+   * layout, and only for a document with `scroll` of 1 or 2.
+   */
+  private clip() {
+    const prop = this.axes === 1 ? "overflowX" : this.axes === 2 ? "overflowY" : null;
+    if (!prop && !this.clipping) return;
+    const marked = new Set(this.doc.querySelectorAll(`[${CLIP}]`));
+    const want = new Set<Element>();
+    if (prop) {
+      const root = this.doc.documentElement;
+      const win = this.frame.contentWindow!;
+      this.resolver.setOwn(root, UNCLIPPED, "");
+      for (const el of [this.doc.body, ...Array.from(this.doc.body.querySelectorAll("*"))]) {
+        if (/auto|scroll/.test(win.getComputedStyle(el)[prop])) want.add(el);
+      }
+      this.resolver.removeOwn(root, UNCLIPPED);
+    }
+    for (const el of marked) if (!want.has(el)) this.resolver.removeOwn(el, CLIP);
+    for (const el of want) if (!marked.has(el)) this.resolver.setOwn(el, CLIP, "");
+    this.clipping = want.size > 0;
   }
 
   // --- Fit (SPEC §5.2: f=1 on a=place) --------------------------------------
@@ -664,7 +754,30 @@ export class Surface {
     }
     if (this.consumes(e, this.controlKind(this.doc.activeElement))) return;
     if (this.host.browserKey(e)) return; // the browser's: reload, zoom, …
+    if (this.axes && this.scrollKey(e)) return;
     this.forward(e);
+  }
+
+  /**
+   * A key a browser scrolls with, in a document that scrolls (SPEC §5.3):
+   * it scrolls the innermost box, from the focused element outward (from
+   * the root when none is), that can still move that way. Where none can,
+   * the key goes on to the program, as every key the surface does not use
+   * does (§10.2), unless `overscroll-behavior` stops it. The addon scrolls
+   * the box itself: the browser's own action could be the focused
+   * element's instead (a radio button's arrows, a number field's).
+   */
+  private scrollKey(e: KeyboardEvent): boolean {
+    const k = keyScroll(e);
+    if (!k) return false;
+    const to = this.scroller(this.focusedControl(), k.axis, k.sign);
+    if (to === "terminal") return false;
+    e.preventDefault();
+    if (to === "stop") return true;
+    const y = k.axis === "y";
+    const by = k.by === "line" ? LINE_PX : k.by === "page" ? Math.max(1, (y ? to.clientHeight : to.clientWidth) * PAGE_FRACTION) : y ? to.scrollHeight : to.scrollWidth;
+    to.scrollBy(y ? { top: k.sign * by } : { left: k.sign * by });
+    return true;
   }
 
   private forward(e: KeyboardEvent) {
@@ -871,15 +984,31 @@ export class Surface {
     if (!this.presses) return;
     const link = this.linkIn(e);
     if (link && this.isHyperlink(link)) return;
-    let id = "";
     for (const n of e.composedPath()) {
-      const at = isElement(n) ? n.getAttribute("id") : null;
-      if (at) {
-        id = at;
-        break;
+      const id = isElement(n) ? n.getAttribute("id") : null;
+      if (id) {
+        this.emit("press", id, { area: this.areaOf(n as Element) });
+        return;
       }
     }
-    this.emit("press", id);
+    this.emit("press", "");
+  }
+
+  /**
+   * The cells an element's border box covers as the user sees it, scrolled
+   * included (SPEC §9: `area`), counted from the surface's top left cell:
+   * whole, where it is clipped or scrolled away. An edge within half a
+   * device pixel of a cell's is on it: layout rounds positions to fractions
+   * of a pixel, and the user sees no less than a device pixel.
+   */
+  private areaOf(el: Element): Area {
+    const b = el.getBoundingClientRect();
+    const tol = 0.5 / (this.frame.ownerDocument.defaultView?.devicePixelRatio || 1);
+    const c = Math.floor((b.left + tol) / this.cellW);
+    const r = Math.floor((b.top + tol) / this.cellH);
+    const right = Math.ceil((b.right - tol) / this.cellW);
+    const bottom = Math.ceil((b.bottom - tol) / this.cellH);
+    return { c, r, w: Math.max(0, right - c), h: Math.max(0, bottom - r) };
   }
 
   // --- Events for the program (PROTOCOL §8) --------------------------------
@@ -945,14 +1074,25 @@ export class Surface {
       const r = this.frame.getBoundingClientRect();
       return [r.left + x, r.top + y];
     };
+    // A document that scrolls (SPEC §5.3) is the browser's to pan: where it
+    // can still move the way a drag goes, the drag is left to the browser,
+    // which pans the document; where it cannot, the drag goes on to the
+    // terminal, unless overscroll-behavior stops it. Where the page scrolls,
+    // the browser chains the drag from the document to the page itself.
     if (this.host.pageScrolls) {
       new Touch(d, this.frame.ownerDocument.defaultView!, { scroll: (dx, dy) => this.host.scrollPage(dx, dy), toPage }, false, (e) =>
-        this.inScroller(e.target),
+        !this.axes && this.inScroller(e.target),
       );
     } else {
       new Touch(d, this.frame.ownerDocument.defaultView!, {
-        scroll: (dx, dy, x, y) => this.host.wheel(new WheelEvent("wheel", { deltaX: dx, deltaY: dy, deltaMode: 0, clientX: x, clientY: y }), x, y),
+        scroll: (dx, dy, x, y) => {
+          if (this.touchRoute === "terminal") this.host.wheel(new WheelEvent("wheel", { deltaX: dx, deltaY: dy, deltaMode: 0, clientX: x, clientY: y }), x, y);
+        },
         toPage,
+        claim: (dx, dy, e) => {
+          this.touchRoute = this.axes ? this.gestureRoute(e.target, dx, dy) : "terminal";
+          return this.touchRoute !== "doc";
+        },
       });
     }
     // The frame's own focus gives no keyboard: an element in it that takes
@@ -981,6 +1121,10 @@ export class Surface {
    */
   private onWheel(e: WheelEvent) {
     if (e.ctrlKey) return;
+    if (this.axes) {
+      this.scrollWheel(e);
+      return;
+    }
     if (this.host.pageScrolls) {
       if (!this.inScroller(e.target)) return;
       e.preventDefault();
@@ -1007,17 +1151,101 @@ export class Surface {
     return false;
   }
 
-  /** Whatever the browser scrolled (a focused element into view, say) goes
-   * back to zero. A text field's own text follows its caret (SPEC §5.3). */
-  private onScroll(e: Event) {
-    const t = e.target;
-    if (t === this.doc) {
-      const s = this.doc.scrollingElement;
-      if (s && (s.scrollTop || s.scrollLeft)) s.scrollTo(0, 0);
-      return;
+  /**
+   * A wheel over a document that scrolls (SPEC §5.3). A gesture's first
+   * wheel decides where all of it goes, as a browser latches scrolling to
+   * what it began on: while an element under the pointer can still move
+   * that way, the browser scrolls it; where none can, the gesture goes on
+   * to the terminal, as over the cells beneath (§9), unless
+   * `overscroll-behavior` stops it. A gesture the document took goes no
+   * further when it reaches the end there, as in a browser. Where the page
+   * scrolls (the `scroll` option), the page is the terminal, and the
+   * browser chains to it from the document natively. A wheel the browser
+   * does not let the page cancel is the browser's already.
+   */
+  private scrollWheel(e: WheelEvent) {
+    if (this.host.pageScrolls || !e.cancelable) return;
+    const route = this.host.wheelGesture(this.name, () => {
+      const to = this.gestureTarget(e.target, e.deltaX, e.deltaY);
+      this.wheelBox = typeof to === "string" ? null : to;
+      return typeof to === "string" ? to : "doc";
+    });
+    // The box the gesture began on, while it can still move: the browser's
+    // own scrolling picks it again, the innermost under the pointer.
+    const [axis, d] = mainAxis(e.deltaX, e.deltaY);
+    if (route === "doc" && this.wheelBox && this.canMove(this.wheelBox, axis, d)) return;
+    e.preventDefault();
+    if (route !== "terminal") return;
+    const r = this.frame.getBoundingClientRect();
+    this.host.wheel(e, r.left + e.clientX, r.top + e.clientY);
+  }
+
+  /** Where a gesture that scrolls by dx, dy pixels at `target` goes, by its
+   * main axis (SPEC §5.3). */
+  private gestureRoute(target: EventTarget | null, dx: number, dy: number): Route {
+    const to = this.gestureTarget(target, dx, dy);
+    return typeof to === "string" ? to : "doc";
+  }
+
+  private gestureTarget(target: EventTarget | null, dx: number, dy: number): Element | "terminal" | "stop" {
+    const [axis, d] = mainAxis(dx, dy);
+    return this.scroller(target && isElement(target) ? target : null, axis, d);
+  }
+
+  /** Whether a box that scrolls can still move along `axis`, `d`'s way. */
+  private canMove(el: Element, axis: Axis, d: number): boolean {
+    if (!d || !(this.axes & (axis === "y" ? 1 : 2))) return false;
+    const [at, span] = axis === "y" ? [el.scrollTop, el.scrollHeight - el.clientHeight] : [el.scrollLeft, el.scrollWidth - el.clientWidth];
+    // Across a right-to-left box, scrollLeft runs from -span to 0.
+    const rtl = axis === "x" && this.frame.contentWindow!.getComputedStyle(el).direction === "rtl";
+    const [min, max] = rtl ? [-span, 0] : [0, span];
+    return d > 0 ? at < max - 0.5 : at > min + 0.5;
+  }
+
+  /**
+   * What a scroll along `axis`, `d`'s way, from `from` (an element, or the
+   * root for none) moves in a document that scrolls (SPEC §5.3): the
+   * innermost box, from `from` outward, that the user scrolls along it
+   * (`overflow` `auto` or `scroll`; the root's, unless `hidden` or `clip`),
+   * that overflows there, and that can still move that way. At a box that
+   * cannot, the scroll stops if its `overscroll-behavior` is `contain` or
+   * `none`, and goes on outward otherwise. Past the root, and along an axis
+   * the document did not ask for, it is the terminal's.
+   */
+  private scroller(from: Element | null, axis: Axis, d: number): Element | "terminal" | "stop" {
+    if (!d || !(this.axes & (axis === "y" ? 1 : 2))) return "terminal";
+    const win = this.frame.contentWindow!;
+    const root = this.doc.documentElement;
+    const body = this.doc.body;
+    const rootStyle = win.getComputedStyle(root);
+    // The viewport takes the root's overflow, or the body's where the root's
+    // is visible both ways; the body then scrolls nothing itself.
+    const fromBody = rootStyle.overflowX === "visible" && rootStyle.overflowY === "visible";
+    const prop = axis === "y" ? "overflowY" : "overflowX";
+    for (let el: Element | null = from ?? root; el; el = el.parentElement) {
+      if (el === body && fromBody) continue;
+      const s = el === root ? rootStyle : win.getComputedStyle(el);
+      const scrolls = el === root ? !/hidden|clip/.test((fromBody ? win.getComputedStyle(body) : s)[prop]) : /auto|scroll/.test(s[prop]);
+      const span = axis === "y" ? el.scrollHeight - el.clientHeight : el.scrollWidth - el.clientWidth;
+      if (!scrolls || span < 1) continue;
+      if (this.canMove(el, axis, d)) return el;
+      const stops = axis === "y" ? s.overscrollBehaviorY : s.overscrollBehaviorX;
+      if (stops === "contain" || stops === "none") return "stop";
     }
-    if (!t || !isElement(t) || t.localName === "input" || t.localName === "textarea") return;
-    if (t.scrollTop || t.scrollLeft) t.scrollTo(0, 0);
+    return "terminal";
+  }
+
+  /** Whatever the browser scrolled along an axis the document did not ask
+   * for (a focused element into view, say) goes back to zero. A text
+   * field's own text follows its caret (SPEC §5.3). */
+  private onScroll(e: Event) {
+    if (this.axes === 3) return;
+    const t = e.target;
+    const el = t === this.doc ? this.doc.scrollingElement : t && isElement(t) ? t : null;
+    if (!el || (t !== this.doc && (el.localName === "input" || el.localName === "textarea"))) return;
+    const x = !(this.axes & 2) && el.scrollLeft !== 0;
+    const y = !(this.axes & 1) && el.scrollTop !== 0;
+    if (x || y) el.scrollTo(x ? 0 : el.scrollLeft, y ? 0 : el.scrollTop);
   }
 
 
@@ -1074,6 +1302,7 @@ export class Surface {
     }
     const detail: Record<string, unknown> = { href: this.resolver.get(link, "href") ?? "" };
     if (url) detail.url = url;
+    detail.area = this.areaOf(link);
     this.emit("click", link.getAttribute("id") ?? "", detail);
   }
 
@@ -1146,6 +1375,7 @@ export class Surface {
         const url = this.urlOf(n);
         const detail: Record<string, unknown> = { href: this.resolver.get(n, "href") ?? "" };
         if (url) detail.url = url;
+        detail.area = this.areaOf(n);
         this.emit("click", n.getAttribute("id") ?? "", detail);
         return;
       }
@@ -1157,12 +1387,13 @@ export class Surface {
       if (!reportable) continue;
       const id = el.getAttribute("id");
       if (id) {
-        const detail: Record<string, string> = {};
+        const detail: Record<string, unknown> = {};
         const href = this.resolver.get(el, "href");
         if (href !== null) detail.href = href;
         const value = this.resolver.get(el, "value");
         if (value !== null) detail.value = value;
-        this.emit("click", id, Object.keys(detail).length ? detail : undefined);
+        detail.area = this.areaOf(el);
+        this.emit("click", id, detail);
       }
       break;
     }
@@ -1272,6 +1503,39 @@ function focusTargetAt(e: Event, hyper: (link: Element) => boolean): HTMLElement
     if (takesFocus(n, hyper)) return n as HTMLElement;
     const control = n.localName === "label" ? (n as HTMLLabelElement).control : null;
     if (control) return takesFocus(control, hyper) ? control : null;
+  }
+  return null;
+}
+
+/** A scroll's main axis, and its delta along it. */
+function mainAxis(dx: number, dy: number): [Axis, number] {
+  return Math.abs(dy) >= Math.abs(dx) ? ["y", dy] : ["x", dx];
+}
+
+/** The scroll a key makes in a browser, if it makes one (SPEC §5.3): the
+ * arrows by a line, Page Up, Page Down, Space and Shift+Space by a page,
+ * Home and End to the ends. */
+function keyScroll(e: KeyboardEvent): KeyScroll | null {
+  if (e.ctrlKey || e.altKey || e.metaKey) return null;
+  if (e.shiftKey) return e.key === " " ? { axis: "y", sign: -1, by: "page" } : null;
+  switch (e.key) {
+    case "ArrowDown":
+      return { axis: "y", sign: 1, by: "line" };
+    case "ArrowUp":
+      return { axis: "y", sign: -1, by: "line" };
+    case "ArrowRight":
+      return { axis: "x", sign: 1, by: "line" };
+    case "ArrowLeft":
+      return { axis: "x", sign: -1, by: "line" };
+    case "PageDown":
+    case " ":
+      return { axis: "y", sign: 1, by: "page" };
+    case "PageUp":
+      return { axis: "y", sign: -1, by: "page" };
+    case "End":
+      return { axis: "y", sign: 1, by: "end" };
+    case "Home":
+      return { axis: "y", sign: -1, by: "end" };
   }
   return null;
 }

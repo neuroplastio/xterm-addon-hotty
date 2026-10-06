@@ -6,10 +6,10 @@
 // its mouse reports or the terminal's selection, and the keyboard back.
 
 import { expect, test, type Page } from "@playwright/test";
-import { open, send, surface, take, write } from "./helpers.ts";
+import { open, sansArea, send, surface, take, write } from "./helpers.ts";
 
 const evs = (msgs: Awaited<ReturnType<typeof take>>["msgs"]) =>
-  msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("s"), m.get("e"), m.get("t"), m.json]);
+  msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("s"), m.get("e"), m.get("t"), sansArea(m.json)]);
 
 /** Two cells, three columns wide each, the second with text to select. */
 const CELLS =

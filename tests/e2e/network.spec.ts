@@ -3,7 +3,7 @@
 // and copy as themselves, every click is an event, and only a gesture opens
 // one.
 import { expect, test, type Page } from "@playwright/test";
-import { cell, open, send, surface, take } from "./helpers.ts";
+import { cell, open, sansArea, send, surface, take } from "./helpers.ts";
 
 // Only this spec's requests (/leak/net-…): others record theirs in parallel.
 async function leaks(page: Page): Promise<string[]> {
@@ -24,7 +24,7 @@ async function clicks(page: Page, n: number) {
   await expect
     .poll(async () => {
       for (const m of (await take(page)).msgs) {
-        if (m.get("a") === "ev" && m.get("e") === "click") got.push({ t: m.get("t") ?? "", detail: m.json as Record<string, unknown> });
+        if (m.get("a") === "ev" && m.get("e") === "click") got.push({ t: m.get("t") ?? "", detail: sansArea(m.json) as Record<string, unknown> });
       }
       return got.length;
     })

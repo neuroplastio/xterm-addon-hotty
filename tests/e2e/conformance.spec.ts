@@ -14,10 +14,13 @@ type Step = {
   reply?: Record<string, string> | null;
   inspect?: [string, string];
   expect?: Record<string, unknown> | null;
-  pointer?: "move" | "down" | "up";
+  pointer?: "move" | "down" | "up" | "wheel";
   s?: string;
   at?: string | [number, number];
+  by?: [number, number];
+  key?: string;
   keys?: string[];
+  terminal?: boolean;
   events?: Expected[];
 };
 const vectors = JSON.parse(readFileSync(join(HOTTY_DIR, "conformance", "vectors.json"), "utf8")) as {
@@ -75,11 +78,13 @@ async function frames(page: Page, n: number) {
  * Chromium through CDP: Playwright's own mouse stalls on a press that moves
  * inside a frame without scripts (detach.spec.ts). Keys are held as the
  * event's modifiers there, and pressed on the keyboard in Firefox, whose
- * mouse events carry the keyboard's modifiers.
+ * mouse events carry the keyboard's modifiers. A wheel step is one gesture
+ * (conformance/README.md).
  */
 class Mouse {
   x = 0;
   y = 0;
+  s = "";
   down = false;
   constructor(
     private readonly page: Page,
@@ -87,11 +92,25 @@ class Mouse {
   ) {}
 
   async step(step: Step) {
-    if (step.pointer === "move") [this.x, this.y] = await point(this.page, step.s!, step.at!);
+    if (step.pointer === "move") {
+      [this.x, this.y] = await point(this.page, step.s!, step.at!);
+      this.s = step.s!;
+    }
     const keys = step.keys ?? [];
     if (this.browser === "chromium") {
       const bits = { alt: 1, ctrl: 2, meta: 4, shift: 8 } as Record<string, number>;
       const modifiers = keys.reduce((m, k) => m | (bits[k] ?? 0), 0);
+      if (step.pointer === "wheel") {
+        // A wheel gesture as the browser has one from a device, latched to
+        // what it scrolls: wheels from dispatchMouseEvent are each one of
+        // their own to Chromium.
+        const [w, h] = await cellOf(this.page, this.s);
+        const [dx, dy] = [step.by![0] * w, step.by![1] * h];
+        const cdp = await this.page.context().newCDPSession(this.page);
+        await cdp.send("Input.synthesizeScrollGesture", { x: this.x, y: this.y, xDistance: -dx, yDistance: -dy, gestureSourceType: "mouse", speed: 5000, preventFling: true });
+        await cdp.detach();
+        return;
+      }
       const type = step.pointer === "move" ? "mouseMoved" : step.pointer === "down" ? "mousePressed" : "mouseReleased";
       if (step.pointer === "down") this.down = true;
       if (step.pointer === "up") this.down = false;
@@ -104,9 +123,71 @@ class Mouse {
     for (const k of keys) await this.page.keyboard.down(names[k]!);
     if (step.pointer === "move") await this.page.mouse.move(this.x, this.y);
     else if (step.pointer === "down") await this.page.mouse.down();
+    else if (step.pointer === "wheel") for (const [dx, dy] of await this.notches(step.by!)) await this.page.mouse.wheel(dx, dy);
     else await this.page.mouse.up();
     for (const k of [...keys].reverse()) await this.page.keyboard.up(names[k]!);
   }
+
+  /** A wheel step as one gesture of wheel events, a cell's worth of pixels
+   * each (of the surface the pointer is on): Firefox scrolls no more than a
+   * page for one event. */
+  private async notches(by: [number, number]): Promise<[number, number][]> {
+    const [w, h] = await cellOf(this.page, this.s);
+    const n = Math.max(Math.abs(by[0]), Math.abs(by[1]));
+    return Array.from({ length: n }, () => [(by[0] / n) * w, (by[1] / n) * h]);
+  }
+}
+
+/** A surface's cell, in CSS pixels, from its host stylesheet. */
+async function cellOf(page: Page, s: string): Promise<[number, number]> {
+  return page.evaluate((s) => {
+    const doc = (document.querySelector(`.hotty-surface[data-surface="${s}"] iframe`) as HTMLIFrameElement).contentDocument!;
+    const css = getComputedStyle(doc.documentElement);
+    return [parseFloat(css.getPropertyValue("--hotty-cell-w")), parseFloat(css.getPropertyValue("--hotty-cell-h"))];
+  }, s);
+}
+
+/**
+ * After a wheel step: the scroll it started has finished (no offset in any
+ * surface moved for three frames), and its gesture is over, so the next
+ * wheel begins another (conformance/README.md).
+ */
+async function settle(page: Page) {
+  await page.waitForTimeout(200);
+  await page.evaluate(
+    () =>
+      new Promise<void>((done) => {
+        const offsets = () =>
+          Array.from(document.querySelectorAll<HTMLIFrameElement>(".hotty-surface iframe"), (f) =>
+            Array.from(f.contentDocument!.querySelectorAll("*"), (el) => `${el.scrollLeft},${el.scrollTop}`).join(" "),
+          ).join("|");
+        let last = offsets();
+        let still = 0;
+        const next = () =>
+          requestAnimationFrame(() => {
+            const now = offsets();
+            still = now === last ? still + 1 : 0;
+            last = now;
+            if (still >= 3) done();
+            else next();
+          });
+        next();
+      }),
+  );
+}
+
+/** Wheels that reached the terminal (xterm.js's element) since the last call. */
+async function terminalWheels(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const w = window as unknown as { termWheels?: number };
+    if (w.termWheels === undefined) {
+      w.termWheels = 0;
+      (window.hotty.term as unknown as { element: HTMLElement }).element.addEventListener("wheel", () => w.termWheels!++, true);
+    }
+    const n = w.termWheels;
+    w.termWheels = 0;
+    return n;
+  });
 }
 
 /** Where a pointer step's `at` is in the page: the centre of an element's
@@ -130,10 +211,10 @@ async function point(page: Page, s: string, at: string | [number, number]): Prom
   );
 }
 
-// Capabilities this addon reports that vectors may require (SPEC §4): it
-// does not let the pointer through surfaces yet (§9.3, `passthrough`), and
-// does not send `hover` yet (§9.4: not in `EVENTS`).
-const reported = new Set<string>();
+// Capabilities this addon reports that vectors may require (SPEC §4):
+// `scroll` (§5.3). It does not let the pointer through surfaces yet (§9.3,
+// `passthrough`), and does not send `hover` yet (§9.4: not in `EVENTS`).
+const reported = new Set<string>(["scroll"]);
 
 for (const vector of vectors.vectors) {
   test(vector.name, async ({ page, browserName }) => {
@@ -145,8 +226,23 @@ for (const vector of vectors.vectors) {
       const where = `step ${i + 1}`;
       if (step.pointer) {
         await take(page);
+        await terminalWheels(page);
         await mouse.step(step);
+        if (step.pointer === "wheel") await settle(page);
         checkEvents(where, (await take(page)).msgs, step.events);
+        if (step.terminal !== undefined) expect((await terminalWheels(page)) > 0, `${where}: the terminal got the wheel`).toBe(step.terminal);
+      } else if (step.key !== undefined) {
+        // Where the keyboard is: the surface that has it, else the terminal.
+        await take(page);
+        const names = { shift: "Shift", ctrl: "Control", alt: "Alt", meta: "Meta" } as Record<string, string>;
+        const keys = step.keys ?? [];
+        for (const k of keys) await page.keyboard.down(names[k]!);
+        await page.keyboard.press(step.key);
+        for (const k of [...keys].reverse()) await page.keyboard.up(names[k]!);
+        await frames(page, 2);
+        const { msgs, raw } = await take(page);
+        checkEvents(where, msgs, step.events);
+        if (step.terminal !== undefined) expect(raw !== "", `${where}: the program got ${JSON.stringify(step.key)} (${JSON.stringify(raw)})`).toBe(step.terminal);
       } else if (step.send) {
         await take(page);
         await write(page, cmd(step.send, step.payload ?? ""));
