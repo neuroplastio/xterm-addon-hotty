@@ -7,7 +7,8 @@ import { open, send, surface } from "./helpers.ts";
 const CONTROLS =
   `<input id=t placeholder=p><textarea id=ta></textarea><select id=s><option>a</option></select>` +
   `<button id=b>b</button><button id=bd disabled>d</button><input type=submit id=sub>` +
-  `<input type=checkbox id=c><a id=l href=next>link</a><p id=p>text</p>`;
+  `<input type=checkbox id=c><a id=l href=next>link</a><p id=p>text</p>` +
+  `<input id=td disabled value=v><textarea id=tad disabled>v</textarea><select id=sd disabled><option>a</option></select>`;
 
 /** `#rrggbb` as getComputedStyle has it. */
 function rgb(hex: string): string {
@@ -52,6 +53,8 @@ async function dressed(page: Page, c: { fg: string; bg: string; dim: string; acc
   // Buttons: the foreground on the dim grey; disabled, dim on the background.
   for (const id of ["b", "sub"]) expect(await style(page, id, ["color", "background-color"]), id).toEqual({ color: rgb(c.fg), "background-color": rgb(c.dim) });
   expect(await style(page, "bd", ["color", "background-color"])).toEqual({ color: rgb(c.dim), "background-color": rgb(c.bg) });
+  // Disabled fields: dim text on the background, a text input's too.
+  for (const id of ["td", "tad", "sd"]) expect(await style(page, id, ["color", "background-color"]), id).toEqual({ color: rgb(c.dim), "background-color": rgb(c.bg) });
   // A checkbox keeps its own look, in the accent.
   expect(await style(page, "c", ["accent-color", "border-top-width"])).toEqual({ "accent-color": rgb(c.accent), "border-top-width": "0px" });
   expect((await style(page, "t", ["color"], "::placeholder")).color).toBe(rgb(c.dim));
