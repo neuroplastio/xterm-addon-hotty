@@ -82,7 +82,7 @@ runs programs for whoever connects.
 | surface | `src/surface.ts` | one sandboxed iframe per surface; events, focus and key routing |
 | deltas | `src/delta.ts` | SPEC §6: the ops and morph |
 | resources | `src/resources.ts`, `src/resolver.ts` | `cid:` as `blob:` URLs; sanitizing everything before it reaches a live document |
-| host stylesheet | `src/hostcss.ts` | §7 from `term.options` (theme, font, cell size), in a cascade layer |
+| host stylesheet | `src/hostcss.ts` | §8 from `term.options` (theme, font, cell size), in a cascade layer: the palette, `--hotty-accent`, and controls, focus, links and selection in the terminal's colours |
 
 - **Placement.** On the normal buffer a surface hangs from a marker, which is
   public API (decorations need `allowProposedApi`). It scrolls with the text,

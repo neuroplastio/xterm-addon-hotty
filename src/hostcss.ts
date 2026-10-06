@@ -37,6 +37,8 @@ export function hostCss(theme: ITheme | undefined, m: Metrics): string {
     `  --hotty-fg: ${p.fg};`,
     `  --hotty-bg: ${p.bg};`,
     ...p.ansi.map((c, i) => `  --hotty-ansi-${i}: ${c};`),
+    // The terminal's blue: plain blue is hard to read on a dark background.
+    `  --hotty-accent: var(--hotty-ansi-${p.dark ? 12 : 4});`,
     `  --hotty-cell-w: ${m.cellW}px;`,
     `  --hotty-cell-h: ${m.cellH}px;`,
     `  --hotty-font: ${fontStack(m.fontFamily)};`,
@@ -46,8 +48,24 @@ export function hostCss(theme: ITheme | undefined, m: Metrics): string {
     `  line-height: ${m.cellH}px;`,
     "  color: var(--hotty-fg);",
     "  background: var(--hotty-bg);",
+    "  accent-color: var(--hotty-accent);",
     "}",
     "body { margin: 0; }",
+    // Controls in the terminal's colours (SPEC §8), not the browser's: ansi-8
+    // is the dim grey of borders, buttons, placeholders and what is disabled.
+    "input:not([type=checkbox], [type=radio], [type=range]), textarea, select,",
+    "button {",
+    "  color: var(--hotty-fg);",
+    "  background: var(--hotty-bg);",
+    "  border: 1px solid var(--hotty-ansi-8);",
+    "}",
+    "button:enabled, input:is([type=button], [type=submit], [type=reset]):enabled {",
+    "  background: var(--hotty-ansi-8);",
+    "}",
+    "::placeholder, :disabled { color: var(--hotty-ansi-8); }",
+    ":focus-visible { outline: 1px solid var(--hotty-accent); }",
+    ":any-link { color: var(--hotty-accent); }",
+    "::selection { color: var(--hotty-bg); background: var(--hotty-accent); }",
     // An element that opts in to drags selects no text, whatever the
     // document's CSS (SPEC §9.1, §11): important in the host's layer, the
     // first, wins over every rule of the document's.
