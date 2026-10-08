@@ -233,9 +233,13 @@ for (const vector of vectors.vectors) {
         if (step.terminal !== undefined) expect((await terminalWheels(page)) > 0, `${where}: the terminal got the wheel`).toBe(step.terminal);
       } else if (step.key !== undefined) {
         // Where the keyboard is: the surface that has it, else the terminal.
+        // A character typed with Shift on a US keyboard is pressed with it
+        // held, as a keyboard would: xterm.js encodes Alt with a key from
+        // its key code and Shift, not from the character.
         await take(page);
         const names = { shift: "Shift", ctrl: "Control", alt: "Alt", meta: "Meta" } as Record<string, string>;
-        const keys = step.keys ?? [];
+        const keys = [...(step.keys ?? [])];
+        if (/^[A-Z~!@#$%^&*()_+{}|:"<>?]$/.test(step.key) && !keys.includes("shift")) keys.unshift("shift");
         for (const k of keys) await page.keyboard.down(names[k]!);
         await page.keyboard.press(step.key);
         for (const k of [...keys].reverse()) await page.keyboard.up(names[k]!);
