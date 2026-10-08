@@ -98,6 +98,26 @@ export class Resolver {
     own.add(name);
   }
 
+  /** Gives an attribute the program wrote a live value of the host's,
+   * while the program's stays the one reported, until `unmask`. */
+  mask(el: Element, name: string, live: string): void {
+    const value = this.get(el, name);
+    if (value === null) return;
+    let o = this.orig.get(el);
+    if (!o) this.orig.set(el, (o = new Map()));
+    o.set(name, value);
+    el.setAttribute(name, live);
+  }
+
+  /** The program's value again, after `mask`. */
+  unmask(el: Element, name: string): void {
+    const o = this.orig.get(el);
+    const value = o?.get(name);
+    if (value === undefined) return;
+    o!.delete(name);
+    el.setAttribute(name, value);
+  }
+
   /** Removes an attribute, if it is the host's own. */
   removeOwn(el: Element, name: string): void {
     if (!this.own.get(el)?.delete(name)) return;

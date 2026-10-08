@@ -17,6 +17,7 @@ import { Deltas } from "./delta.ts";
 import { Resolver } from "./resolver.ts";
 import { cspSources, intersect, parse, type Policy } from "./network.ts";
 import { NO_BASE, type Store } from "./resources.ts";
+import { chars, INSERT, inputKeys, isBreak, isSpace, type InputKey, MULTILINE_ACTIONS, plan, resolve, ROW_ACTIONS, type Rows, type Text } from "./keys.ts";
 
 /** A surface's CSP: nothing from the network but what the host grants. The
  * `<base>` is the addon's own (a document's is read, then dropped), so any
@@ -63,6 +64,12 @@ export interface SurfaceHost {
   /** A key the surface does not use (a keydown or its keyup), for the
    *  terminal to send to the program as if typed there (SPEC §10.2). */
   key(e: KeyboardEvent): void;
+  /** What the terminal would send the program for a key, sent nowhere
+   *  (SPEC §10.4: a text field names the key from it); null when the
+   *  terminal cannot tell. */
+  encodeKey(e: KeyboardEvent): string | null;
+  /** Sends the program what `encodeKey` gave, as typed. */
+  sendKey(data: string): void;
   /** A key the browser keeps (the `browserKeys` option): the surface
    *  leaves it to the browser rather than hand it to the terminal. */
   browserKey(e: KeyboardEvent): boolean;
@@ -94,7 +101,7 @@ export interface SurfaceHost {
   cells(kind: "down" | "move" | "up", e: MouseEvent, pageX: number, pageY: number): void;
 }
 
-type Control = "none" | "text" | "textarea" | "select" | "activatable";
+type Control = "none" | "text" | "textarea" | "date" | "select" | "activatable";
 
 /** A drag under way (SPEC §9.1): the pointer it holds, the element that
  * started it, and the target, cell and keys the program heard of last. */
@@ -138,7 +145,48 @@ const LINE_PX = 40;
 /** The part of the box a page of a key's scroll moves, as Chromium has it. */
 const PAGE_FRACTION = 0.875;
 
-const TEXT_TYPES = new Set(["text", "email", "password", "search", "tel", "url", "number", "date", "datetime-local", "month", "time", "week"]);
+/** The inputs that are text fields (SPEC §10.2). A type the browser does
+ * not know is `text`. */
+const FIELD_TYPES = new Set(["text", "email", "password", "search", "tel", "url", "number"]);
+
+/** Date and time inputs, which have keys of their own (§10.2). */
+const DATE_TYPES = new Set(["date", "datetime-local", "month", "time", "week"]);
+
+/** Text fields whose caret the browser keeps to itself (no selection API):
+ * the live input is `text` while it is focused, so that the actions can
+ * place the caret. The program still sees its own type. */
+const NO_CARET = new Set(["email", "number"]);
+
+/** The characters a number field types; others it takes and drops. */
+const NUMBER_CHARS = /^[0-9.,+\-eE]$/;
+
+/** The styles a textarea's rows depend on, copied to the copy that measures
+ * them (`textareaRows`). */
+const LAYOUT_STYLES = [
+  "font-family",
+  "font-size",
+  "font-weight",
+  "font-style",
+  "font-variant",
+  "font-stretch",
+  "font-feature-settings",
+  "font-kerning",
+  "letter-spacing",
+  "word-spacing",
+  "line-height",
+  "text-transform",
+  "text-indent",
+  "tab-size",
+  "white-space",
+  "overflow-wrap",
+  "word-break",
+  "direction",
+  "text-align",
+  "padding-left",
+  "padding-right",
+  "padding-top",
+  "padding-bottom",
+];
 
 /** The form controls a detached surface disables (SPEC §5.5). */
 const CONTROLS = "input, select, textarea, button";
@@ -213,6 +261,14 @@ export class Surface {
   private css = "";
   /** Keys whose keydown went to the program, so their keyup follows. */
   private forwarded = new Set<string>();
+  /** A run of row moves in a field (SPEC §10.2): the caret it left, and the
+   * place along the row it keeps. Anything else that moves the caret ends
+   * it. */
+  private goal: { el: Element; caret: number; x: number } | null = null;
+  /** The field shown as `text` while focused (`NO_CARET`). */
+  private masked: HTMLInputElement | null = null;
+  /** Tab is moving focus: the field it reaches selects its text. */
+  private tabbing = false;
   /** The rows the program heard last, while the placement asked for `fit`
    * (`f=1`, SPEC §5.2); null when it did not. */
   private fitRows: number | null = null;
@@ -701,8 +757,9 @@ export class Surface {
     if (tag === "textarea" || (el as HTMLElement).isContentEditable) return "textarea";
     if (tag === "select") return "select";
     if (tag === "input") {
-      const type = ((el as HTMLInputElement).type || "text").toLowerCase();
-      if (TEXT_TYPES.has(type)) return "text";
+      const type = this.inputType(el as HTMLInputElement);
+      if (FIELD_TYPES.has(type)) return "text";
+      if (DATE_TYPES.has(type)) return "date";
       return "activatable";
     }
     if (tag === "button" || tag === "a" || tag === "summary") return "activatable";
@@ -716,10 +773,7 @@ export class Surface {
     const printable = [...k].length === 1;
     if (k === "Escape") return false;
     switch (kind) {
-      case "text":
-        return (plain || (e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey)) &&
-          (printable || ["Backspace", "Delete", "ArrowLeft", "ArrowRight", "Home", "End", "Enter"].includes(k));
-      case "textarea":
+      case "date":
         return (plain || (e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey)) &&
           (printable || ["Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown", "Enter"].includes(k));
       case "select":
@@ -749,13 +803,318 @@ export class Surface {
       if (leaving) {
         e.preventDefault();
         this.blur();
+      } else {
+        this.tabbing = true;
+        setTimeout(() => (this.tabbing = false), 0);
       }
       return;
     }
-    if (this.consumes(e, this.controlKind(this.doc.activeElement))) return;
+    const active = this.focusedControl();
+    const kind = this.controlKind(active);
+    if (kind === "text" || kind === "textarea") {
+      this.fieldKey(e, active!, kind === "textarea");
+      return;
+    }
+    if (this.consumes(e, kind)) return;
     if (this.host.browserKey(e)) return; // the browser's: reload, zoom, …
     if (this.axes && this.scrollKey(e)) return;
     this.forward(e);
+  }
+
+  // --- Text fields (SPEC §10.2, §10.4) ------------------------------------
+
+  /** An input's type, as the browser has it; the program's for a field
+   * that is `text` while focused (`NO_CARET`). */
+  private inputType(el: HTMLInputElement): string {
+    return el === this.masked ? (this.resolver.get(el, "type") ?? "").toLowerCase() : el.type;
+  }
+
+  /**
+   * A key in a text field. It is named as the program would read it: from
+   * what xterm.js would send the program for it, in the encoding the
+   * program enabled, read as SPEC §10.4 says. The field's keymap (the
+   * default, then each `data-keys` from the root to the field) says what
+   * the field does with each key; what it does not use is the program's,
+   * sent as xterm.js encoded it.
+   */
+  private fieldKey(e: KeyboardEvent, el: HTMLElement, multiline: boolean) {
+    if (this.host.browserKey(e)) return; // the browser's: reload, zoom, …
+    const data = this.host.encodeKey(e);
+    const keys: InputKey[] = data === null ? [{ key: domKeyName(e), data: "" }] : inputKeys(data);
+    const keymap = this.keymapOf(el, multiline);
+    const uses = keys.map((k) => (k.key === null ? null : keymap.lookup(k.key)));
+    if (uses.every((u) => u === null)) {
+      // The program's, unless the document scrolls with it (SPEC §5.3).
+      if (this.axes && this.scrollKey(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.forwarded.add(e.code);
+      if (data === null) this.host.key(e);
+      else if (data) this.host.sendKey(data);
+      return;
+    }
+    const number = el.localName === "input" && this.inputType(el as HTMLInputElement) === "number";
+    if (keys.length === 1) {
+      const [use, key] = [uses[0], keys[0]!.key!];
+      // A character, typed as the browser types it (input methods, the
+      // undo history); Enter that submits, as the browser submits a form
+      // with it (the default button's click, and `change` first).
+      const typed = use === INSERT && !(number && !NUMBER_CHARS.test(keyText(key)));
+      const enter = use === "submit" && e.key === "Enter" && el.localName === "input";
+      if (typed || enter) {
+        this.goal = null;
+        return;
+      }
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    keys.forEach((k, i) => {
+      const use = uses[i];
+      if (use === null) {
+        if (k.data) this.host.sendKey(k.data);
+      } else if (use === INSERT) {
+        const text = keyText(k.key!);
+        if (!number || NUMBER_CHARS.test(text)) this.edit(el, multiline, { kind: "type", text });
+      } else if (use === "submit") {
+        this.goal = null;
+        submitFrom(el);
+      } else this.edit(el, multiline, { kind: "action", action: use });
+    });
+  }
+
+  /** A field's keymap (SPEC §10.2): the default, then the `data-keys` of
+   * each element from the root down to the field. */
+  private keymapOf(el: Element, multiline: boolean) {
+    const values: string[] = [];
+    for (let n: Element | null = el; n; n = n.parentElement) {
+      const v = n.getAttribute("data-keys");
+      if (v !== null) values.unshift(v);
+    }
+    return resolve(multiline, ...values);
+  }
+
+  /** Does an action in a field, or types text in it. */
+  private edit(el: HTMLElement, multiline: boolean, what: { kind: "action"; action: string } | { kind: "type"; text: string }) {
+    if (what.kind === "action" && MULTILINE_ACTIONS.has(what.action) && !multiline) return;
+    if (el.localName === "input" || el.localName === "textarea") this.editValue(el as HTMLInputElement | HTMLTextAreaElement, multiline, what);
+    else this.editHost(el, what);
+  }
+
+  /** An input's or a textarea's value: the action's plan, applied with
+   * the editing commands, so that the browser sends `input` (and `change`
+   * when focus leaves) as for typing. */
+  private editValue(el: HTMLInputElement | HTMLTextAreaElement, multiline: boolean, what: { kind: "action"; action: string } | { kind: "type"; text: string }) {
+    const cl = chars(el.value);
+    // Code units at each character boundary.
+    const at = [0];
+    for (const c of cl) at.push(at[at.length - 1]! + c.length);
+    const index = (cu: number) => {
+      let i = 0;
+      while (i < cl.length && at[i + 1]! <= cu) i++;
+      return i;
+    };
+    const start = index(el.selectionStart ?? el.value.length);
+    const end = index(el.selectionEnd ?? el.value.length);
+    if (what.kind === "type") {
+      this.goal = null;
+      this.replace(el, at[start]!, at[end]!, what.text);
+      return;
+    }
+    const action = what.action;
+    const password = el.localName === "input" && this.inputType(el as HTMLInputElement) === "password";
+    const text: Text = { chars: cl, start, end, multiline, password };
+    const g = this.goal;
+    const goal = ROW_ACTIONS.has(action) && g && g.el === el && start === end && g.caret === start ? g.x : null;
+    const rows = multiline && ROW_ACTIONS.has(action) ? this.textareaRows(el as HTMLTextAreaElement, cl) : null;
+    const p = plan(text, action, rows, goal);
+    this.goal = p.kind === "move" && p.goal !== undefined ? { el, caret: p.to, x: p.goal } : null;
+    if (p.kind === "move") el.setSelectionRange(at[p.to]!, at[p.to]!);
+    else if (p.kind === "replace") this.replace(el, at[p.from]!, at[p.to]!, p.text);
+  }
+
+  /** Replaces code units `from` to `to` of a field's value with `text`, the
+   * caret after it, as typing does. */
+  private replace(el: HTMLInputElement | HTMLTextAreaElement, from: number, to: number, text: string) {
+    el.setSelectionRange(from, to);
+    if (from === to && !text) return;
+    const done = text ? this.doc.execCommand("insertText", false, text) : this.doc.execCommand("delete", false);
+    if (done) return;
+    el.setRangeText(text, from, to, "end");
+    const win = this.frame.contentWindow as unknown as typeof globalThis;
+    el.dispatchEvent(new win.InputEvent("input", { bubbles: true, inputType: text ? "insertText" : "deleteContent", data: text || null }));
+  }
+
+  /**
+   * A textarea's rows as it lays them out (SPEC §10.2: a line that wraps is
+   * several rows): a hidden copy of its text, wrapped as it wraps, with
+   * every character in an element of its own, measured where each
+   * position is. The place along a row is a position's x.
+   */
+  private textareaRows(el: HTMLTextAreaElement, cl: string[]): Rows {
+    const win = this.frame.contentWindow!;
+    const cs = win.getComputedStyle(el);
+    const copy = this.doc.createElement("hotty-rows");
+    for (const p of LAYOUT_STYLES) copy.style.setProperty(p, cs.getPropertyValue(p));
+    const width = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    Object.assign(copy.style, {
+      display: "block",
+      position: "absolute",
+      left: "0px",
+      top: "0px",
+      visibility: "hidden",
+      boxSizing: "content-box",
+      width: `${Math.max(width, 1)}px`,
+      height: "auto",
+      border: "0",
+      margin: "0",
+    });
+    const cells = [...cl, "​"].map((c) => {
+      const s = this.doc.createElement("hotty-c");
+      s.style.cssText = "display:inline;margin:0;padding:0;border:0;font:inherit;letter-spacing:inherit";
+      s.textContent = c;
+      return s;
+    });
+    copy.append(...cells);
+    this.doc.body.append(copy);
+    const pos = cells.map((s) => {
+      const r = s.getClientRects()[0] ?? s.getBoundingClientRect();
+      return { x: r.left, y: Math.round(r.top) };
+    });
+    copy.remove();
+    const tops = [...new Set(pos.map((p) => p.y))].sort((a, b) => a - b);
+    const line = tops.length > 1 ? tops[1]! - tops[0]! : parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.2;
+    const shown = el.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    const n = cl.length;
+    return {
+      page: Math.max(1, Math.round(shown / line)),
+      move(from, by, goal) {
+        const g = goal ?? pos[from]!.x;
+        const r = tops.indexOf(pos[from]!.y) + by;
+        if (r < 0) return { to: 0, goal: g };
+        if (r >= tops.length) return { to: n, goal: g };
+        let best = -1;
+        for (let i = 0; i <= n; i++) {
+          if (pos[i]!.y !== tops[r]) continue;
+          if (best < 0 || Math.abs(pos[i]!.x - g) < Math.abs(pos[best]!.x - g)) best = i;
+        }
+        return { to: best, goal: g };
+      },
+    };
+  }
+
+  /**
+   * An editing host (`contenteditable`): the actions with the selection's
+   * own moves, a character at a time where they need to see the text, so
+   * that words and lines are SPEC §10.2's, then the editing commands.
+   */
+  private editHost(host: HTMLElement, what: { kind: "action"; action: string } | { kind: "type"; text: string }) {
+    this.goal = null;
+    const sel = this.doc.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    const d = this.doc;
+    if (what.kind === "type") {
+      d.execCommand("insertText", false, what.text);
+      return;
+    }
+    const action = what.action;
+    if (action === "newline") {
+      d.execCommand("insertLineBreak", false);
+      return;
+    }
+    const within = () => sel.focusNode !== null && host.contains(sel.focusNode);
+    /** The character next to the selection's focus that way, if any. */
+    const next = (dir: "backward" | "forward"): string => {
+      const [an, ao, fn, fo] = [sel.anchorNode!, sel.anchorOffset, sel.focusNode!, sel.focusOffset];
+      sel.collapse(fn, fo);
+      sel.modify("extend", dir, "character");
+      const c = within() ? sel.toString() : "";
+      sel.setBaseAndExtent(an, ao, fn, fo);
+      return c;
+    };
+    /** Moves (or extends) a character at a time while `go` holds. */
+    const walk = (alter: "move" | "extend", dir: "backward" | "forward", go: (c: string) => boolean) => {
+      for (let i = 0; i < 100_000; i++) {
+        const c = next(dir);
+        if (!c || !go(c)) return;
+        sel.modify(alter, dir, "character");
+      }
+    };
+    const back = (alter: "move" | "extend", unit: string) => {
+      if (unit === "word") {
+        walk(alter, "backward", isSpace);
+        walk(alter, "backward", (c) => !isSpace(c));
+      } else if (unit === "line") walk(alter, "backward", (c) => !isBreak(c));
+      else sel.modify(alter, "backward", "character");
+    };
+    const forward = (alter: "move" | "extend", unit: string) => {
+      if (unit === "word") {
+        walk(alter, "forward", isSpace);
+        walk(alter, "forward", (c) => !isSpace(c));
+      } else if (unit === "line") walk(alter, "forward", (c) => !isBreak(c));
+      else sel.modify(alter, "forward", "character");
+    };
+    if (action.startsWith("delete-")) {
+      if (sel.isCollapsed) {
+        const unit = action.includes("word") ? "word" : action.includes("line") ? "line" : "char";
+        if (action.endsWith("backward") || action.endsWith("start")) back("extend", unit);
+        else forward("extend", unit);
+      }
+      if (!sel.isCollapsed) d.execCommand("delete", false);
+      return;
+    }
+    const backward = ["char-backward", "word-backward", "line-start", "line-previous", "page-up", "input-start"].includes(action);
+    if (!sel.isCollapsed) {
+      if (backward) sel.collapseToStart();
+      else sel.collapseToEnd();
+      if (action === "char-backward" || action === "char-forward") return;
+    }
+    const by = { "char-backward": "char", "char-forward": "char", "word-backward": "word", "word-forward": "word", "line-start": "line", "line-end": "line" }[action];
+    if (by) {
+      if (backward) back("move", by);
+      else forward("move", by);
+      return;
+    }
+    if (action === "input-start" || action === "input-end") {
+      sel.modify("move", backward ? "backward" : "forward", "documentboundary");
+      return;
+    }
+    if (ROW_ACTIONS.has(action)) {
+      const rows = action.startsWith("page") ? Math.max(1, Math.round(host.clientHeight / (parseFloat(this.frame.contentWindow!.getComputedStyle(host).lineHeight) || 16))) : 1;
+      for (let i = 0; i < rows; i++) {
+        const [fn, fo] = [sel.focusNode, sel.focusOffset];
+        sel.modify("move", backward ? "backward" : "forward", "line");
+        if (sel.focusNode === fn && sel.focusOffset === fo) {
+          // From the first row to the start, from the last to the end.
+          sel.modify("move", backward ? "backward" : "forward", "documentboundary");
+          return;
+        }
+      }
+    }
+  }
+
+  /** A field that hides its caret (`NO_CARET`) is `text` while focused:
+   * from the press that focuses it, so that the caret lands where the
+   * press does, or from the focus. */
+  private maskField(target: EventTarget | null, focusing: boolean) {
+    const el = target as HTMLInputElement | null;
+    if (!el || el.nodeType !== 1 || el.localName !== "input" || el === this.masked || this.detachedState) return;
+    const type = (this.resolver.get(el, "type") ?? "").toLowerCase();
+    if (!NO_CARET.has(type) || el.disabled) return;
+    this.unmaskField();
+    this.masked = el;
+    this.resolver.mask(el, "type", "text");
+    if (!el.hasAttribute("inputmode")) this.resolver.setOwn(el, "inputmode", type === "number" ? "decimal" : "email");
+    // Focused without a press: as a browser focuses a text field, all of
+    // it selected for Tab, the caret at the end otherwise.
+    if (focusing) el.setSelectionRange(this.tabbing ? 0 : el.value.length, el.value.length);
+  }
+
+  private unmaskField() {
+    const el = this.masked;
+    if (!el) return;
+    this.masked = null;
+    this.resolver.removeOwn(el, "inputmode");
+    this.resolver.unmask(el, "type");
   }
 
   /**
@@ -1021,6 +1380,7 @@ export class Surface {
       "pointerdown",
       (e) => {
         if (this.onAltDown(e)) return;
+        if (e.button === 0) this.maskField(e.target, false);
         this.pointerPress = e.pointerType !== "touch";
         if (this.pointerPress && e.button === 0 && e.isPrimary) this.reportPress(e);
         this.onDragDown(e);
@@ -1048,7 +1408,13 @@ export class Surface {
       },
       true,
     );
-    d.addEventListener("focusin", (e) => this.onFocusIn(e), true);
+    d.addEventListener("focusin", (e) => {
+      this.maskField(e.target, true);
+      this.onFocusIn(e);
+    }, true);
+    d.addEventListener("focusout", (e) => {
+      if (e.target === this.masked) this.unmaskField();
+    }, true);
     d.addEventListener("click", (e) => this.onClick(e), true);
     d.addEventListener("auxclick", (e) => this.onAuxClick(e), true);
     d.addEventListener("mouseover", (e) => this.onOver(e), true);
@@ -1538,4 +1904,37 @@ function keyScroll(e: KeyboardEvent): KeyScroll | null {
       return { axis: "y", sign: -1, by: "end" };
   }
   return null;
+}
+
+/** The text a character key types (`Space` is a space). */
+function keyText(key: string): string {
+  const v = key.endsWith("++") ? "+" : key.slice(key.lastIndexOf("+") + 1);
+  return v === "Space" ? " " : v;
+}
+
+/** A key's name from the DOM's event (SPEC §10.4), for a terminal that
+ * cannot say what it would send: the modifiers, then the key's value, Shift
+ * left out before a character. */
+function domKeyName(e: KeyboardEvent): string {
+  const char = [...e.key].length === 1;
+  const mods = [e.ctrlKey && "Control", e.altKey && "Alt", e.metaKey && "Meta", e.shiftKey && !char && "Shift"].filter(Boolean);
+  return [...mods, e.key === " " ? "Space" : e.key].join("+");
+}
+
+/**
+ * Submits a field's form as Enter in a text field does (HTML's implicit
+ * submission): through its default button, which is clicked; with none,
+ * the form itself, unless more than one of its fields would take Enter.
+ */
+function submitFrom(el: HTMLElement) {
+  const form = (el as HTMLInputElement).form ?? el.closest("form");
+  if (!form) return;
+  const controls = Array.from(form.elements) as HTMLInputElement[];
+  const button = controls.find((c) => (c.localName === "button" && (c.type || "submit") === "submit") || (c.localName === "input" && (c.type === "submit" || c.type === "image")));
+  if (button) {
+    if (!button.disabled) button.click();
+    return;
+  }
+  const blocking = controls.filter((c) => c.localName === "input" && (FIELD_TYPES.has(c.type) || DATE_TYPES.has(c.type)));
+  if (blocking.length <= 1) form.requestSubmit();
 }

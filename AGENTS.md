@@ -15,6 +15,8 @@ neuroplastio/hotty; this repository implements it and must not grow it.
   repository, not a quiet choice here. If the vectors and this addon
   disagree, fix the addon or propose a spec change there.
 - **Private xterm.js APIs and behaviour** (cell size, cursor movement after
-  `place`, and forwarding keys by dispatching them to xterm.js's textarea,
-  which focuses the terminal on keyup) are isolated in `src/addon.ts`.
+  `place`, forwarding keys by dispatching them to xterm.js's textarea,
+  which focuses the terminal on keyup, and reading what it sends for a key
+  through its core service's `triggerDataEvent`) are isolated in
+  `src/addon.ts`.
   Re-run everything when xterm.js is upgraded.

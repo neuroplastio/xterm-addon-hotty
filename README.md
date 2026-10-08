@@ -80,6 +80,7 @@ runs programs for whoever connects.
 | wire | `src/wire.ts` | OSC 7279 control parsing, chunk reassembly, base64, zlib through `DecompressionStream`, and reply encoding |
 | addon | `src/addon.ts` | OSC handler, replies through `term.input(…, false)`, placement, synchronized output, RIS, the alternate screen, zoom and theme, and keys a surface does not use, through xterm.js's own keyboard handling |
 | surface | `src/surface.ts` | one sandboxed iframe per surface; events, focus and key routing |
+| keys | `src/keys.ts` | SPEC §10.2, §10.4: key names, the keys in what the terminal sends, keymaps (`data-keys`), and the actions on a field's text |
 | deltas | `src/delta.ts` | SPEC §6: the ops and morph |
 | resources | `src/resources.ts`, `src/resolver.ts` | `cid:` as `blob:` URLs; sanitizing everything before it reaches a live document |
 | host stylesheet | `src/hostcss.ts` | §8 from `term.options` (theme, font, cell size), in a cascade layer: the palette, `--hotty-accent`, and controls, focus, links and selection in the terminal's colours |
@@ -112,6 +113,25 @@ runs programs for whoever connects.
   is done, the addon gives that focus back to the terminal, so text
   selection works as usual. A right click leaves focus where the browser
   put it, so the context menu's Copy copies the surface's selection.
+- **A text field's keys** (SPEC §10.2, §10.4) are the program's keymap.
+  Each key goes through xterm.js's keyboard handling, with what it would
+  send the program kept back, and is named from that, so a field sees the
+  key the program would read, in the encoding the program enabled. The
+  field's keymap (the default, then each `data-keys` from the root to the
+  field) decides: an action, which the addon does itself on the field's
+  text with the editing commands, so the browser sends `input` and
+  `change` as for typing; a character, which the browser types; or the
+  program's, which gets what xterm.js encoded. Details:
+  - Enter that submits, in an `input`, is the browser's own implicit
+    submission; another key bound to `submit` does the same through the
+    form's default button, or the form.
+  - A textarea's rows are as it wraps them: a hidden copy of its text,
+    with the same width and font, measures where each position is.
+  - An email or number field, whose caret the browser keeps to itself, is
+    `text` while focused (inspection still reports its type), and a number
+    field types only what a number holds.
+  - An editing host's actions use the selection's moves, a character at a
+    time where the words and lines need to see the text.
 - **Drags** (SPEC §9.1, a draft on hotty's `drag` branch). A mouse's or a
   pen's primary press on an element with `drag` in its `data-on` and an id
   reports `dragstart`, then `drag` each time the element under the pointer
@@ -258,6 +278,9 @@ runs programs for whoever connects.
 - **Cursor.** After `a=place` the cursor moves below the surface, as in the
   native host. xterm.js has no public API for that, so the addon uses the same
   private calls as the official image addon.
+- **What xterm.js sends for a key** a text field names (SPEC §10.4) is read
+  from its core service's `triggerDataEvent`, also private, which the addon
+  holds back while the key goes through xterm.js's keyboard handling.
 - **Cell size** comes from xterm's render service (also private), with a
   measured fallback.
 - **xterm.js 6.1** is needed for the kitty keyboard protocol
@@ -343,11 +366,13 @@ Measured 2026-09-29 in headless Chromium 153 (`bench/`):
 
 - the typecheck, the build and the declarations (what `npm pack` ships);
 - the unit tests (`node --test`: the wire, keys, decoding the reference Python
-  client, and the conformance vectors' wire section);
+  client, and the conformance vectors' wire, keys, keymap and edit
+  sections);
 - the Playwright tests, against Chromium (and Firefox once installed:
   `npx playwright install firefox`):
   - the protocol and the conformance vectors;
   - interaction, with `form.py` through the bridge;
+  - text fields' keymaps beyond the vectors (`fields.spec.ts`);
   - the hostile page and the embedder's CSP;
   - Bub-n-Bros with kitty keys (skipped unless the game is fetched).
 

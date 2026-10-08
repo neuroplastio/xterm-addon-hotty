@@ -124,6 +124,9 @@ class Failure extends Error {
 
 type Reply = { extra?: [string, string][]; body?: string };
 
+/** Where xterm.js sends what the program reads (its core service). */
+type DataSink = { triggerDataEvent(data: string, wasUserInput?: boolean): void };
+
 export class HottyAddon implements ITerminalAddon {
   private term!: Terminal;
   private readonly opts: Required<Pick<HottyOptions, "maxSurfaces" | "resourceQuota">> & HottyOptions;
@@ -556,46 +559,28 @@ export class HottyAddon implements ITerminalAddon {
         this.send(encode(c, detail === undefined ? "" : JSON.stringify(detail)));
       },
       browserKey: (e) => this.browserKey(e),
-      key: (e) => {
-        // Through xterm.js's own keyboard handling, so the key is encoded
-        // the way the program asked: DECCKM, modifyOtherKeys, the kitty
-        // keyboard protocol. A printable key xterm.js leaves to keypress
-        // (legacy input) gets one.
-        const ta = this.term.textarea;
-        if (!ta) return;
-        const init = {
-          key: e.key,
-          code: e.code,
-          location: e.location,
-          repeat: e.repeat,
-          ctrlKey: e.ctrlKey,
-          altKey: e.altKey,
-          shiftKey: e.shiftKey,
-          metaKey: e.metaKey,
-          keyCode: e.keyCode,
-          which: e.which,
-          bubbles: true,
-          cancelable: true,
-        };
-        // xterm.js focuses the terminal on every keyup; the surface keeps
-        // the keyboard, so its focus does nothing meanwhile.
-        Object.defineProperty(ta, "focus", { value: () => {}, configurable: true });
-        this.forwarding = true;
+      key: (e) => this.terminalKey(e),
+      encodeKey: (e) => {
+        // What xterm.js sends for the key, kept from the program: its
+        // keyboard handling ends in the core service's triggerDataEvent,
+        // which is private.
+        const cs = (this.term as unknown as { _core?: { coreService?: DataSink } })._core?.coreService;
+        if (typeof cs?.triggerDataEvent !== "function") return null;
+        let data = "";
+        const own = Object.prototype.hasOwnProperty.call(cs, "triggerDataEvent");
+        const prev = cs.triggerDataEvent;
+        cs.triggerDataEvent = (d: string) => void (data += d);
         try {
-          const ev = new KeyboardEvent(e.type, init);
-          ta.dispatchEvent(ev);
-          if (e.type === "keydown" && !ev.defaultPrevented && [...e.key].length === 1) {
-            const c = e.key.codePointAt(0)!;
-            ta.dispatchEvent(new KeyboardEvent("keypress", { ...init, charCode: c, keyCode: c, which: c }));
-          }
+          this.terminalKey(e);
         } finally {
-          delete (ta as { focus?: unknown }).focus;
-          this.forwarding = false;
-          if (this.focusAfter) {
-            this.focusAfter = false;
-            this.term.focus();
-          }
+          if (own) cs.triggerDataEvent = prev;
+          else delete (cs as { triggerDataEvent?: unknown }).triggerDataEvent;
         }
+        return data;
+      },
+      sendKey: (data) => {
+        const cs = (this.term as unknown as { _core: { coreService: DataSink } })._core.coreService;
+        this.throughTerminal(() => cs.triggerDataEvent(data, true));
       },
       focusTerminal: () => {
         if (this.forwarding) this.focusAfter = true;
@@ -636,6 +621,60 @@ export class HottyAddon implements ITerminalAddon {
       wheel: (e, x, y) => this.forwardWheel(e, x, y),
       cells: (kind, e, x, y) => this.pressCells(kind, e, x, y),
     };
+  }
+
+  /**
+   * A key through xterm.js's own keyboard handling, so it is encoded the
+   * way the program asked: DECCKM, modifyOtherKeys, the kitty keyboard
+   * protocol. A printable key xterm.js leaves to keypress (legacy input)
+   * gets one.
+   */
+  private terminalKey(e: KeyboardEvent) {
+    const ta = this.term.textarea;
+    if (!ta) return;
+    const init = {
+      key: e.key,
+      code: e.code,
+      location: e.location,
+      repeat: e.repeat,
+      ctrlKey: e.ctrlKey,
+      altKey: e.altKey,
+      shiftKey: e.shiftKey,
+      metaKey: e.metaKey,
+      keyCode: e.keyCode,
+      which: e.which,
+      bubbles: true,
+      cancelable: true,
+    };
+    this.throughTerminal(() => {
+      const ev = new KeyboardEvent(e.type, init);
+      ta.dispatchEvent(ev);
+      if (e.type === "keydown" && !ev.defaultPrevented && [...e.key].length === 1) {
+        const c = e.key.codePointAt(0)!;
+        ta.dispatchEvent(new KeyboardEvent("keypress", { ...init, charCode: c, keyCode: c, which: c }));
+      }
+    });
+  }
+
+  /** Something a surface sends through the terminal (a key, or what one
+   * stands for). xterm.js focuses the terminal on every keyup; the surface
+   * keeps the keyboard, so its focus does nothing meanwhile, and a surface
+   * the program blurs meanwhile gives the keyboard back once it is
+   * through. */
+  private throughTerminal(fn: () => void) {
+    const ta = this.term.textarea;
+    if (ta) Object.defineProperty(ta, "focus", { value: () => {}, configurable: true });
+    this.forwarding = true;
+    try {
+      fn();
+    } finally {
+      if (ta) delete (ta as { focus?: unknown }).focus;
+      this.forwarding = false;
+      if (this.focusAfter) {
+        this.focusAfter = false;
+        this.term.focus();
+      }
+    }
   }
 
   private cellTouch: Touch | null = null;
