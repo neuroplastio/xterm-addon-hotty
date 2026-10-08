@@ -128,8 +128,10 @@ runs programs for whoever connects.
   - A textarea's rows are as it wraps them: a hidden copy of its text,
     with the same width and font, measures where each position is.
   - An email or number field, whose caret the browser keeps to itself, is
-    `text` while focused (inspection still reports its type), and a number
-    field types only what a number holds.
+    `text` while focused (inspection still reports its type, and
+    `inputmode` keeps the on-screen keyboard), and a number field types
+    only what a number holds. CSS that selects on `[type=email]` or
+    `[type=number]` does not match it while it is focused.
   - An editing host's actions use the selection's moves, a character at a
     time where the words and lines need to see the text.
 - **Drags** (SPEC §9.1, a draft on hotty's `drag` branch). A mouse's or a
