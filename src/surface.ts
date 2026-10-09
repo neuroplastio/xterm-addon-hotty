@@ -795,6 +795,10 @@ export class Surface {
       this.forward(e);
       return;
     }
+    // A select's open list has every key, Escape and those its keymap gives
+    // the program included (SPEC §10.2). Chromium's list keeps them from
+    // the document anyway; where one reaches it, it is the list's.
+    if (listOpen(this.focusedControl())) return;
     if (e.key === "Tab" && !e.ctrlKey && !e.altKey && !e.metaKey) {
       // Tab moves between controls; past the last one it leaves the surface.
       const order = this.tabbable();
@@ -1927,6 +1931,17 @@ function keyScroll(e: KeyboardEvent): KeyScroll | null {
       return { axis: "y", sign: -1, by: "end" };
   }
   return null;
+}
+
+/** Whether `el` is a select with its list open (`:open`, where the browser
+ * has it). */
+function listOpen(el: Element | null): boolean {
+  if (el?.localName !== "select") return false;
+  try {
+    return el.matches(":open");
+  } catch {
+    return false;
+  }
 }
 
 /** The `data-keys` of each element from the root down to `el`, its own

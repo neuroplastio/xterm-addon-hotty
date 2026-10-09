@@ -136,14 +136,17 @@ runs programs for whoever connects.
     time where the words and lines need to see the text.
 - **Keys for the program** (SPEC §10.2). Any focused element has a keymap:
   each `data-keys` from the root to it, over the default only in a text
-  field. A key it binds to `program` (named as in a text field, a key with
-  Shift looked up again without it) goes to the program as xterm.js
-  encoded it, and the browser does nothing with it: a select's arrows pick
-  nothing, and a document that scrolls does not scroll. Outside a text
-  field the keymap's other bindings are ignored, and a nearer one of a key
-  cancels a farther `program`.
+  field; with nothing focused there is none. A key it binds to `program`
+  (named as in a text field, a key with Shift looked up again without it)
+  goes to the program as xterm.js encoded it, and the browser does nothing
+  with it: a select's arrows pick nothing, and a document that scrolls does
+  not scroll. Outside a text field the keymap's other bindings do nothing,
+  but a nearer one of a key still cancels a farther `program`.
 - **Selects** (SPEC §10.2) are the browser's own: its keys pick, each pick
-  sends `change` at once, and its native list opens past the surface.
+  is heard at once (`input` with `data-on~=input`, then `change`), and its
+  native list opens past the surface. While the list is open it has every
+  key: Chromium's keeps them from the document, and where one reaches it
+  (`:open`), the addon leaves it to the list.
 - **Drags** (SPEC §9.1, a draft on hotty's `drag` branch). A mouse's or a
   pen's primary press on an element with `drag` in its `data-on` and an id
   reports `dragstart`, then `drag` each time the element under the pointer

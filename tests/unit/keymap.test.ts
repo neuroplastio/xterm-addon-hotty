@@ -1,22 +1,11 @@
 // Keys for the program (SPEC §10.2): every focused element has a keymap,
 // and a key it binds to `program` is the program's before the element or
-// the scrolling use it. The shared vectors check it in the browser
-// (conformance.spec.ts); these check the keymap the surface reads.
+// the scrolling use it. The shared vectors' keymap section checks
+// `elementKeymap` (conformance.test.ts), and the host vectors the browser
+// (conformance.spec.ts); these check what they leave out.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { elementKeymap, resolve } from "../../src/keys.ts";
-
-test("outside a text field the keymap is the data-keys alone, root first, and only program counts", () => {
-  const m = elementKeymap("ArrowDown=program End=program", "End=line-end");
-  assert.equal(m.program("ArrowDown"), true);
-  // A nearer binding to another action cancels the farther one to program.
-  assert.equal(m.program("End"), false);
-  assert.equal(m.action("End"), "line-end");
-  // No default keymap: nothing else is bound.
-  assert.equal(m.action("ArrowUp"), undefined);
-  assert.equal(m.program("ArrowUp"), false);
-  assert.equal(elementKeymap().program("ArrowDown"), false);
-});
 
 test("a key with Shift that is not bound is looked up again without it; a binding with Shift wins", () => {
   const m = elementKeymap("ArrowDown=program a=program", "Shift+ArrowUp=program ArrowUp=line-start");

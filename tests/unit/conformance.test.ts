@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { HOTTY_DIR } from "../hotty.ts";
 import { Assembler, text, type Command } from "../../src/wire.ts";
-import { decodeKeys, Field, parseKey, parseKeymap, resolve, TERMINAL_KEYS } from "../../src/keys.ts";
+import { decodeKeys, elementKeymap, Field, parseKey, parseKeymap, resolve, TERMINAL_KEYS } from "../../src/keys.ts";
 
 const vectors = JSON.parse(readFileSync(join(HOTTY_DIR, "conformance", "vectors.json"), "utf8"));
 
@@ -45,6 +45,12 @@ for (const v of vectors.keys) {
 
 for (const v of vectors.keymap) {
   test(`keymap: ${v.name}`, () => {
+    if ("program" in v) {
+      // An element's keymap outside a text field: no default, only program.
+      const m = elementKeymap(...v.keys);
+      for (const [key, want] of Object.entries(v.program)) assert.equal(m.program(key), want, key);
+      return;
+    }
     if (!("lookup" in v)) {
       assert.equal(parseKeymap(v.parse ?? TERMINAL_KEYS).format(), v.format);
       return;
