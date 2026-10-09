@@ -298,6 +298,31 @@ test.describe("§9.1: a touch drags where touch-action allows no pan its way", (
     expect(evs((await take(page)).msgs).some((e) => e[1] === "dragstart")).toBe(false);
   });
 
+  test("a finger that leaves the element it drags is still the drag's: a drag for each cell, with no target, until it lifts", async ({ page, browserName }) => {
+    test.skip(browserName !== "chromium", "touch input comes from CDP");
+    await place(
+      page,
+      "x",
+      `<style>body{margin:0}#track{height:var(--hotty-cell-h);width:calc(20*var(--hotty-cell-w));touch-action:pan-y}</style><div id=track data-on=drag>track</div>`,
+      "4",
+    );
+    const r = (await surface(page, "x").locator("#track").boundingBox())!;
+    const cw = r.width / 20;
+    const f = await finger(page);
+    await f.down(r.x + cw / 2, r.y + r.height / 2);
+    await f.move(2 * cw, 0); // along the track: the drag starts
+    await f.move(0, 2 * r.height); // two rows below it
+    await f.move(4 * cw, 0); // and on, to the right
+    await f.up();
+    // Along the track, the element under the finger stays the same: no
+    // drag. Off it, a drag for each cell, with no target, and the lift.
+    expect(evs((await take(page)).msgs).map((e) => [e[1], e[2], e[3]])).toEqual([
+      ["dragstart", "track", { c: 0, r: 0, keys: [] }],
+      ...[[2, 1], [2, 2], [3, 2], [4, 2], [5, 2], [6, 2]].map(([c, r]) => ["drag", "", { c, r, keys: [] }]),
+      ["dragend", "", { c: 6, r: 2, keys: [] }],
+    ]);
+  });
+
   test("in a document that scrolls, a drag element still drags its way and pans the other, and touch-action elsewhere stops no pan", async ({ page, browserName }) => {
     test.skip(browserName !== "chromium", "touch input comes from CDP");
     await send(
