@@ -5,7 +5,7 @@
  * `xterm-addon-hotty`, 0.1.0 named no version and took `a=patch`, and 0.2.0
  * took `a=delta`.
  */
-export const VERSION = "0.1.0";
+export const VERSION = "0.1.1";
 
 /** The host's name in its capabilities (SPEC §4): the package's. */
 export const HOST = "@neuroplastio/xterm-addon-hotty";
