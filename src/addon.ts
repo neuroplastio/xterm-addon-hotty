@@ -405,6 +405,7 @@ export class HottyAddon implements ITerminalAddon {
       limits: { resources: this.store.quota, surfaces: this.opts.maxSurfaces },
       net: this.policy,
       scroll: true,
+      steps: true,
       host: HOST,
       version: VERSION,
     };

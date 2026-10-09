@@ -183,6 +183,16 @@ runs programs for whoever connects.
   click where it began. A second finger ends it with `dragend` and no
   target, and nothing more is heard until every finger lifts. A long press,
   or Alt held at the touch, never drags. Any other touch pans as below.
+
+  An element that also has `data-steps="<x> [<y>]"` (whole numbers, 0 for
+  none along that axis) says where in it the pointer is: every event of a
+  drag of it carries `x` and `y`, the pointer's step along its border box
+  (`getBoundingClientRect`, as it is at each move), rounded to the nearest
+  and clamped to 0 and the count, wherever the pointer or the finger is.
+  A `drag` also goes out each time the step changes. The counts are read
+  when the drag starts; once the element has left the document, the step
+  stays as it last was, as it does in a `dragend` that ends a drag early.
+  The capabilities report `steps: true`.
 - **Presses** (SPEC §5.2, §9: `p=1` on `a=place`). Every primary press of a
   mouse or a pen in the window reports `press` on its pointerdown, before
   the drag and the focus it causes; a tap reports it on the mousedown the

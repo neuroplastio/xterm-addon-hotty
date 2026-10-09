@@ -245,11 +245,11 @@ async function point(page: Page, s: string, at: string | [number, number]): Prom
 }
 
 // Capabilities this addon reports that vectors may require (SPEC §4):
-// `scroll` (§5.3), and `touch` (§9.1, §16) where this runner can touch it,
-// in Chromium, through CDP: Playwright gives Firefox no touch moves. It does
-// not let the pointer through surfaces yet (§9.3, `passthrough`), and does
-// not send `hover` yet (§9.4: not in `EVENTS`).
-const reported = (browser: string) => new Set<string>(["scroll", ...(browser === "chromium" ? ["touch"] : [])]);
+// `scroll` (§5.3), `steps` (§9.1), and `touch` (§9.1, §16) where this
+// runner can touch it, in Chromium, through CDP: Playwright gives Firefox no
+// touch moves. It does not let the pointer through surfaces yet (§9.3,
+// `passthrough`), and does not send `hover` yet (§9.4: not in `EVENTS`).
+const reported = (browser: string) => new Set<string>(["scroll", "steps", ...(browser === "chromium" ? ["touch"] : [])]);
 
 const needs = (v: { requires?: string | string[] }) => (v.requires === undefined ? [] : [v.requires].flat());
 

@@ -12,6 +12,7 @@
 // in the addon's layer, and placement only changes the position of its box.
 
 import { LONG_PRESS_MS, panBlocked, Touch, type TouchBegin, touchPans } from "./touch.ts";
+import { parseSteps, stepAt } from "./steps.ts";
 import { CLIP, MEASURE, rootTouchAction, scrollCss, UNCLIPPED } from "./hostcss.ts";
 import { Deltas } from "./delta.ts";
 import { Resolver } from "./resolver.ts";
@@ -104,15 +105,30 @@ export interface SurfaceHost {
 type Control = "none" | "text" | "textarea" | "date" | "select" | "activatable";
 
 /** A drag under way (SPEC §9.1): the pointer it holds, the element that
- * started it, and the target, cell and keys the program heard of last. */
+ * started it, its steps if it has them, and the target, cell, keys and step
+ * the program heard of last. */
 interface Drag {
   pointer: number;
   start: string;
+  steps: Steps | null;
   target: string;
   c: number;
   r: number;
   keys: string[];
+  step: Step;
 }
+
+/** The steps of the element a drag started on (SPEC §9.1): the element, and
+ * its counts when the drag started, 0 for none along that axis. */
+interface Steps {
+  el: Element;
+  x: number;
+  y: number;
+}
+
+/** Where in the dragged element the pointer is, in its steps: `x` and `y`,
+ * each only along an axis it has steps on. */
+type Step = { x?: number; y?: number };
 
 /** The theme's colour scheme, as the host stylesheet declares it. */
 export type Scheme = "dark" | "light";
@@ -1267,8 +1283,10 @@ export class Surface {
     if (!id) return;
     const [c, r] = this.cellOf(e);
     const keys = keysOf(e);
-    this.drag = { pointer: e.pointerId, start: id, target: id, c, r, keys };
-    this.emit("dragstart", id, { c, r, keys });
+    const d: Drag = { pointer: e.pointerId, start: id, steps: stepsOf(start!), target: id, c, r, keys, step: {} };
+    d.step = this.stepIn(d, e.clientX, e.clientY);
+    this.drag = d;
+    this.emit("dragstart", id, { c, r, keys, ...d.step });
     try {
       this.doc.documentElement.setPointerCapture(e.pointerId);
     } catch {
@@ -1276,18 +1294,42 @@ export class Surface {
     }
   }
 
-  /** A move during a drag: an event each time its target changes, and
-   * while it has none, each time its cell does. */
+  /** A move during a drag (`moveDrag`). */
   private onDragMove(e: PointerEvent) {
     const d = this.drag;
     if (!d || e.pointerId !== d.pointer) return;
-    const [c, r] = this.cellOf(e);
-    const target = this.dragTarget(this.elementAt(e, c, r));
-    const keys = keysOf(e);
-    if (target !== d.target || (target === "" && (c !== d.c || r !== d.r))) {
-      this.emit("drag", target, { c, r, keys });
+    this.moveDrag(d, e.clientX, e.clientY, keysOf(e));
+  }
+
+  /** The pointer or the finger of a drag moved to (x, y) of the document:
+   * an event each time its target changes, while it has none each time its
+   * cell does, and each time its step does (SPEC §9.1); one for a move that
+   * changes more than one. */
+  private moveDrag(d: Drag, x: number, y: number, keys: string[]) {
+    const [c, r] = this.cellAt(x, y);
+    const target = this.dragTarget(this.elementAtPoint(x, y, c, r));
+    const step = this.stepIn(d, x, y);
+    if (target !== d.target || (target === "" && (c !== d.c || r !== d.r)) || step.x !== d.step.x || step.y !== d.step.y) {
+      this.emit("drag", target, { c, r, keys, ...step });
     }
-    Object.assign(d, { target, c, r, keys });
+    Object.assign(d, { target, c, r, keys, step });
+  }
+
+  /**
+   * Where (x, y) of the document is in the element a drag started on, in
+   * its steps (SPEC §9.1): measured against its border box where the user
+   * sees it now, wherever the point is, and as they last were once the
+   * element has left the document. None when it has no steps.
+   */
+  private stepIn(d: Drag, x: number, y: number): Step {
+    const s = d.steps;
+    if (!s) return {};
+    if (!s.el.isConnected) return d.step;
+    const box = s.el.getBoundingClientRect();
+    const step: Step = {};
+    if (s.x) step.x = stepAt(x - box.left, box.width, s.x);
+    if (s.y) step.y = stepAt(y - box.top, box.height, s.y);
+    return step;
   }
 
   /** The release ends the drag, wherever it is. Where it began, it is the
@@ -1299,7 +1341,7 @@ export class Surface {
     const [c, r] = this.cellOf(e);
     const at = this.elementAt(e, c, r);
     const target = this.dragTarget(at);
-    this.emit("dragend", target, { c, r, keys: keysOf(e) });
+    this.emit("dragend", target, { c, r, keys: keysOf(e), ...this.stepIn(d, e.clientX, e.clientY) });
     // The browser's click goes where the capture was (the root), or to
     // where the press and the release meet: the drag reports its own.
     this.dragReleased = true;
@@ -1316,13 +1358,13 @@ export class Surface {
   /**
    * Ends a drag under way without a release (SPEC §9.1: its placement went
    * away, a new document came, or the pointer was lost): `dragend` with no
-   * target, at the last cell the program heard of.
+   * target, at the last cell and step the program heard of.
    */
   cancelDrag() {
     const d = this.drag;
     if (!d) return;
     this.dropDrag();
-    this.emit("dragend", "", { c: d.c, r: d.r, keys: d.keys });
+    this.emit("dragend", "", { c: d.c, r: d.r, keys: d.keys, ...d.step });
   }
 
   /** Ends a drag under way, silently (a detached or deleted surface). */
@@ -1454,8 +1496,10 @@ export class Surface {
     // The touch's own events have its start as their target, so the
     // press's path is the touched element's.
     this.reportPress(e);
-    this.drag = { pointer: NaN, start: id, target: id, c, r, keys };
-    this.emit("dragstart", id, { c, r, keys });
+    const d: Drag = { pointer: NaN, start: id, steps: stepsOf(start!), target: id, c, r, keys, step: {} };
+    d.step = this.stepIn(d, begin.x, begin.y);
+    this.drag = d;
+    this.emit("dragstart", id, { c, r, keys, ...d.step });
     this.pressAt(e);
     const t = [...e.changedTouches][0];
     if (t) this.touchDragMove(t.clientX, t.clientY, e);
@@ -1463,17 +1507,10 @@ export class Surface {
   }
 
   /** A touch drag's finger moved to (x, y) of the document: as a pointer's
-   * move (`onDragMove`). */
+   * move (`moveDrag`). */
   private touchDragMove(x: number, y: number, e: TouchEvent) {
     const d = this.drag;
-    if (!d) return;
-    const [c, r] = this.cellAt(x, y);
-    const target = this.dragTarget(this.elementAtPoint(x, y, c, r));
-    const keys = keysOf(e);
-    if (target !== d.target || (target === "" && (c !== d.c || r !== d.r))) {
-      this.emit("drag", target, { c, r, keys });
-    }
-    Object.assign(d, { target, c, r, keys });
+    if (d) this.moveDrag(d, x, y, keysOf(e));
   }
 
   /** A touch drag's finger lifted at (x, y): as a pointer's release
@@ -1485,7 +1522,7 @@ export class Surface {
     const [c, r] = this.cellAt(x, y);
     const at = this.elementAtPoint(x, y, c, r);
     const target = this.dragTarget(at);
-    this.emit("dragend", target, { c, r, keys: keysOf(e) });
+    this.emit("dragend", target, { c, r, keys: keysOf(e), ...this.stepIn(d, x, y) });
     this.dragReleased = true;
     setTimeout(() => (this.dragReleased = false), 0);
     if (target === d.start && at) this.reportClick(ancestry(at));
@@ -2048,6 +2085,13 @@ function isElement(n: EventTarget): n is Element {
 /** Whether `el`'s `data-on` lists `what`. */
 function listens(el: Element, what: string): boolean {
   return (el.getAttribute("data-on") ?? "").split(/\s+/).includes(what);
+}
+
+/** The steps of a drag of `el`, from its `data-steps` when the drag starts
+ * (SPEC §9.1); null when it has none. */
+function stepsOf(el: Element): Steps | null {
+  const n = parseSteps(el.getAttribute("data-steps"));
+  return n && { el, x: n[0], y: n[1] };
 }
 
 /** `el` and its ancestors, as an event's path would have them. */
