@@ -1,6 +1,7 @@
 // What a text field does with a key (SPEC §10.2, §10.4): key names, the
 // keys in what the terminal sends the program, keymaps (a field's, and the
-// keys any focused element gives the program), and the actions on a value.
+// keys any focused element gives the program or scrolls with), and the
+// actions on a value.
 // Pure, so the conformance vectors' keys, keymap and edit sections run
 // against it (tests/unit/conformance.test.ts); the surface applies its plans
 // to the document's fields (surface.ts).
@@ -29,7 +30,22 @@ export const ACTIONS = new Set([
   "newline",
   "submit",
   "program",
+  "scroll-up",
+  "scroll-down",
+  "scroll-left",
+  "scroll-right",
+  "scroll-page-up",
+  "scroll-page-down",
+  "scroll-half-page-up",
+  "scroll-half-page-down",
+  "scroll-start",
+  "scroll-end",
 ]);
+
+/** The scroll actions (SPEC §10.2, *Scrolling keys*): a focused element
+ * that is not a text field scrolls with them, and a field's keymap leaves
+ * them out. */
+export const SCROLL_ACTIONS = new Set([...ACTIONS].filter((a) => a.startsWith("scroll-")));
 
 /** The actions only a multi-line field has (SPEC §10.2). */
 export const MULTILINE_ACTIONS = new Set(["line-previous", "line-next", "page-up", "page-down", "input-start", "input-end", "newline"]);
@@ -357,6 +373,14 @@ export class Keymap {
     return this.action(name) === "program";
   }
 
+  /** The scroll action the key is bound to, or null (SPEC §10.2,
+   * *Scrolling keys*): outside a text field, a key the element does not
+   * use scrolls with it. */
+  scroll(name: string): string | null {
+    const a = this.action(name);
+    return a !== undefined && SCROLL_ACTIONS.has(a) ? a : null;
+  }
+
   /** What the field does with a key: an action, `INSERT` for a character it
    * types, or null when the key is not the field's. */
   lookup(name: string): string | null {
@@ -370,9 +394,8 @@ export class Keymap {
   }
 }
 
-/** A `data-keys` value's bindings, without those a host ignores. */
-export function parseKeymap(value: string, multiline = false): Keymap {
-  const m = new Keymap(multiline);
+/** A `data-keys` value's bindings in order, without those a host ignores. */
+function* bindingsOf(value: string): Generator<[string, string]> {
   // ASCII white space, as HTML splits space-separated tokens.
   for (const b of value.split(/[ \t\n\f\r]+/)) {
     const i = b.lastIndexOf("=");
@@ -380,15 +403,22 @@ export function parseKeymap(value: string, multiline = false): Keymap {
     const k = parseKey(b.slice(0, i));
     const a = b.slice(i + 1);
     if (k === null || !ACTIONS.has(a) || UNBOUND.has(k)) continue;
-    m.bind(k, a);
+    yield [k, a];
   }
+}
+
+/** A `data-keys` value's bindings, without those a host ignores. */
+export function parseKeymap(value: string, multiline = false): Keymap {
+  const m = new Keymap(multiline);
+  for (const [k, a] of bindingsOf(value)) m.bind(k, a);
   return m;
 }
 
 /** A focused element's keymap outside a text field (SPEC §10.2, *Keys for
  * the program*): each `data-keys` value, the root's first, over no default.
- * Only its `program` bindings count there (`Keymap.program`): a nearer
- * binding of a key to another action cancels a farther one to `program`. */
+ * Only its `program` bindings (`Keymap.program`) and its scroll actions
+ * (`Keymap.scroll`) count there: a nearer binding of a key to another
+ * action cancels a farther one. */
 export function elementKeymap(...values: string[]): Keymap {
   const m = new Keymap();
   for (const v of values) for (const [k, a] of parseKeymap(v).bindings) m.bind(k, a);
@@ -396,7 +426,8 @@ export function elementKeymap(...values: string[]): Keymap {
 }
 
 /** A field's keymap: SPEC §10.2's default, then each `data-keys` value, the
- * root's first. */
+ * root's first. A binding to a scroll action is left out where it stands,
+ * in its own value too: it neither acts nor overrides an earlier binding. */
 export function resolve(multiline: boolean, ...values: string[]): Keymap {
   const m = new Keymap(multiline);
   for (const [k, a] of [
@@ -413,7 +444,7 @@ export function resolve(multiline: boolean, ...values: string[]): Keymap {
     ["Enter", multiline ? "newline" : "submit"],
   ] as const)
     m.bind(k, a);
-  for (const v of values) for (const [k, a] of parseKeymap(v).bindings) m.bind(k, a);
+  for (const v of values) for (const [k, a] of bindingsOf(v)) if (!SCROLL_ACTIONS.has(a)) m.bind(k, a);
   return m;
 }
 

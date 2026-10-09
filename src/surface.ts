@@ -130,13 +130,29 @@ export interface Area {
   h: number;
 }
 
-/** A scroll by a key (SPEC §5.3: the keys a browser scrolls with), along
- * `axis`, `sign` its way: by a line, a page, or to the end. */
+/** A scroll by a key (SPEC §5.3: the keys a browser scrolls with; §10.2:
+ * the scroll actions), along `axis`, `sign` its way: by a line, a page,
+ * half a page, or to the end. */
 interface KeyScroll {
   axis: Axis;
   sign: 1 | -1;
-  by: "line" | "page" | "end";
+  by: "line" | "page" | "half" | "end";
 }
+
+/** What each scroll action does (SPEC §10.2, *Scrolling keys*): as the
+ * arrows, the page keys, and Home and End scroll, and half pages. */
+const SCROLL_ACTIONS: Record<string, KeyScroll> = {
+  "scroll-up": { axis: "y", sign: -1, by: "line" },
+  "scroll-down": { axis: "y", sign: 1, by: "line" },
+  "scroll-left": { axis: "x", sign: -1, by: "line" },
+  "scroll-right": { axis: "x", sign: 1, by: "line" },
+  "scroll-page-up": { axis: "y", sign: -1, by: "page" },
+  "scroll-page-down": { axis: "y", sign: 1, by: "page" },
+  "scroll-half-page-up": { axis: "y", sign: -1, by: "half" },
+  "scroll-half-page-down": { axis: "y", sign: 1, by: "half" },
+  "scroll-start": { axis: "y", sign: -1, by: "end" },
+  "scroll-end": { axis: "y", sign: 1, by: "end" },
+};
 
 type Axis = "x" | "y";
 
@@ -822,6 +838,7 @@ export class Surface {
     if (this.host.browserKey(e)) return; // the browser's: reload, zoom, …
     if (active && this.programKey(e, active)) return;
     if (this.consumes(e, kind)) return;
+    if (active && this.scrollActionKey(e, active)) return;
     if (this.axes && this.scrollKey(e)) return;
     this.forward(e);
   }
@@ -843,6 +860,40 @@ export class Surface {
     if (!keys.some((k) => k.key !== null && keymap.program(k.key))) return false;
     this.toProgram(e, data);
     return true;
+  }
+
+  /**
+   * A key the focused element's keymap binds to a scroll action (SPEC
+   * §10.2, *Scrolling keys*), outside a text field, and that the element
+   * does not use. Along an axis the document scrolls, it scrolls the
+   * nearest box from the element outward that can still move that way, as
+   * a gesture goes (§5.3), and never the terminal: where nothing can move,
+   * the key is used and does nothing. Along an axis the document does not
+   * scroll, it goes on as if its keymap did not bind it. The key is named
+   * as in a text field (`fieldKey`).
+   */
+  private scrollActionKey(e: KeyboardEvent, el: Element): boolean {
+    const values = keysValues(el);
+    if (!values.some((v) => v.includes("scroll-"))) return false;
+    const keymap = elementKeymap(...values);
+    const data = this.host.encodeKey(e);
+    const keys: InputKey[] = data === null ? [{ key: domKeyName(e), data: "" }] : inputKeys(data);
+    const action = keys.map((k) => (k.key === null ? null : keymap.scroll(k.key))).find((a) => a !== null);
+    const k = action ? SCROLL_ACTIONS[action] : undefined;
+    if (!k || !(this.axes & (k.axis === "y" ? 1 : 2))) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    const to = this.scroller(el, k.axis, k.sign);
+    if (typeof to !== "string") this.scrollBox(to, k);
+    return true;
+  }
+
+  /** Scrolls `to` as a key does (`KeyScroll`), by Chromium's amounts. */
+  private scrollBox(to: Element, k: KeyScroll) {
+    const y = k.axis === "y";
+    const port = y ? to.clientHeight : to.clientWidth;
+    const by = k.by === "line" ? LINE_PX : k.by === "page" ? Math.max(1, port * PAGE_FRACTION) : k.by === "half" ? Math.max(1, port / 2) : y ? to.scrollHeight : to.scrollWidth;
+    to.scrollBy(y ? { top: k.sign * by } : { left: k.sign * by });
   }
 
   /** A key the program has, as xterm.js encoded it (`data`; null when it
@@ -1160,9 +1211,7 @@ export class Surface {
     if (to === "terminal") return false;
     e.preventDefault();
     if (to === "stop") return true;
-    const y = k.axis === "y";
-    const by = k.by === "line" ? LINE_PX : k.by === "page" ? Math.max(1, (y ? to.clientHeight : to.clientWidth) * PAGE_FRACTION) : y ? to.scrollHeight : to.scrollWidth;
-    to.scrollBy(y ? { top: k.sign * by } : { left: k.sign * by });
+    this.scrollBox(to, k);
     return true;
   }
 

@@ -45,10 +45,12 @@ for (const v of vectors.keys) {
 
 for (const v of vectors.keymap) {
   test(`keymap: ${v.name}`, () => {
-    if ("program" in v) {
-      // An element's keymap outside a text field: no default, only program.
+    if ("program" in v || "scroll" in v) {
+      // An element's keymap outside a text field: no default; program and
+      // the scroll actions.
       const m = elementKeymap(...v.keys);
-      for (const [key, want] of Object.entries(v.program)) assert.equal(m.program(key), want, key);
+      for (const [key, want] of Object.entries(v.program ?? {})) assert.equal(m.program(key), want, key);
+      for (const [key, want] of Object.entries(v.scroll ?? {})) assert.equal(m.scroll(key), want, key);
       return;
     }
     if (!("lookup" in v)) {

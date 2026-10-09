@@ -140,8 +140,21 @@ runs programs for whoever connects.
   (named as in a text field, a key with Shift looked up again without it)
   goes to the program as xterm.js encoded it, and the browser does nothing
   with it: a select's arrows pick nothing, and a document that scrolls does
-  not scroll. Outside a text field the keymap's other bindings do nothing,
-  but a nearer one of a key still cancels a farther `program`.
+  not scroll. Outside a text field the keymap's other bindings do nothing
+  but the scroll actions (below), and a nearer one of a key still cancels a
+  farther `program`.
+- **Scrolling keys** (SPEC §10.2). Outside a text field, a key the focused
+  element does not use and its keymap binds to a scroll action
+  (`scroll-down`, `scroll-page-up`, `scroll-half-page-down`, `scroll-end`,
+  …) scrolls, along an axis the document asked for: the nearest box from
+  the element outward that can still move that way, as a wheel goes, up to
+  the root and never the terminal; with nowhere to go, it does nothing and
+  the program hears nothing. The addon scrolls as Chromium's keys do: 40
+  CSS pixels for a line, 87.5% of the box for a page, half of it for a half
+  page, and to the end for `scroll-start` and `scroll-end`. Along an axis
+  the document did not ask for, the key goes on as if unbound. A text
+  field's keymap leaves scroll actions out, so a field inside a box that
+  scrolls with `j` still types `j`.
 - **Selects** (SPEC §10.2) are the browser's own: its keys pick, each pick
   is heard at once (`input` with `data-on~=input`, then `change`), and its
   native list opens past the surface. While the list is open it has every

@@ -385,6 +385,46 @@ test.describe("a document that scrolls", () => {
     expect(await top()).toBeGreaterThan(0);
   });
 
+  test("keys bound to scroll actions scroll as far as the browser's keys do, half pages by half the box, and overscroll-behavior stops them going outward", async ({ page }) => {
+    await scrolling(page);
+    const rows = Array.from({ length: 40 }, (_, i) => `<p>${i}</p>`).join("");
+    const keys = "j=scroll-down k=scroll-up d=scroll-half-page-down u=scroll-half-page-up f=scroll-page-down b=scroll-page-up g=scroll-start G=scroll-end";
+    await send(
+      page,
+      { a: "doc", s: "s", scroll: "1", q: "2" },
+      `<style>body{margin:0}p{margin:0;height:20px}#v{height:100px;overflow:auto}#c{height:60px;overflow:auto;overscroll-behavior:contain}</style>` +
+        `<div id=v tabindex=0 data-keys="${keys}">${rows}</div><div id=c tabindex=0 data-keys="${keys}">${rows}</div>${rows}`,
+    );
+    await send(page, { a: "focus", s: "s", t: "v", q: "2" });
+    const v = () => offset(page, "#v").then(([, y]) => y);
+    for (const [key, want] of [
+      ["j", 40],
+      ["d", 90],
+      ["f", 90 + 100 * 0.875],
+      ["b", 90],
+      ["u", 40],
+      ["k", 0],
+    ] as const) {
+      await page.keyboard.press(key);
+      expect(Math.abs((await v()) - want), key).toBeLessThanOrEqual(1);
+    }
+    await page.keyboard.press("G");
+    expect(await v()).toBe(800 - 100);
+    // At its end the box goes outward, to the root.
+    await page.keyboard.press("j");
+    expect(await root(page).evaluate((el) => el.scrollTop)).toBe(40);
+    await page.keyboard.press("g");
+    expect(await v()).toBe(0);
+    expect((await take(page)).raw).toBe("");
+    // A box with overscroll-behavior: contain keeps them at its end.
+    await send(page, { a: "focus", s: "s", t: "c", q: "2" });
+    await page.keyboard.press("G");
+    const top = await root(page).evaluate((el) => el.scrollTop);
+    await page.keyboard.press("j");
+    expect(await root(page).evaluate((el) => el.scrollTop)).toBe(top);
+    expect((await take(page)).raw).toBe("");
+  });
+
   test("a delta keeps an inner box's offset; hiding and placing again keeps every offset; a new document starts at the top", async ({ page }) => {
     await scrolling(page);
     await surface(page, "s").locator("#box").evaluate((el) => (el.scrollTop = 30));
