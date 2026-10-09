@@ -17,7 +17,7 @@ import { Deltas } from "./delta.ts";
 import { Resolver } from "./resolver.ts";
 import { cspSources, intersect, parse, type Policy } from "./network.ts";
 import { NO_BASE, type Store } from "./resources.ts";
-import { chars, INSERT, inputKeys, isBreak, isSpace, type InputKey, MULTILINE_ACTIONS, plan, resolve, ROW_ACTIONS, type Rows, type Text } from "./keys.ts";
+import { chars, elementKeymap, INSERT, inputKeys, isBreak, isSpace, type InputKey, MULTILINE_ACTIONS, plan, resolve, ROW_ACTIONS, type Rows, type Text } from "./keys.ts";
 
 /** A surface's CSP: nothing from the network but what the host grants. The
  * `<base>` is the addon's own (a document's is read, then dropped), so any
@@ -815,10 +815,40 @@ export class Surface {
       this.fieldKey(e, active!, kind === "textarea");
       return;
     }
-    if (this.consumes(e, kind)) return;
     if (this.host.browserKey(e)) return; // the browser's: reload, zoom, …
+    if (active && this.programKey(e, active)) return;
+    if (this.consumes(e, kind)) return;
     if (this.axes && this.scrollKey(e)) return;
     this.forward(e);
+  }
+
+  /**
+   * A key the focused element's keymap gives the program (SPEC §10.2, *Keys
+   * for the program*), outside a text field: it reaches the program before
+   * the element uses it (a select's arrows) and before the document
+   * scrolls with it. The keymap is each `data-keys` from the root down to
+   * the element, with no default, and only its `program` bindings count.
+   * The key is named as in a text field (`fieldKey`).
+   */
+  private programKey(e: KeyboardEvent, el: Element): boolean {
+    const values = keysValues(el);
+    if (!values.some((v) => v.includes("program"))) return false;
+    const keymap = elementKeymap(...values);
+    const data = this.host.encodeKey(e);
+    const keys: InputKey[] = data === null ? [{ key: domKeyName(e), data: "" }] : inputKeys(data);
+    if (!keys.some((k) => k.key !== null && keymap.program(k.key))) return false;
+    this.toProgram(e, data);
+    return true;
+  }
+
+  /** A key the program has, as xterm.js encoded it (`data`; null when it
+   * cannot say, and the key goes through it). Its release follows. */
+  private toProgram(e: KeyboardEvent, data: string | null) {
+    e.preventDefault();
+    e.stopPropagation();
+    this.forwarded.add(e.code);
+    if (data === null) this.host.key(e);
+    else if (data) this.host.sendKey(data);
   }
 
   // --- Text fields (SPEC §10.2, §10.4) ------------------------------------
@@ -844,13 +874,11 @@ export class Surface {
     const keymap = this.keymapOf(el, multiline);
     const uses = keys.map((k) => (k.key === null ? null : keymap.lookup(k.key)));
     if (uses.every((u) => u === null)) {
-      // The program's, unless the document scrolls with it (SPEC §5.3).
-      if (this.axes && this.scrollKey(e)) return;
-      e.preventDefault();
-      e.stopPropagation();
-      this.forwarded.add(e.code);
-      if (data === null) this.host.key(e);
-      else if (data) this.host.sendKey(data);
+      // The program's, unless the document scrolls with it (SPEC §5.3); a
+      // key bound to `program` is the program's first (§10.2).
+      const program = keys.some((k) => k.key !== null && keymap.program(k.key));
+      if (!program && this.axes && this.scrollKey(e)) return;
+      this.toProgram(e, data);
       return;
     }
     const number = el.localName === "input" && this.inputType(el as HTMLInputElement) === "number";
@@ -885,12 +913,7 @@ export class Surface {
   /** A field's keymap (SPEC §10.2): the default, then the `data-keys` of
    * each element from the root down to the field. */
   private keymapOf(el: Element, multiline: boolean) {
-    const values: string[] = [];
-    for (let n: Element | null = el; n; n = n.parentElement) {
-      const v = n.getAttribute("data-keys");
-      if (v !== null) values.unshift(v);
-    }
-    return resolve(multiline, ...values);
+    return resolve(multiline, ...keysValues(el));
   }
 
   /** Does an action in a field, or types text in it. */
@@ -1904,6 +1927,17 @@ function keyScroll(e: KeyboardEvent): KeyScroll | null {
       return { axis: "y", sign: -1, by: "end" };
   }
   return null;
+}
+
+/** The `data-keys` of each element from the root down to `el`, its own
+ * last (SPEC §10.2). */
+function keysValues(el: Element): string[] {
+  const values: string[] = [];
+  for (let n: Element | null = el; n; n = n.parentElement) {
+    const v = n.getAttribute("data-keys");
+    if (v !== null) values.unshift(v);
+  }
+  return values;
 }
 
 /** The text a character key types (`Space` is a space). */

@@ -363,6 +363,28 @@ test.describe("a document that scrolls", () => {
     await expect(surface(page, "s").locator("#t")).toHaveValue(" ");
   });
 
+  test("a key the focused element's data-keys gives the program is the program's before the document's: a text field's, a select's, a radio button's", async ({ page }) => {
+    await scrolling(page);
+    const controls = `<input id=t><select id=l><option>x<option>y</select><input type=radio name=r id=r1 checked><input type=radio name=r id=r2>`;
+    await send(page, { a: "doc", s: "s", scroll: "1", q: "2" }, `<section data-keys="ArrowDown=program PageDown=program">${controls}</section>${ROWS}`);
+    const top = () => root(page).evaluate((el) => el.scrollTop);
+    for (const id of ["t", "l", "r1"]) {
+      await send(page, { a: "focus", s: "s", t: id, q: "2" });
+      await take(page);
+      await page.keyboard.press("ArrowDown");
+      await page.keyboard.press("Shift+ArrowDown"); // looked up again without Shift
+      await page.keyboard.press("PageDown");
+      let raw = "";
+      await expect.poll(async () => JSON.stringify((raw += (await take(page)).raw)), id).toBe(JSON.stringify("\x1b[B\x1b[1;2B\x1b[6~"));
+      expect(await top(), id).toBe(0);
+    }
+    expect(await surface(page, "s").locator("#l").inputValue()).toBe("x");
+    expect(await surface(page, "s").locator("#r1").isChecked()).toBe(true);
+    // A key it does not give the program still scrolls.
+    await page.keyboard.press("End");
+    expect(await top()).toBeGreaterThan(0);
+  });
+
   test("a delta keeps an inner box's offset; hiding and placing again keeps every offset; a new document starts at the top", async ({ page }) => {
     await scrolling(page);
     await surface(page, "s").locator("#box").evaluate((el) => (el.scrollTop = 30));

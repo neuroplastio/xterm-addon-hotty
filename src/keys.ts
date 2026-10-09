@@ -1,8 +1,9 @@
 // What a text field does with a key (SPEC §10.2, §10.4): key names, the
-// keys in what the terminal sends the program, keymaps, and the actions on
-// a value. Pure, so the conformance vectors' keys, keymap and edit sections
-// run against it (tests/unit/conformance.test.ts); the surface applies its
-// plans to the document's fields (surface.ts).
+// keys in what the terminal sends the program, keymaps (a field's, and the
+// keys any focused element gives the program), and the actions on a value.
+// Pure, so the conformance vectors' keys, keymap and edit sections run
+// against it (tests/unit/conformance.test.ts); the surface applies its plans
+// to the document's fields (surface.ts).
 
 const MODIFIERS = ["Control", "Alt", "Meta", "Shift"] as const;
 
@@ -333,21 +334,37 @@ export class Keymap {
     return Array.from(this.bindings, ([k, a]) => `${k}=${a}`).join(" ");
   }
 
+  /** The action a key is bound to: its own binding, or for a key with
+   * Shift that has none, the binding of the key without it (SPEC §10.2). */
+  action(name: string): string | undefined {
+    const k = parseKey(name);
+    if (k === null || UNBOUND.has(k)) return undefined;
+    const [mods, value] = splitKey(k)!;
+    const a = this.bindings.get(k);
+    if (a !== undefined || !mods.includes("Shift")) return a;
+    return this.bindings.get(
+      keyName(
+        mods.filter((m) => m !== "Shift"),
+        value,
+      ),
+    );
+  }
+
+  /** Whether the key is the program's (SPEC §10.2, *Keys for the
+   * program*): bound to `program`. It reaches the program before the
+   * focused element uses it and before the surface scrolls with it. */
+  program(name: string): boolean {
+    return this.action(name) === "program";
+  }
+
   /** What the field does with a key: an action, `INSERT` for a character it
    * types, or null when the key is not the field's. */
   lookup(name: string): string | null {
     const k = parseKey(name);
     if (k === null || UNBOUND.has(k)) return null;
-    const [mods, value] = splitKey(k)!;
-    let a = this.bindings.get(k);
-    if (a === undefined && mods.includes("Shift"))
-      a = this.bindings.get(
-        keyName(
-          mods.filter((m) => m !== "Shift"),
-          value,
-        ),
-      );
+    const a = this.action(k);
     if (a !== undefined) return a === "program" || (MULTILINE_ACTIONS.has(a) && !this.multiline) ? null : a;
+    const [mods, value] = splitKey(k)!;
     if (isChar(value) && !mods.some((m) => m !== "Shift")) return INSERT;
     return null;
   }
@@ -365,6 +382,16 @@ export function parseKeymap(value: string, multiline = false): Keymap {
     if (k === null || !ACTIONS.has(a) || UNBOUND.has(k)) continue;
     m.bind(k, a);
   }
+  return m;
+}
+
+/** A focused element's keymap outside a text field (SPEC §10.2, *Keys for
+ * the program*): each `data-keys` value, the root's first, over no default.
+ * Only its `program` bindings count there (`Keymap.program`): a nearer
+ * binding of a key to another action cancels a farther one to `program`. */
+export function elementKeymap(...values: string[]): Keymap {
+  const m = new Keymap();
+  for (const v of values) for (const [k, a] of parseKeymap(v).bindings) m.bind(k, a);
   return m;
 }
 

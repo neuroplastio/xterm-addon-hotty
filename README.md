@@ -134,6 +134,16 @@ runs programs for whoever connects.
     `[type=number]` does not match it while it is focused.
   - An editing host's actions use the selection's moves, a character at a
     time where the words and lines need to see the text.
+- **Keys for the program** (SPEC §10.2). Any focused element has a keymap:
+  each `data-keys` from the root to it, over the default only in a text
+  field. A key it binds to `program` (named as in a text field, a key with
+  Shift looked up again without it) goes to the program as xterm.js
+  encoded it, and the browser does nothing with it: a select's arrows pick
+  nothing, and a document that scrolls does not scroll. Outside a text
+  field the keymap's other bindings are ignored, and a nearer one of a key
+  cancels a farther `program`.
+- **Selects** (SPEC §10.2) are the browser's own: its keys pick, each pick
+  sends `change` at once, and its native list opens past the surface.
 - **Drags** (SPEC §9.1, a draft on hotty's `drag` branch). A mouse's or a
   pen's primary press on an element with `drag` in its `data-on` and an id
   reports `dragstart`, then `drag` each time the element under the pointer
@@ -258,13 +268,14 @@ runs programs for whoever connects.
     it has a direction: the browser pans the document, or the drag goes to
     the terminal as before.
   - **Keys.** While the surface has the keyboard, the keys a browser
-    scrolls with and the focused element does not use (SPEC §10.2) scroll
-    the innermost box, from the focused element outward, that can move
-    that way: the arrows by 40 pixels, Page Up and Page Down, Space and
-    Shift+Space by seven eighths of the box, Home and End to the ends. The
-    addon scrolls the box itself, since the browser's own action may be the
-    element's (a radio button's arrows). Where nothing can move that way,
-    the key goes on to the program, as any key the surface does not use.
+    scrolls with that the focused element neither uses nor gives the
+    program (SPEC §10.2) scroll the innermost box, from the focused
+    element outward, that can move that way: the arrows by 40 pixels, Page
+    Up and Page Down, Space and Shift+Space by seven eighths of the box,
+    Home and End to the ends. The addon scrolls the box itself, since the
+    browser's own action may be the element's (a radio button's arrows).
+    Where nothing can move that way, the key goes on to the program, as any
+    key the surface does not use.
   - Focus scrolls an element into view, as the browser does. The program
     hears nothing of scrolling. A delta keeps the offsets, and so do hiding
     and placing again; a new document starts at the top left. `r=auto` and
@@ -367,9 +378,9 @@ Measured 2026-09-29 in headless Chromium 153 (`bench/`):
 `npm run check` runs:
 
 - the typecheck, the build and the declarations (what `npm pack` ships);
-- the unit tests (`node --test`: the wire, keys, decoding the reference Python
-  client, and the conformance vectors' wire, keys, keymap and edit
-  sections);
+- the unit tests (`node --test`: the wire, keys, the keys any focused
+  element gives the program, decoding the reference Python client, and the
+  conformance vectors' wire, keys, keymap and edit sections);
 - the Playwright tests, against Chromium (and Firefox once installed:
   `npx playwright install firefox`):
   - the protocol and the conformance vectors;
