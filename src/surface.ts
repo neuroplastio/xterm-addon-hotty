@@ -11,8 +11,8 @@
 // The iframe never moves in the DOM (moving an iframe reloads it): it sits
 // in the addon's layer, and placement only changes the position of its box.
 
-import { Touch } from "./touch.ts";
-import { CLIP, MEASURE, scrollCss, UNCLIPPED } from "./hostcss.ts";
+import { LONG_PRESS_MS, panBlocked, Touch, type TouchBegin, touchPans } from "./touch.ts";
+import { CLIP, MEASURE, rootTouchAction, scrollCss, UNCLIPPED } from "./hostcss.ts";
 import { Deltas } from "./delta.ts";
 import { Resolver } from "./resolver.ts";
 import { cspSources, intersect, parse, type Policy } from "./network.ts";
@@ -296,8 +296,13 @@ export class Surface {
   /** The axes the document asked to scroll along (`scroll`, SPEC §5.1): 1
    * vertically, 2 horizontally, 3 both; 0, nothing scrolls. */
   private axes = 0;
-  /** Where the touch drag under way goes, once it has a direction. */
-  private touchRoute: Route = "terminal";
+  /** Where the touch drag under way goes, once it has a direction: "self",
+   * the document, but scrolled by the surface, since the document's
+   * `touch-action` would stop the browser's own pan (SPEC §9.1: it changes
+   * nothing there). */
+  private touchRoute: Route | "self" = "terminal";
+  /** The box a touch drag scrolls itself ("self"). */
+  private touchBox: Element | null = null;
   /** The box the wheel gesture under way scrolls, if it went to the
    * document: the gesture moves no other (`scrollWheel`). */
   private wheelBox: Element | null = null;
@@ -709,6 +714,12 @@ export class Surface {
       setTimeout(() => (this.auxPress = false), 0);
       return;
     }
+    this.pressAt(e);
+  }
+
+  /** What a click (SPEC §10.1) at `e`'s target does to the keyboard: a
+   * press of the primary button, a tap, or a touch that becomes a drag. */
+  private pressAt(e: Event) {
     const el = this.detachedState ? null : focusTargetAt(e, this.hyper);
     if (el) {
       this.pressed = el;
@@ -1329,14 +1340,12 @@ export class Surface {
   /** The surface's cell under the pointer, from its top left (the frame's
    * origin), counting on past its edges. */
   private cellOf(e: MouseEvent): [number, number] {
-    return [Math.floor(e.clientX / this.cellW), Math.floor(e.clientY / this.cellH)];
+    return this.cellAt(e.clientX, e.clientY);
   }
 
   /** The element under the pointer, if it is in the window (SPEC §5.2). */
   private elementAt(e: MouseEvent, c: number, r: number): Element | null {
-    const w = this.win;
-    if (c < w.x || c >= w.x + w.w || r < w.y || r >= w.y + w.h) return null;
-    return this.doc.elementFromPoint(e.clientX, e.clientY);
+    return this.elementAtPoint(e.clientX, e.clientY, c, r);
   }
 
   /** A drag's target: the nearest element with an id and `drag` in its
@@ -1347,6 +1356,153 @@ export class Surface {
       if (id && listens(n, "drag")) return id;
     }
     return "";
+  }
+
+  // --- Touch drags (SPEC §9.1) ----------------------------------------------
+
+  /**
+   * Where a touch that has just gone past the slop, scrolling by dx, dy so
+   * far, goes. A drag, where the touched element opts in and the
+   * touch-action that counts for it allows no pan along the touch's first
+   * move (the larger delta; a tie pans). Otherwise a pan, as §5.3 and §9
+   * have it, whatever touch-action says: where the browser would pan the
+   * document but the document's touch-action stops it, the surface scrolls
+   * the box itself.
+   */
+  private claimTouch(dx: number, dy: number, e: TouchEvent, begin: TouchBegin): boolean | "drag" {
+    const el = begin.target && isElement(begin.target) ? begin.target : null;
+    const pans = this.allowedPans(el);
+    if (panBlocked(pans, dx, dy) && this.touchDragStart(e, begin)) return "drag";
+    if (!this.axes) {
+      this.touchRoute = "terminal";
+      return true;
+    }
+    const to = this.gestureTarget(el, dx, dy);
+    if (typeof to === "string") {
+      this.touchRoute = to;
+      return true;
+    }
+    // The browser pans the box, chaining to the page where the page scrolls,
+    // unless the document's touch-action stops it.
+    if (pans.x && pans.y) {
+      this.touchRoute = "doc";
+      return false;
+    }
+    this.touchRoute = "self";
+    this.touchBox = to;
+    return true;
+  }
+
+  /** Whether the touch-action that counts at `target` allows every pan. */
+  private pansFreely(target: EventTarget | null): boolean {
+    const p = this.allowedPans(target && isElement(target) ? target : null);
+    return p.x && p.y;
+  }
+
+  /**
+   * The pans the document's touch-action allows a touch on `el`, as Pointer
+   * Events determine them: its own, with its ancestors' up to the nearest
+   * element that scrolls (SPEC §5.3), both included. The root's is the
+   * document's only where it differs from the host's (`rootTouchAction`),
+   * which is there for the browser's own panning.
+   */
+  private allowedPans(el: Element | null): { x: boolean; y: boolean } {
+    let x = true;
+    let y = true;
+    const root = this.doc.documentElement;
+    const host = rootTouchAction(this.axes, this.host.pageScrolls);
+    for (let n = el; n; n = n.parentElement) {
+      const s = n.ownerDocument.defaultView!.getComputedStyle(n);
+      const value = n === root && s.touchAction === host ? "auto" : s.touchAction;
+      const [px, py] = touchPans(value);
+      x &&= px;
+      y &&= py;
+      if (n !== root && this.scrolls(s)) break;
+    }
+    return { x, y };
+  }
+
+  /** Whether an element with this style scrolls (SPEC §5.3): its overflow is
+   * `auto` or `scroll` along an axis the document asked to scroll. */
+  private scrolls(s: CSSStyleDeclaration): boolean {
+    return (!!(this.axes & 1) && /auto|scroll/.test(s.overflowY)) || (!!(this.axes & 2) && /auto|scroll/.test(s.overflowX));
+  }
+
+  /**
+   * A touch becomes a drag (SPEC §9.1), if it can: one that began without
+   * Alt and was not held still past a long press, on an element that opts
+   * in and has an id, in a surface not detached. It presses at this moment
+   * as a mouse does: `press`, then `dragstart`, both for where it began,
+   * then what the press causes; then a `drag` if the finger is by now over
+   * another element.
+   */
+  private touchDragStart(e: TouchEvent, begin: TouchBegin): boolean {
+    if (this.detachedState || begin.altKey || e.timeStamp - begin.time >= LONG_PRESS_MS) return false;
+    const el = begin.target && isElement(begin.target) ? begin.target : null;
+    let start: Element | null = null;
+    for (let n = el; n; n = n.parentElement) {
+      if (listens(n, "drag")) {
+        start = n;
+        break;
+      }
+    }
+    const id = start?.getAttribute("id");
+    if (!id) return false;
+    this.cancelDrag(); // a drag whose release was lost
+    const [c, r] = this.cellAt(begin.x, begin.y);
+    const keys = keysOf(begin);
+    // The touch's own events have its start as their target, so the
+    // press's path is the touched element's.
+    this.reportPress(e);
+    this.drag = { pointer: NaN, start: id, target: id, c, r, keys };
+    this.emit("dragstart", id, { c, r, keys });
+    this.pressAt(e);
+    const t = [...e.changedTouches][0];
+    if (t) this.touchDragMove(t.clientX, t.clientY, e);
+    return true;
+  }
+
+  /** A touch drag's finger moved to (x, y) of the document: as a pointer's
+   * move (`onDragMove`). */
+  private touchDragMove(x: number, y: number, e: TouchEvent) {
+    const d = this.drag;
+    if (!d) return;
+    const [c, r] = this.cellAt(x, y);
+    const target = this.dragTarget(this.elementAtPoint(x, y, c, r));
+    const keys = keysOf(e);
+    if (target !== d.target || (target === "" && (c !== d.c || r !== d.r))) {
+      this.emit("drag", target, { c, r, keys });
+    }
+    Object.assign(d, { target, c, r, keys });
+  }
+
+  /** A touch drag's finger lifted at (x, y): as a pointer's release
+   * (`onDragUp`), a click where it began. */
+  private touchDragEnd(x: number, y: number, e: TouchEvent) {
+    const d = this.drag;
+    if (!d) return;
+    this.drag = null;
+    const [c, r] = this.cellAt(x, y);
+    const at = this.elementAtPoint(x, y, c, r);
+    const target = this.dragTarget(at);
+    this.emit("dragend", target, { c, r, keys: keysOf(e) });
+    this.dragReleased = true;
+    setTimeout(() => (this.dragReleased = false), 0);
+    if (target === d.start && at) this.reportClick(ancestry(at));
+  }
+
+  /** The surface's cell at (x, y) of the document, counting on past its
+   * edges. */
+  private cellAt(x: number, y: number): [number, number] {
+    return [Math.floor(x / this.cellW), Math.floor(y / this.cellH)];
+  }
+
+  /** The element at (x, y) of the document, if cell (c, r) is in the
+   * window (SPEC §5.2). */
+  private elementAtPoint(x: number, y: number, c: number, r: number): Element | null {
+    const w = this.win;
+    if (c < w.x || c >= w.x + w.w || r < w.y || r >= w.y + w.h) return null;
+    return this.doc.elementFromPoint(x, y);
   }
 
   // --- Presses with Alt (SPEC §9.2) ---------------------------------------
@@ -1520,23 +1676,31 @@ export class Surface {
     // can still move the way a drag goes, the drag is left to the browser,
     // which pans the document; where it cannot, the drag goes on to the
     // terminal, unless overscroll-behavior stops it. Where the page scrolls,
-    // the browser chains the drag from the document to the page itself.
-    if (this.host.pageScrolls) {
-      new Touch(d, this.frame.ownerDocument.defaultView!, { scroll: (dx, dy) => this.host.scrollPage(dx, dy), toPage }, false, (e) =>
-        !this.axes && this.inScroller(e.target),
-      );
-    } else {
-      new Touch(d, this.frame.ownerDocument.defaultView!, {
+    // the browser chains the drag from the document to the page itself. A
+    // touch on an element that opts in to drags, whose touch-action allows
+    // no pan its way, is a drag (§9.1); a touch-action that would stop the
+    // browser's pan anywhere else does not (`claimTouch`).
+    new Touch(
+      d,
+      this.frame.ownerDocument.defaultView!,
+      {
         scroll: (dx, dy, x, y) => {
-          if (this.touchRoute === "terminal") this.host.wheel(new WheelEvent("wheel", { deltaX: dx, deltaY: dy, deltaMode: 0, clientX: x, clientY: y }), x, y);
+          if (this.touchRoute === "self") this.touchBox?.scrollBy(dx, dy);
+          else if (this.touchRoute !== "terminal") return;
+          else if (this.host.pageScrolls) this.host.scrollPage(dx, dy);
+          else this.host.wheel(new WheelEvent("wheel", { deltaX: dx, deltaY: dy, deltaMode: 0, clientX: x, clientY: y }), x, y);
         },
         toPage,
-        claim: (dx, dy, e) => {
-          this.touchRoute = this.axes ? this.gestureRoute(e.target, dx, dy) : "terminal";
-          return this.touchRoute !== "doc";
-        },
-      });
-    }
+        claim: (dx, dy, e, begin) => this.claimTouch(dx, dy, e, begin),
+        dragMove: (x, y, e) => this.touchDragMove(x, y, e),
+        dragEnd: (x, y, e) => this.touchDragEnd(x, y, e),
+        dragCancel: () => this.cancelDrag(),
+      },
+      false,
+      // Where the page scrolls, the browser pans it from a touch the
+      // surface leaves alone.
+      this.host.pageScrolls ? (e) => (!this.axes && this.inScroller(e.target)) || !this.pansFreely(e.target) : undefined,
+    );
     // The frame's own focus gives no keyboard: an element in it that takes
     // focus does (`onFocusIn`), or the program (SPEC §10.1).
     win.addEventListener("focus", () => {
@@ -1894,7 +2058,7 @@ function ancestry(el: Element): Element[] {
 }
 
 /** The modifier keys held, in the spec's order (SPEC §9.1). */
-function keysOf(e: MouseEvent): string[] {
+function keysOf(e: { shiftKey: boolean; ctrlKey: boolean; altKey: boolean; metaKey: boolean }): string[] {
   const keys: string[] = [];
   if (e.shiftKey) keys.push("shift");
   if (e.ctrlKey) keys.push("ctrl");

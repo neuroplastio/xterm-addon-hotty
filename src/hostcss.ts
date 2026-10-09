@@ -117,20 +117,29 @@ export function scrollCss(axes: number, pageScrolls: boolean): string {
   if (!axes) {
     return [
       "@layer hotty-host {",
-      `:root { overflow: hidden; touch-action: ${pageScrolls ? "manipulation" : "none"}; }`,
+      `:root { overflow: hidden; touch-action: ${rootTouchAction(axes, pageScrolls)}; }`,
       "* { scrollbar-width: none !important; }",
       "::-webkit-scrollbar { display: none !important; }",
       "}",
     ].join("\n");
   }
-  const pan = pageScrolls ? "manipulation" : axes === 3 ? "pan-x pan-y" : axes === 1 ? "pan-y" : "pan-x";
-  const lines = ["@layer hotty-host {", `:root { touch-action: ${pan}; }`];
+  const lines = ["@layer hotty-host {", `:root { touch-action: ${rootTouchAction(axes, pageScrolls)}; }`];
   if (axes !== 3) {
     const clipped = axes === 1 ? "overflow-x" : "overflow-y";
     lines.push(`:root, :root:not([${UNCLIPPED}]) [${CLIP}] { ${clipped}: hidden !important; }`);
   }
   lines.push("}");
   return lines.join("\n");
+}
+
+/**
+ * The `touch-action` the host gives a surface's root (`scrollCss`), for the
+ * browser's own panning: not the document's, so it does not decide whether
+ * a touch drags an element (SPEC §9.1).
+ */
+export function rootTouchAction(axes: number, pageScrolls: boolean): string {
+  if (pageScrolls) return "manipulation";
+  return axes === 3 ? "pan-x pan-y" : axes === 1 ? "pan-y" : axes === 2 ? "pan-x" : "none";
 }
 
 function fontStack(family: string): string {

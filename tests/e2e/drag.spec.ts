@@ -2,8 +2,9 @@
 // outside the terminal and away from other surfaces and the program's mouse
 // reporting, no text selected whatever the document's CSS, a new placement
 // that keeps a drag, the order against the blur a press causes, and touch,
-// which never drags. And presses with Alt (§9.2), which are the program's:
-// its mouse reports or the terminal's selection, and the keyboard back.
+// which drags only an element whose touch-action allows no pan its way. And
+// presses with Alt (§9.2), which are the program's: its mouse reports or the
+// terminal's selection, and the keyboard back.
 
 import { expect, test, type Page } from "@playwright/test";
 import { open, sansArea, send, surface, take, write } from "./helpers.ts";
@@ -149,7 +150,7 @@ test("dragstart comes before the change and the blur its press causes", async ({
 test.describe("on a touch screen", () => {
   test.use({ hasTouch: true });
 
-  test("a touch never drags: it scrolls, and a tap is a press and a click", async ({ page, browserName }) => {
+  test("a touch on elements whose touch-action is auto never drags: it scrolls, and a tap is a press and a click", async ({ page, browserName }) => {
     test.skip(browserName !== "chromium", "touch input comes from CDP");
     await write(page, Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\r\n") + "\r\n");
     await place(page, "x", CELLS, "2", { p: "1" });
@@ -174,6 +175,165 @@ test.describe("on a touch screen", () => {
       ["x", "press", "a", null],
       ["x", "click", "a", null],
     ]);
+  });
+});
+
+test.describe("§9.1: a touch drags where touch-action allows no pan its way", () => {
+  test.use({ hasTouch: true });
+
+  /** One finger (and a second), through one CDP session: a touch is the
+   * session's from its start to its end. Moves go in steps of 3 pixels, so
+   * the touch passes the slop in their direction. */
+  async function finger(page: Page) {
+    const cdp = await page.context().newCDPSession(page);
+    let at = { x: 0, y: 0 };
+    const send = (type: "touchStart" | "touchMove" | "touchEnd", points: { x: number; y: number }[], alt = false) =>
+      cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points, modifiers: alt ? 1 : 0 });
+    return {
+      down: async (x: number, y: number, alt = false) => {
+        at = { x, y };
+        await send("touchStart", [at], alt);
+      },
+      move: async (dx: number, dy: number) => {
+        const n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 3));
+        const from = at;
+        for (let i = 1; i <= n; i++) await send("touchMove", [{ x: from.x + (dx * i) / n, y: from.y + (dy * i) / n }]);
+        at = { x: from.x + dx, y: from.y + dy };
+      },
+      second: (x: number, y: number) => send("touchStart", [at, { x, y }]),
+      both: (dx: number, dy: number, other: { x: number; y: number }) => send("touchMove", [{ x: at.x + dx, y: at.y + dy }, { x: other.x + dx, y: other.y + dy }]),
+      up: () => send("touchEnd", []),
+    };
+  }
+
+  const ROWS =
+    `<style>body{margin:0}div{height:var(--hotty-cell-h);width:calc(20*var(--hotty-cell-w))}</style>` +
+    `<div id=px data-on=drag style="touch-action:pan-x">x</div><div id=py data-on=drag style="touch-action:pan-y">y</div>` +
+    `<div id=nn data-on=drag style="touch-action:none">n</div><div id=au data-on=drag>a</div>`;
+
+  /** Whether a swipe from an element's left part, by (dx, dy) pixels,
+   * started a drag of it. */
+  async function drags(page: Page, id: string, dx: number, dy: number): Promise<boolean> {
+    const f = await finger(page);
+    const r = (await surface(page, "x").locator(`#${id}`).boundingBox())!;
+    await f.down(r.x + 10, r.y + r.height / 2);
+    await f.move(dx, dy);
+    await f.up();
+    const got = evs((await take(page)).msgs);
+    return got.some((e) => e[1] === "dragstart" && e[2] === id);
+  }
+
+  test("pan-x drags vertically, pan-y horizontally, none both ways, auto never", async ({ page, browserName }) => {
+    test.skip(browserName !== "chromium", "touch input comes from CDP");
+    await place(page, "x", ROWS, "4");
+    const want: Record<string, [boolean, boolean]> = { px: [false, true], py: [true, false], nn: [true, true], au: [false, false] };
+    for (const [id, [across, down]] of Object.entries(want)) {
+      expect(await drags(page, id, 40, 0), `${id} across`).toBe(across);
+      expect(await drags(page, id, 0, 30), `${id} down`).toBe(down);
+    }
+  });
+
+  test("the touch-action that counts is the touched element's, with its ancestors'", async ({ page, browserName }) => {
+    test.skip(browserName !== "chromium", "touch input comes from CDP");
+    await place(
+      page,
+      "x",
+      `<style>body{margin:0}div,section{height:var(--hotty-cell-h);width:calc(20*var(--hotty-cell-w))}span{display:inline-block;width:calc(4*var(--hotty-cell-w))}</style>` +
+        // pan-y on the element, pan-x on what is touched in it: neither.
+        `<div id=g data-on=drag style="touch-action:pan-y"><span id=k style="touch-action:pan-x">k</span></div>` +
+        // pan-x on an ancestor of an element that leaves it auto.
+        `<section style="touch-action:pan-x"><div id=a data-on=drag>a</div></section>`,
+      "3",
+    );
+    // On the span: no pan allowed, so a vertical swipe drags g, the element
+    // that opts in.
+    const f = await finger(page);
+    const k = (await surface(page, "x").locator("#k").boundingBox())!;
+    await f.down(k.x + 5, k.y + k.height / 2);
+    await f.move(0, 30);
+    await f.up();
+    expect(evs((await take(page)).msgs).some((e) => e[1] === "dragstart" && e[2] === "g")).toBe(true);
+    // Beside the span, g's own pan-y: a vertical swipe pans.
+    const g = (await surface(page, "x").locator("#g").boundingBox())!;
+    await f.down(g.x + g.width - 10, g.y + g.height / 2);
+    await f.move(0, 30);
+    await f.up();
+    expect(evs((await take(page)).msgs).some((e) => e[1] === "dragstart")).toBe(false);
+    // Under the section's pan-x: a horizontal swipe pans, a vertical one drags.
+    expect(await drags(page, "a", 40, 0)).toBe(false);
+    expect(await drags(page, "a", 0, 30)).toBe(true);
+  });
+
+  test("a second finger ends the drag with no target, and the surface hears nothing more until every finger lifts", async ({ page, browserName }) => {
+    test.skip(browserName !== "chromium", "touch input comes from CDP");
+    await place(page, "x", ROWS, "4");
+    const f = await finger(page);
+    const r = (await surface(page, "x").locator("#nn").boundingBox())!;
+    await f.down(r.x + 10, r.y + r.height / 2);
+    await f.move(30, 0);
+    expect(evs((await take(page)).msgs).map((e) => [e[1], e[2]])).toEqual([["dragstart", "nn"]]);
+    const other = { x: r.x + 100, y: r.y + r.height / 2 };
+    await f.second(other.x, other.y);
+    const ended = (await take(page)).msgs.filter((m) => m.get("a") === "ev");
+    expect(ended.map((m) => [m.get("e"), m.get("t")])).toEqual([["dragend", ""]]);
+    expect((ended[0]!.json as { r: number }).r).toBe(2);
+    await f.both(20, 0, other);
+    await f.up();
+    expect(evs((await take(page)).msgs)).toEqual([]);
+  });
+
+  test("a long press, or Alt held at the touch, never drags", async ({ page, browserName }) => {
+    test.skip(browserName !== "chromium", "touch input comes from CDP");
+    await place(page, "x", ROWS, "4");
+    const r = (await surface(page, "x").locator("#nn").boundingBox())!;
+    const f = await finger(page);
+    await f.down(r.x + 10, r.y + r.height / 2);
+    await page.waitForTimeout(600);
+    await f.move(40, 0);
+    await f.up();
+    expect(evs((await take(page)).msgs).some((e) => e[1] === "dragstart")).toBe(false);
+    await f.down(r.x + 10, r.y + r.height / 2, true);
+    await f.move(40, 0);
+    await f.up();
+    expect(evs((await take(page)).msgs).some((e) => e[1] === "dragstart")).toBe(false);
+  });
+
+  test("in a document that scrolls, a drag element still drags its way and pans the other, and touch-action elsewhere stops no pan", async ({ page, browserName }) => {
+    test.skip(browserName !== "chromium", "touch input comes from CDP");
+    await send(
+      page,
+      { a: "doc", s: "x", scroll: "1", q: "2" },
+      `<style>body{margin:0}#box{height:calc(3*var(--hotty-cell-h));overflow:auto}#box>div{height:calc(2*var(--hotty-cell-h));width:calc(20*var(--hotty-cell-w))}</style>` +
+        `<div id=box><div id=d data-on=drag style="touch-action:pan-y">d</div><div id=w style="touch-action:none">w</div><div>1</div><div>2</div><div>3</div></div>`,
+    );
+    await send(page, { a: "place", s: "x", c: "30", r: "3", q: "2" });
+    await take(page);
+    const box = surface(page, "x").locator("#box");
+    const f = await finger(page);
+    // Across d: a drag.
+    const d = (await surface(page, "x").locator("#d").boundingBox())!;
+    await f.down(d.x + 10, d.y + 5);
+    await f.move(40, 0);
+    await f.up();
+    expect(evs((await take(page)).msgs).map((e) => [e[1], e[2]])).toEqual([
+      ["dragstart", "d"],
+      ["dragend", "d"],
+    ]);
+    // Up over d, which allows pan-y: the box scrolls, and no drag.
+    await f.down(d.x + 10, d.y + d.height - 4);
+    await f.move(0, -20);
+    await f.up();
+    await expect.poll(() => box.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+    expect(evs((await take(page)).msgs)).toEqual([]);
+    // Up over w, whose touch-action is none but which does not drag: the
+    // box scrolls all the same.
+    await box.evaluate((el) => (el.scrollTop = 0));
+    const w = (await surface(page, "x").locator("#w").boundingBox())!;
+    await f.down(w.x + 10, w.y + 10);
+    await f.move(0, -20);
+    await f.up();
+    await expect.poll(() => box.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+    expect(evs((await take(page)).msgs)).toEqual([]);
   });
 });
 

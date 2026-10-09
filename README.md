@@ -171,11 +171,23 @@ runs programs for whoever connects.
   lose the capture. The browser clicks the root on a captured release, so
   the drag reports the click itself when it ends where it began. The host
   stylesheet makes the elements that opt in unselectable, important in its
-  layer, whatever the document's CSS. A touch never drags.
+  layer, whatever the document's CSS.
+
+  A touch drags such an element only where its `touch-action` allows no
+  pan along the touch's first move past 8 px (the larger delta; a tie is a
+  pan). The value is the element's own, met with its ancestors' up to the
+  nearest one that scrolls, both included, as Pointer Events have it; the
+  host's own `touch-action` on the root (below) is not the document's. The
+  touch then reports `press` and `dragstart` at the cell where it began,
+  and drags from there as a mouse does; the lift reports `dragend`, and the
+  click where it began. A second finger ends it with `dragend` and no
+  target, and nothing more is heard until every finger lifts. A long press,
+  or Alt held at the touch, never drags. Any other touch pans as below.
 - **Presses** (SPEC §5.2, §9: `p=1` on `a=place`). Every primary press of a
   mouse or a pen in the window reports `press` on its pointerdown, before
   the drag and the focus it causes; a tap reports it on the mousedown the
-  browser makes for it. A press on a hyperlink is the terminal's.
+  browser makes for it, and a touch that drags when it becomes a drag. A
+  touch that pans presses nothing. A press on a hyperlink is the terminal's.
 - **Fit** (SPEC §5.2, §9: `f=1` on `a=place`). The program hears `fit`
   with the rows the document needs at the placement's width whenever they
   differ from the rows it heard last, starting from the placement's own;
@@ -232,8 +244,8 @@ runs programs for whoever connects.
   - It shows no scrollbars, and pans nothing on a touch
     (`touch-action: none`). Any scroll offset the browser sets goes back to
     zero, except a text field's own text.
-  - A wheel over a surface goes to the terminal, and so does a touch drag,
-    as wheel events at the finger. After the finger lifts, the drag keeps
+  - A wheel over a surface goes to the terminal, and so does a touch that
+    pans, as wheel events at the finger. After the finger lifts, the drag keeps
     going and slows down.
   - Taps and long presses stay the surface's.
   - On the cells, the addon handles touch too (the `touch` option, on by
@@ -280,9 +292,12 @@ runs programs for whoever connects.
     the pointer that can move that way can (the browser scrolls it), else
     on to the terminal, as over the cells, unless `overscroll-behavior`
     stops it. A gesture begun over the cells stays the terminal's when a
-    surface comes under the pointer. A touch drag decides the same way once
-    it has a direction: the browser pans the document, or the drag goes to
-    the terminal as before.
+    surface comes under the pointer. A touch that pans decides the same way
+    once it has a direction: the browser pans the document, or the touch
+    goes to the terminal as before. Where the document's `touch-action`
+    would stop the browser's pan (a `none` on a box that doesn't drag), the
+    addon pans the box itself, so that only a drag element takes a touch
+    from scrolling (SPEC §9.1).
   - **Keys.** While the surface has the keyboard, the keys a browser
     scrolls with that the focused element neither uses nor gives the
     program (SPEC §10.2) scroll the innermost box, from the focused

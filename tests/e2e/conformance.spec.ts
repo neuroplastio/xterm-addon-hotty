@@ -1,7 +1,7 @@
 // The shared protocol vectors (conformance/README.md), run in the browser.
 // hotty-blitz runs the same file (crates/hotty-blitz/tests/conformance.rs).
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type CDPSession, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { HOTTY_DIR } from "../hotty.ts";
@@ -15,6 +15,7 @@ type Step = {
   inspect?: [string, string];
   expect?: Record<string, unknown> | null;
   pointer?: "move" | "down" | "up" | "wheel";
+  touch?: "down" | "move" | "up";
   s?: string;
   at?: string | [number, number];
   by?: [number, number];
@@ -138,6 +139,38 @@ class Mouse {
   }
 }
 
+/**
+ * The vectors' finger (touch steps), in the page's coordinates, through
+ * CDP: Chromium only. A move is one move, straight to its cell: it passes
+ * the slop in its own direction (conformance README), and an element it
+ * reaches is reached at that cell, as a pointer step's move reaches it.
+ */
+class Finger {
+  x = 0;
+  y = 0;
+  /** One session for every step: a touch is the session's, from its start
+   * to its end. */
+  private cdp: CDPSession | null = null;
+  constructor(private readonly page: Page) {}
+
+  async step(step: Step) {
+    const bits = { alt: 1, ctrl: 2, meta: 4, shift: 8 } as Record<string, number>;
+    const modifiers = (step.keys ?? []).reduce((m, k) => m | (bits[k] ?? 0), 0);
+    this.cdp ??= await this.page.context().newCDPSession(this.page);
+    const cdp = this.cdp;
+    const send = (type: string, points: { x: number; y: number }[]) => cdp.send("Input.dispatchTouchEvent", { type: type as "touchStart", touchPoints: points, modifiers });
+    if (step.touch === "down") {
+      [this.x, this.y] = await point(this.page, step.s!, step.at!);
+      await send("touchStart", [{ x: this.x, y: this.y }]);
+    } else if (step.touch === "move") {
+      [this.x, this.y] = await point(this.page, step.s!, step.at!);
+      await send("touchMove", [{ x: this.x, y: this.y }]);
+    } else {
+      await send("touchEnd", []);
+    }
+  }
+}
+
 /** A surface's cell, in CSS pixels, from its host stylesheet. */
 async function cellOf(page: Page, s: string): Promise<[number, number]> {
   return page.evaluate((s) => {
@@ -212,19 +245,41 @@ async function point(page: Page, s: string, at: string | [number, number]): Prom
 }
 
 // Capabilities this addon reports that vectors may require (SPEC §4):
-// `scroll` (§5.3). It does not let the pointer through surfaces yet (§9.3,
-// `passthrough`), and does not send `hover` yet (§9.4: not in `EVENTS`).
-const reported = new Set<string>(["scroll"]);
+// `scroll` (§5.3), and `touch` (§9.1, §16) where this runner can touch it,
+// in Chromium, through CDP: Playwright gives Firefox no touch moves. It does
+// not let the pointer through surfaces yet (§9.3, `passthrough`), and does
+// not send `hover` yet (§9.4: not in `EVENTS`).
+const reported = (browser: string) => new Set<string>(["scroll", ...(browser === "chromium" ? ["touch"] : [])]);
 
-for (const vector of vectors.vectors) {
+const needs = (v: { requires?: string | string[] }) => (v.requires === undefined ? [] : [v.requires].flat());
+
+for (const vector of vectors.vectors.filter((v) => !needs(v).includes("touch"))) define(vector);
+
+// A touch screen for the vectors that touch: touch events are on.
+test.describe("touch", () => {
+  test.use({ hasTouch: true });
+  for (const vector of vectors.vectors.filter((v) => needs(v).includes("touch"))) define(vector);
+});
+
+function define(vector: { name: string; requires?: string | string[]; steps: Step[] }) {
   test(vector.name, async ({ page, browserName }) => {
-    const requires = vector.requires === undefined ? [] : [vector.requires].flat();
-    test.skip(!requires.every((r) => reported.has(r)), `needs ${requires.join(", ")}`);
+    const requires = needs(vector);
+    const has = reported(browserName);
+    const missing = requires.filter((r) => !has.has(r));
+    test.skip(missing.length > 0, `needs ${missing.join(", ")}, which this runner can't give in ${browserName}`);
     await open(page);
     const mouse = new Mouse(page, browserName);
+    const finger = new Finger(page);
     for (const [i, step] of vector.steps.entries()) {
       const where = `step ${i + 1}`;
-      if (step.pointer) {
+      if (step.touch) {
+        await take(page);
+        await terminalWheels(page);
+        await finger.step(step);
+        await frames(page, 2);
+        checkEvents(where, (await take(page)).msgs, step.events);
+        if (step.terminal !== undefined) expect((await terminalWheels(page)) > 0, `${where}: the terminal got the touch`).toBe(step.terminal);
+      } else if (step.pointer) {
         await take(page);
         await terminalWheels(page);
         await mouse.step(step);
