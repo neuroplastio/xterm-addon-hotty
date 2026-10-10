@@ -142,6 +142,9 @@ export class HottyAddon implements ITerminalAddon {
   private css = "";
   private readonly policy: Policy;
   private metrics = { cellW: 0, cellH: 0, key: "" };
+  /** The cell (CSS px) and font the program last heard of, or saw at the
+   * start: a `resize` is owed when both have changed since (SPEC §5.3). */
+  private told = { cellW: 0, cellH: 0, font: "" };
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
   /** A surface's key is being forwarded to the terminal (`key`), and the
    * terminal's own focus is held off meanwhile. A program in the page may
@@ -867,24 +870,42 @@ export class HottyAddon implements ITerminalAddon {
     const o = this.term.options;
     const key = `${cellW}x${cellH}|${o.fontFamily}|${o.fontSize}|${JSON.stringify(o.theme ?? {})}`;
     if (key === this.metrics.key) return;
-    const sizeChanged = this.metrics.cellW !== 0 && (cellW !== this.metrics.cellW || cellH !== this.metrics.cellH);
+    const first = this.metrics.cellW === 0;
     this.metrics = { cellW, cellH, key };
+    if (first) this.told = { cellW, cellH, font: this.font() };
+    else this.settle();
     if (this.surfaces.size === 0) return;
     const css = this.hostCss();
     const scheme = this.scheme();
     for (const s of this.surfaces.values()) s.setHostCss(css, scheme);
     this.reposition();
-    if (sizeChanged) {
-      // Re-rendered with no program involvement; tell the program the new size.
-      if (this.resizeTimer) clearTimeout(this.resizeTimer);
-      this.resizeTimer = setTimeout(() => {
-        for (const p of this.placements.values()) {
-          const s = p.surface;
-          if (s.detached) continue; // it sends no events (§5.5)
-          this.host().event(s.name, "resize", "", { w: Math.round(s.cols * cellW), h: s.rows * cellH });
-        }
-      }, 100);
-    }
+  }
+
+  private font(): string {
+    return `${this.term.options.fontFamily}|${this.term.options.fontSize}`;
+  }
+
+  /** Once the cell and font settle: a new font that changed the cell is
+   * re-rendered with no program involvement, so the program hears its new
+   * size (SPEC §5.3, §9). A browser's zoom moves the cell only by device
+   * pixel rounding and keeps the font, and is not told. xterm.js may take
+   * the font and its cell in two renders, so this waits for both. */
+  private settle() {
+    if (this.resizeTimer) clearTimeout(this.resizeTimer);
+    this.resizeTimer = setTimeout(() => {
+      this.resizeTimer = null;
+      const { cellW, cellH } = this.cell();
+      const font = this.font();
+      const t = this.told;
+      const owed = font !== t.font && (cellW !== t.cellW || cellH !== t.cellH);
+      this.told = { cellW, cellH, font };
+      if (!owed) return;
+      for (const p of this.placements.values()) {
+        const s = p.surface;
+        if (s.detached) continue; // it sends no events (§5.5)
+        this.host().event(s.name, "resize", "", { w: Math.round(s.cols * cellW), h: s.rows * cellH });
+      }
+    }, 100);
   }
 }
 

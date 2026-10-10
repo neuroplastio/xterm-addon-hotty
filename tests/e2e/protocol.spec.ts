@@ -324,6 +324,30 @@ test("a font or theme change re-lays out every surface, and the program hears `r
   await expect.poll(async () => (await take(page)).msgs.some((m) => m.get("e") === "resize")).toBe(true);
 });
 
+test("a browser's zoom keeps the font, and the program hears no `resize`", async ({ page }) => {
+  // SPEC §5.3. Under a zoom, xterm.js's WebGL and canvas renderers round
+  // the cell to device pixels, so the cell in CSS px moves a little with no
+  // new font. The DOM renderer here keeps it, so the test moves it as they
+  // would, and draws again.
+  await send(page, { a: "doc", s: "x", q: "2" }, "<p>x</p>");
+  await send(page, { a: "place", s: "x", c: "20", r: "3", q: "2" });
+  await take(page);
+  await page.evaluate(() => {
+    const t = window.hotty.term as unknown as {
+      rows: number;
+      refresh(a: number, b: number): void;
+      _core: { _renderService: { dimensions: { css: { cell: { width: number; height: number } } } } };
+    };
+    const cell = t._core._renderService.dimensions.css.cell;
+    cell.width = Math.round(cell.width * 1.1) / 1.1;
+    cell.height += 1 / 1.1;
+    t.refresh(0, t.rows - 1);
+  });
+  // Past the addon's 100 ms settling.
+  await page.waitForTimeout(400);
+  expect((await take(page)).msgs.filter((m) => m.get("e") === "resize")).toEqual([]);
+});
+
 /** The `fit` events the program heard (SPEC §5.2), once there are `n`; a
  * few frames later, none more. */
 async function fits(page: Page, n: number): Promise<unknown[]> {
