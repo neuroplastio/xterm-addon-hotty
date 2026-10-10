@@ -80,6 +80,12 @@ test("a map is a plain object, keyed by its own strings; anything else is refuse
   assert.equal(hex(Object.assign(Object.create(null) as Body, { a: 1 })), "81a16101");
 });
 
+test("a key goes out once: one with a lone surrogate, which would go out as U+FFFD, is refused", () => {
+  assert.throws(() => hex({ "\ud800": 1, "�": 2 }), TypeError);
+  assert.throws(() => field({ "a\udc00": 1 }), TypeError);
+  assert.equal(hex({ "�": 1, "😀": 2 }), "82a3efbfbd01a4f09f988002");
+});
+
 test("the buffer grows, and is reused", () => {
   const w = new Writer();
   const long = "∑".repeat(50_000);
@@ -120,8 +126,14 @@ test("the reader fails a body that holds, anywhere, what no host sends (SDK.md �
     ["81a178d5ff0000", /timestamp of 2 bytes/],
     ["81a178d7ffee6b280000000000", /nanoseconds/], // 1e9 of them
     ["81a178c70cff000000000020000000000000", /seconds/], // 2^53 of them
+    ["82a17801a17801", /twice/], // {x: 1, x: 1}
+    ["82a17801a178a161", /twice/], // {x: 1, x: "a"}
+    ["82a17801d9017802", /twice/], // {x: 1, (str8) x: 2}
+    ["81a178928082a17901a17902", /twice/], // {x: [{}, {y: 1, y: 2}]}
   ];
   for (const [b, why] of fails) assert.throws(() => unpack(Buffer.from(b, "hex")), why, b);
+  // One name in two maps is two keys.
+  assert.deepEqual(unpack(Buffer.from("82a17801a17981a17802", "hex")), { x: 1, y: { x: 2 } });
 });
 
 test("the reader reads bin, timestamps and extensions as an SDK does, and no field's type is one", () => {
@@ -145,7 +157,19 @@ test("the reader reads bin, timestamps and extensions as an SDK does, and no fie
 // wire alone (decode.*) are not about bodies.
 const vectors = readVectors();
 const needs = (v: { requires?: string | string[] }) => (v.requires === undefined ? [] : [v.requires].flat());
+// Why each body of two vectors that does not decode fails: the strict one's
+// hold what no host sends (a nil, a key given twice, …), which the reader
+// fails whatever the field; the kinds one's are msgpack the reader takes,
+// each with a known field of another kind than its type (SPEC §3.3).
+const because: Record<string, "reader" | "type"> = {
+  "a body that holds, anywhere, what no host sends does not decode": "reader",
+  "a field a reader knows holding another kind of value than its type does not decode": "type",
+};
+test("the vectors whose bodies fail for one reason are there", () => {
+  for (const name of Object.keys(because)) assert.ok(vectors.decode.some((v: { name: string }) => v.name.startsWith(name)), name);
+});
 for (const v of vectors.decode.filter((v: { bodies?: unknown; requires?: string[] }) => v.bodies && !needs(v).some((r) => r.startsWith("decode.")))) {
+  const why = Object.entries(because).find(([name]) => v.name.startsWith(name))?.[1];
   test(`decode: ${v.name}`, async () => {
     const commands = await decodeAll((v.seqs as string[]).join(""));
     assert.equal(commands.length, v.messages.length);
@@ -154,16 +178,19 @@ for (const v of vectors.decode.filter((v: { bodies?: unknown; requires?: string[
       const [a, e] = [c.control.get("a"), c.control.get("e") ?? ""];
       const type = a === "ev" ? DETAIL[e] : a === "err" ? ERROR : a === "ok" && c.control.get("re") === "q" ? CAPS : undefined;
       if (!c.payload.length || type === undefined) return;
-      let reads = true;
+      let fails: ["reader" | "type", string] | null = null;
       try {
-        reads = mistyped(unpack(c.payload), type, "skip") === null;
-      } catch {
-        reads = false;
+        const bad = mistyped(unpack(c.payload), type, "skip");
+        if (bad !== null) fails = ["type", bad];
+      } catch (err) {
+        fails = ["reader", (err as Error).message];
       }
       // What an SDK fills from a body (SDK.md §3.9).
       const event = ["value", "checked", "fields", "link", "size", "fit_rows", "drag", "hover", "area"];
       const filled = m.caps != null || m.reply?.code != null || m.reply?.detail != null || event.some((k) => m.event?.[k] != null);
-      assert.equal(reads, filled, `message ${i + 1}: ${a} ${e}`);
+      const at = `message ${i + 1}: ${a} ${e}${fails ? ` (${fails[1]})` : ""}`;
+      assert.equal(fails === null, filled, at);
+      if (fails && why) assert.equal(fails[0], why, at);
     });
   });
 }

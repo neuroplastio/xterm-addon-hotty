@@ -57,9 +57,13 @@ export class Writer {
       // where it was made, not an empty map.
       const proto = v === null || typeof v !== "object" ? undefined : Object.getPrototypeOf(v);
       if (proto !== Object.prototype && proto !== null) throw new TypeError(`${String(v)} is no value a body holds`);
+      // An object's keys differ, and each goes out once (SPEC §3.3), as
+      // long as each is its own UTF-8: a lone surrogate goes out as U+FFFD,
+      // so "\uD800" and "�" would be one key given twice.
       const fields = Object.entries(v as Body).filter((f): f is [string, Value] => f[1] != null);
       this.head(0x80, 0, 0xde, 0xdf, fields.length);
       for (const [k, x] of fields) {
+        if (!k.isWellFormed()) throw new TypeError(`the key ${JSON.stringify(k)} holds a lone surrogate`);
         this.str(k);
         this.value(x);
       }

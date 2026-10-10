@@ -10,10 +10,11 @@ neuroplastio/hotty; this repository implements it and must not grow it.
 - **Bodies are msgpack** (SPEC §3.3, `src/msgpack.ts`), each field as the
   type SPEC gives it. JavaScript has one kind of number: the writer takes a
   number as an int, which must be whole, and a float field goes in
-  `float()`. It writes no nil (a field with nothing is left out) and maps
-  only from plain objects. The tests read every body the addon sends as an
-  SDK does (SDK.md §3.9: no nil, keys strings, ints within 2^53 − 1, …)
-  and with SPEC's types (`tests/msgpack.ts`).
+  `float()`. It writes no nil (a field with nothing is left out), maps
+  only from plain objects, and no key with a lone surrogate (it would go
+  out as U+FFFD, perhaps twice). The tests read every body the addon sends
+  as an SDK does (SDK.md §3.9: no nil, keys strings each given once, ints
+  within 2^53 − 1, …) and with SPEC's types (`tests/msgpack.ts`).
 - **Security is two layers**, and each must hold on its own
   (`tests/e2e/hostile.spec.ts`): the sanitizer (`src/resolver.ts`), and the
   iframe's sandbox and CSP (`src/surface.ts`). Never weaken either to make a

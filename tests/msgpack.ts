@@ -37,10 +37,11 @@ export class Ext {
  * timestamp a `Timestamp` and another extension an `Ext`. Throws where an
  * SDK's body does not decode (SPEC §3.3, SDK.md §3.9), anywhere in it: not
  * one value, bytes after it, nesting past 32, a nil, a map key that is not
- * a str, a str that is not UTF-8, an int further than 2^53 − 1 from zero,
- * or a timestamp of another size, with a second's nanoseconds or more, or
- * with seconds further than 2^53 − 1 from 1970. And, where an SDK is not
- * asked to, at a map's key twice: a host writes each once.
+ * a str, a key given twice in one map (keys compared as the strings they
+ * are, so a fixstr and a str8 of one name are one key), a str that is not
+ * UTF-8, an int further than 2^53 − 1 from zero, or a timestamp of another
+ * size, with a second's nanoseconds or more, or with seconds further than
+ * 2^53 − 1 from 1970.
  */
 export function unpack(b: Uint8Array): unknown {
   const d = new DataView(b.buffer, b.byteOffset, b.byteLength);
@@ -136,7 +137,8 @@ export function unpack(b: Uint8Array): unknown {
     for (let k = 0; k < n; k++) {
       const key = value(depth + 1);
       if (typeof key !== "string") throw new TypeError(`msgpack: a map key that is not a str: ${show(key)}`);
-      if (Object.hasOwn(out, key)) throw new TypeError(`msgpack: the key ${key} twice`);
+      // The key as decoded, whatever its form: a fixstr "v" and a str8 "v" are one.
+      if (Object.hasOwn(out, key)) throw new TypeError(`msgpack: a key given twice: ${show(key)}`);
       Object.defineProperty(out, key, { value: value(depth + 1), enumerable: true, writable: true, configurable: true });
     }
     return out;
