@@ -15,6 +15,11 @@ The package is an ES module with its TypeScript declarations, for xterm.js
 (`github:neuroplastio/xterm-addon-hotty#<commit>`): npm builds it as it
 installs it (`prepare`).
 
+It implements HOTTY 0.2, whose replies and events carry msgpack bodies
+(SPEC §3.3). 0.1.0-next.8 is the first release that does, and it breaks
+with programs written for 0.1, which read JSON bodies: programs and hosts
+update together.
+
 ```ts
 import { Terminal } from "@xterm/xterm";
 import { HottyAddon } from "@neuroplastio/xterm-addon-hotty";
