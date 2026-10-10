@@ -18,7 +18,7 @@ async function field(page: Page, html: string, id: string, rows = 4) {
 
 /** The values the `input` events since the last call carried. */
 async function inputs(page: Page): Promise<string[]> {
-  return (await take(page)).msgs.filter((m) => m.get("e") === "input").map((m) => (m.json as { value: string }).value);
+  return (await take(page)).msgs.filter((m) => m.get("e") === "input").map((m) => (m.body as { value: string }).value);
 }
 
 test("with the kitty keyboard protocol on, a field has its keys, and the program still gets the rest in that encoding", async ({ page }) => {

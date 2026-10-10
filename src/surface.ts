@@ -16,6 +16,7 @@ import { parseSteps, stepAt } from "./steps.ts";
 import { CLIP, MEASURE, rootTouchAction, scrollCss, UNCLIPPED } from "./hostcss.ts";
 import { Deltas } from "./delta.ts";
 import { Resolver } from "./resolver.ts";
+import type { Body, Value } from "./msgpack.ts";
 import { cspSources, intersect, parse, type Policy } from "./network.ts";
 import { NO_BASE, type Store } from "./resources.ts";
 import { chars, elementKeymap, INSERT, inputKeys, isBreak, isSpace, type InputKey, MULTILINE_ACTIONS, plan, resolve, ROW_ACTIONS, type Rows, type Text } from "./keys.ts";
@@ -60,8 +61,9 @@ export interface Window {
 export interface SurfaceHost {
   layer: HTMLElement;
   store: Store;
-  /** Sends a HOTTY message (an event) to the program. */
-  event(surface: string, kind: string, target: string, detail?: unknown): void;
+  /** Sends a HOTTY message (an event) to the program, with its detail
+   *  (SPEC §9), if it has one. */
+  event(surface: string, kind: string, target: string, detail?: Body): void;
   /** A key the surface does not use (a keydown or its keyup), for the
    *  terminal to send to the program as if typed there (SPEC §10.2). */
   key(e: KeyboardEvent): void;
@@ -139,12 +141,12 @@ export type Scheme = "dark" | "light";
 export type Route = "doc" | "terminal" | "stop";
 
 /** An element's cells, as the user sees it (SPEC §9: `area`). */
-export interface Area {
+export type Area = {
   c: number;
   r: number;
   w: number;
   h: number;
-}
+};
 
 /** A scroll by a key (SPEC §5.3: the keys a browser scrolls with; §10.2:
  * the scroll actions), along `axis`, `sign` its way: by a line, a page,
@@ -1943,7 +1945,7 @@ export class Surface {
 
 
   /** An event for the program (SPEC §9); a detached surface sends none (§5.5). */
-  private emit(kind: string, target: string, detail?: unknown) {
+  private emit(kind: string, target: string, detail?: Body) {
     if (this.detachedState) return;
     this.host.event(this.name, kind, target, detail);
   }
@@ -1993,7 +1995,7 @@ export class Surface {
       if (e.button === 0) this.host.hyperlink("activate", e, url, this.pageBox(link));
       return;
     }
-    const detail: Record<string, unknown> = { href: this.resolver.get(link, "href") ?? "" };
+    const detail: Record<string, Value> = { href: this.resolver.get(link, "href") ?? "" };
     if (url) detail.url = url;
     detail.area = this.areaOf(link);
     this.emit("click", link.getAttribute("id") ?? "", detail);
@@ -2066,7 +2068,7 @@ export class Surface {
         // it is a hyperlink, which is the terminal's.
         if (this.isHyperlink(n)) return;
         const url = this.urlOf(n);
-        const detail: Record<string, unknown> = { href: this.resolver.get(n, "href") ?? "" };
+        const detail: Record<string, Value> = { href: this.resolver.get(n, "href") ?? "" };
         if (url) detail.url = url;
         detail.area = this.areaOf(n);
         this.emit("click", n.getAttribute("id") ?? "", detail);
@@ -2080,7 +2082,7 @@ export class Surface {
       if (!reportable) continue;
       const id = el.getAttribute("id");
       if (id) {
-        const detail: Record<string, unknown> = {};
+        const detail: Record<string, Value> = {};
         const href = this.resolver.get(el, "href");
         if (href !== null) detail.href = href;
         const value = this.resolver.get(el, "value");
@@ -2109,6 +2111,7 @@ export class Surface {
     if (!id) return;
     const type = (el.getAttribute("type") ?? "").toLowerCase();
     if (el.localName === "input" && (type === "checkbox" || type === "radio")) {
+      // The program's value; none, and left out, without a value attribute.
       this.emit("change", id, { checked: el.checked, value: this.resolver.get(el, "value") });
     } else if ("value" in el) {
       this.emit("change", id, { value: el.value });

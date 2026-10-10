@@ -14,7 +14,7 @@ async function heard(page: Page, n: number): Promise<[string, string, unknown][]
   await expect
     .poll(async () => {
       for (const m of (await take(page)).msgs) {
-        if (m.get("e") === "click" || m.get("e") === "press") got.push([m.get("e")!, m.get("t")!, m.json]);
+        if (m.get("e") === "click" || m.get("e") === "press") got.push([m.get("e")!, m.get("t")!, m.body]);
       }
       return got.length;
     })

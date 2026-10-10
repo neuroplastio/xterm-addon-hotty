@@ -16,6 +16,7 @@
 import type { IBufferRange, IDisposable, IMarker, ITerminalAddon, Terminal } from "@xterm/xterm";
 import { hostCss, palette } from "./hostcss.ts";
 import { OPS, DeltaError } from "./delta.ts";
+import { float, Writer, type Body } from "./msgpack.ts";
 import { clean, type Policy } from "./network.ts";
 import { Store } from "./resources.ts";
 import { type Route, type Scheme, Surface, type SurfaceHost } from "./surface.ts";
@@ -122,7 +123,7 @@ class Failure extends Error {
   }
 }
 
-type Reply = { extra?: [string, string][]; body?: string };
+type Reply = { extra?: [string, string][]; body?: Body };
 
 /** Where xterm.js sends what the program reads (its core service). */
 type DataSink = { triggerDataEvent(data: string, wasUserInput?: boolean): void };
@@ -134,6 +135,8 @@ export class HottyAddon implements ITerminalAddon {
   private readonly surfaces = new Map<string, Surface>();
   private readonly placements = new Map<string, Placement>();
   private readonly assembler = new Assembler();
+  /** Replies' and events' bodies (SPEC §3.3), each sent as it is written. */
+  private readonly writer = new Writer();
   private readonly disposables: IDisposable[] = [];
   private layer: HTMLDivElement | null = null;
   /** Commands held while synchronized output is on (PROTOCOL §5). */
@@ -279,7 +282,7 @@ export class HottyAddon implements ITerminalAddon {
     const fail = (e: unknown) => {
       const code = e instanceof Failure || e instanceof DeltaError ? e.code : "EINVAL";
       const detail = e instanceof Error ? e.message : String(e);
-      if (quiet < 2) this.reply("err", cmd, { body: JSON.stringify({ code, detail }) });
+      if (quiet < 2) this.reply("err", cmd, { body: { code, detail } });
     };
     try {
       const r = this.dispatch(action, cmd);
@@ -298,7 +301,7 @@ export class HottyAddon implements ITerminalAddon {
     }
     c.set("re", cmd.control.get("a") ?? "");
     for (const [k, v] of r.extra ?? []) c.set(k, v);
-    this.send(encode(c, r.body ?? ""));
+    this.send(encode(c, r.body ? this.writer.body(r.body) : ""));
   }
 
   private send(message: string) {
@@ -311,7 +314,7 @@ export class HottyAddon implements ITerminalAddon {
     const c = cmd.control;
     switch (action) {
       case "q":
-        return { body: JSON.stringify(this.capabilities()) };
+        return { body: this.capabilities() };
       case "doc": {
         const name = this.surfaceName(c);
         let s = this.surfaces.get(name);
@@ -395,17 +398,20 @@ export class HottyAddon implements ITerminalAddon {
     }
   }
 
-  private capabilities() {
+  /** The capabilities (SPEC §4), each field as its type. */
+  private capabilities(): Body {
     const { cellW, cellH } = this.cell();
     const scale = window.devicePixelRatio || 1;
+    // A limit is an int; an embedder's Infinity is none, and left out.
+    const limit = (n: number) => (Number.isFinite(n) ? Math.min(Math.floor(n), Number.MAX_SAFE_INTEGER) : undefined);
     return {
-      v: "0.1",
+      v: "0.2",
       ops: OPS,
       events: EVENTS,
       cell: { w: Math.round(cellW * scale), h: Math.round(cellH * scale) },
-      scale,
+      scale: float(scale),
       scheme: this.scheme(),
-      limits: { resources: this.store.quota, surfaces: this.opts.maxSurfaces },
+      limits: { resources: limit(this.store.quota), surfaces: limit(this.opts.maxSurfaces) },
       net: this.policy,
       scroll: true,
       steps: true,
@@ -560,7 +566,7 @@ export class HottyAddon implements ITerminalAddon {
       store: this.store,
       event: (surface, kind, target, detail) => {
         const c = new Control().set("a", "ev").set("s", surface).set("e", kind).set("t", target);
-        this.send(encode(c, detail === undefined ? "" : JSON.stringify(detail)));
+        this.send(encode(c, detail === undefined ? "" : this.writer.body(detail)));
       },
       browserKey: (e) => this.browserKey(e),
       key: (e) => this.terminalKey(e),
@@ -903,7 +909,7 @@ export class HottyAddon implements ITerminalAddon {
       for (const p of this.placements.values()) {
         const s = p.surface;
         if (s.detached) continue; // it sends no events (§5.5)
-        this.host().event(s.name, "resize", "", { w: Math.round(s.cols * cellW), h: s.rows * cellH });
+        this.host().event(s.name, "resize", "", { w: float(Math.round(s.cols * cellW)), h: float(s.rows * cellH) });
       }
     }, 100);
   }

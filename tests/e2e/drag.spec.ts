@@ -10,7 +10,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { open, sansArea, send, surface, take, write } from "./helpers.ts";
 
 const evs = (msgs: Awaited<ReturnType<typeof take>>["msgs"]) =>
-  msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("s"), m.get("e"), m.get("t"), sansArea(m.json)]);
+  msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("s"), m.get("e"), m.get("t"), sansArea(m.body)]);
 
 /** Two cells, three columns wide each, the second with text to select. */
 const CELLS =
@@ -311,7 +311,7 @@ test.describe("§9.1: a touch drags where touch-action allows no pan its way", (
     await f.second(other.x, other.y);
     const ended = (await take(page)).msgs.filter((m) => m.get("a") === "ev");
     expect(ended.map((m) => [m.get("e"), m.get("t")])).toEqual([["dragend", ""]]);
-    expect((ended[0]!.json as { r: number }).r).toBe(2);
+    expect((ended[0]!.body as { r: number }).r).toBe(2);
     await f.both(20, 0, other);
     await f.up();
     expect(evs((await take(page)).msgs)).toEqual([]);

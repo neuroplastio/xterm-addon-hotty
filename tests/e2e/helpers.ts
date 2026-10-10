@@ -2,7 +2,9 @@
 // terminal, replies and events read back from what it sends to the program.
 
 import type { FrameLocator, Page } from "@playwright/test";
-import { Control, decodeAll, encode, text } from "../../src/wire.ts";
+import { Control, decodeAll, encode } from "../../src/wire.ts";
+import type { Float } from "../../src/msgpack.ts";
+import { CAPS, DETAIL, ERROR, mistyped, show, unpack, type Type } from "../msgpack.ts";
 
 type Hotty = {
   write(data: string): Promise<void>;
@@ -35,11 +37,16 @@ export async function send(page: Page, pairs: Record<string, string>, payload = 
 
 export interface Msg {
   get(k: string): string | undefined;
-  body: string;
-  json: unknown;
+  /** The body, decoded (`unpack`: a float is a `Float`); null when the
+   * message has none. */
+  body: unknown;
 }
 
-/** Everything the terminal sent to the program, decoded; `sent` is cleared. */
+/**
+ * Everything the terminal sent to the program, decoded; `sent` is cleared.
+ * Each body must be one msgpack map with each field of its type (SPEC
+ * §3.3), and the test fails where one is not.
+ */
 export async function take(page: Page): Promise<{ msgs: Msg[]; raw: string }> {
   const raw = await page.evaluate(() => window.hotty.sent.splice(0).join(""));
   // A host never compresses what it sends (SPEC §3.3).
@@ -47,14 +54,14 @@ export async function take(page: Page): Promise<{ msgs: Msg[]; raw: string }> {
     if (Control.parse(ctl!).get("o") !== undefined) throw new Error(`the host compressed: ${ctl}`);
   }
   const msgs = (await decodeAll(raw)).map((c) => {
-    const body = text(c.payload);
-    let json: unknown = null;
-    try {
-      json = body ? JSON.parse(body) : null;
-    } catch {
-      /* not JSON */
-    }
-    return { get: (k: string) => c.control.get(k), body, json };
+    const get = (k: string) => c.control.get(k);
+    const body = c.payload.length ? unpack(c.payload) : null;
+    const type: Type | undefined = get("a") === "ev" ? DETAIL[get("e") ?? ""] : get("a") === "err" ? ERROR : get("re") === "q" ? CAPS : undefined;
+    const where = `${c.control.encode()} ${show(body)}`;
+    if (body !== null && type === undefined) throw new Error(`a body where SPEC gives none: ${where}`);
+    const bad = body === null ? null : mistyped(body, type!);
+    if (bad) throw new Error(`${bad}: ${where}`);
+    return { get, body };
   });
   return { msgs, raw: raw.replace(/\x1b\]7279;[^\x1b]*\x1b\\/g, "") };
 }
@@ -66,8 +73,8 @@ export function surface(page: Page, name: string): FrameLocator {
 export async function cell(page: Page): Promise<{ w: number; h: number }> {
   await send(page, { a: "q", n: "0" });
   const { msgs } = await take(page);
-  const caps = msgs.find((m) => m.get("re") === "q")!.json as { cell: { w: number; h: number }; scale: number };
-  return { w: caps.cell.w / caps.scale, h: caps.cell.h / caps.scale };
+  const caps = msgs.find((m) => m.get("re") === "q")!.body as { cell: { w: number; h: number }; scale: Float };
+  return { w: caps.cell.w / caps.scale.value, h: caps.cell.h / caps.scale.value };
 }
 
 /**
@@ -76,9 +83,9 @@ export async function cell(page: Page): Promise<{ w: number; h: number }> {
  * `area.spec.ts`. The area is still checked to be whole cells, and a detail
  * with nothing else is none.
  */
-export function sansArea(json: unknown): unknown {
-  if (json === null || typeof json !== "object" || !("area" in json)) return json;
-  const { area, ...rest } = json as { area: Record<string, unknown> };
+export function sansArea(detail: unknown): unknown {
+  if (detail === null || typeof detail !== "object" || !("area" in detail)) return detail;
+  const { area, ...rest } = detail as { area: Record<string, unknown> };
   for (const k of ["c", "r", "w", "h"]) {
     if (!Number.isInteger(area[k])) throw new Error(`area.${k} is not a whole number: ${JSON.stringify(area)}`);
   }

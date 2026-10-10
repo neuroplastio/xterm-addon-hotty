@@ -9,7 +9,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { open, sansArea, send, surface, take } from "./helpers.ts";
 
 const evs = (msgs: Awaited<ReturnType<typeof take>>["msgs"]) =>
-  msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("e"), m.get("t"), sansArea(m.json)]);
+  msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("e"), m.get("t"), sansArea(m.body)]);
 
 /** The terminal has the browser's focus (the surface gave it back). */
 async function terminalHasKeyboard(page: Page) {
@@ -252,7 +252,7 @@ test.describe("§5.5: a detached surface", () => {
     await send(page, { a: "focus", s: "x", t: "b" });
     await send(page, { a: "focus", s: "x", t: "nope" });
     await send(page, { a: "focus", s: "x" });
-    expect((await take(page)).msgs.map((m) => (m.json as { code?: string } | null)?.code)).toEqual(["EDETACHED", "EDETACHED", "EDETACHED"]);
+    expect((await take(page)).msgs.map((m) => (m.body as { code?: string } | null)?.code)).toEqual(["EDETACHED", "EDETACHED", "EDETACHED"]);
     await send(page, { a: "blur", s: "x" });
     expect((await take(page)).msgs.map((m) => [m.get("a"), m.get("re") ?? m.get("e")])).toEqual([["ok", "blur"]]);
     await d.locator("#b").click({ force: true });

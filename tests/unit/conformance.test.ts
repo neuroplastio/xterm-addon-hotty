@@ -2,13 +2,11 @@
 // (conformance/README.md) against this addon's code.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { HOTTY_DIR } from "../hotty.ts";
+import { readVectors } from "../hotty.ts";
 import { Assembler, text, type Command } from "../../src/wire.ts";
 import { decodeKeys, elementKeymap, Field, parseKey, parseKeymap, resolve, TERMINAL_KEYS } from "../../src/keys.ts";
 
-const vectors = JSON.parse(readFileSync(join(HOTTY_DIR, "conformance", "vectors.json"), "utf8"));
+const vectors = readVectors();
 
 for (const w of vectors.wire) {
   test(`wire: ${w.name}`, async () => {

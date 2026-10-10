@@ -2,9 +2,8 @@
 // hotty-blitz runs the same file (crates/hotty-blitz/tests/conformance.rs).
 
 import { expect, test, type CDPSession, type Page } from "@playwright/test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { HOTTY_DIR } from "../hotty.ts";
+import { readVectors } from "../hotty.ts";
+import { show } from "../msgpack.ts";
 import { cmd, open, take, write, type Msg } from "./helpers.ts";
 
 type Expected = Record<string, unknown>;
@@ -24,19 +23,23 @@ type Step = {
   terminal?: boolean;
   events?: Expected[];
 };
-const vectors = JSON.parse(readFileSync(join(HOTTY_DIR, "conformance", "vectors.json"), "utf8")) as {
+const vectors = readVectors() as {
   vectors: { name: string; requires?: string | string[]; steps: Step[] }[];
 };
 
-/** Every event a step sent, against its `events`, in order and nothing more. */
+/**
+ * Every event a step sent, against its `events`, in order and nothing more.
+ * A detail is compared decoded: equal as values, each of its type, so an
+ * int is not a float (a `Float`, in the vectors as read and as decoded).
+ */
 function checkEvents(where: string, msgs: Msg[], want: Expected[] | undefined) {
   if (want === undefined) return;
   const got = msgs.filter((m) => m.get("a") === "ev");
-  const show = got.map((m) => `${m.get("e")}:${m.get("t")} ${m.body}`).join(", ");
-  expect(got.length, `${where}: events [${show}]`).toBe(want.length);
+  const all = got.map((m) => `${m.get("e")}:${m.get("t")} ${show(m.body)}`).join(", ");
+  expect(got.length, `${where}: events [${all}]`).toBe(want.length);
   want.forEach((w, i) => {
     for (const [k, v] of Object.entries(w)) {
-      if (k === "detail") expect(got[i]!.json, `${where}: event ${i + 1} detail`).toEqual(v);
+      if (k === "detail") expect(got[i]!.body, `${where}: event ${i + 1} detail`).toStrictEqual(v);
       else expect(got[i]!.get(k), `${where}: event ${i + 1} ${k}`).toBe(v);
     }
   });
@@ -315,7 +318,7 @@ function define(vector: { name: string; requires?: string | string[]; steps: Ste
         }
         expect(replies.length, where).toBeGreaterThan(0);
         const got = replies[0]!;
-        const body = (got.json ?? {}) as Record<string, string>;
+        const body = (got.body ?? {}) as Record<string, string>;
         for (const [k, v] of Object.entries(step.reply)) {
           expect(k === "code" || k === "detail" ? body[k] : got.get(k), `${where}: ${k}`).toBe(v);
         }

@@ -2,8 +2,12 @@
 // tests/host.rs checks it on the other hosts.
 
 import { expect, test, type Page } from "@playwright/test";
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
+import { Float } from "../../src/msgpack.ts";
 import { HOST, VERSION } from "../../src/version.ts";
 import { Control, encode } from "../../src/wire.ts";
+import { HOTTY_DIR } from "../hotty.ts";
 import { cell, cmd, open, send, surface, take, write } from "./helpers.ts";
 
 test.beforeEach(async ({ page }) => open(page));
@@ -14,13 +18,41 @@ test("a=q answers with capabilities", async ({ page }) => {
   expect(msgs).toHaveLength(1);
   expect(msgs[0]!.get("a")).toBe("ok");
   expect(msgs[0]!.get("n")).toBe("7");
-  const caps = msgs[0]!.json as { v: string; ops: string[]; cell: { w: number; h: number }; scroll: boolean; host: string; version: string };
-  expect(caps.v).toBe("0.1");
+  const caps = msgs[0]!.body as { v: string; ops: string[]; cell: { w: number; h: number }; scale: Float; scroll: boolean; host: string; version: string };
+  expect(caps.v).toBe("0.2");
   expect(caps.scroll).toBe(true);
   expect(caps.host).toBe(HOST);
   expect(caps.version).toBe(VERSION);
   expect(caps.ops).toContain("morph");
   expect(caps.cell.h).toBeGreaterThan(0);
+  // A float even when whole (SPEC §3.3, §4): 1.0 at this page's scale.
+  expect(caps.scale).toStrictEqual(new Float(1));
+});
+
+test("the reference client reads the replies, each field of its type", async ({ page }) => {
+  await send(page, { a: "q", n: "1" });
+  await send(page, { a: "place", s: "gone", c: "1" });
+  const stream = await page.evaluate(() => window.hotty.sent.splice(0).join(""));
+  // Each sequence, as the client's Decoder takes it: the reply to q has
+  // capabilities only if each field it knows is of its type.
+  const script = `
+import json, sys; sys.path.insert(0, ${JSON.stringify(join(HOTTY_DIR, "clients", "python"))})
+import hotty
+d, out = hotty.Decoder(), []
+for seq in sys.stdin.buffer.read().split(b"\\x1b\\\\"):
+    result, m = d.feed(seq)
+    if result != hotty.COMPLETE:
+        continue
+    r = m.reply()
+    if not r.ok:
+        out.append({"code": r.code})
+        continue
+    c = r.caps()
+    out.append(c and {"v": c.v, "scale": type(c.scale).__name__, "cell": [type(x).__name__ for x in c.cell]})
+print(json.dumps(out))
+`;
+  const out = JSON.parse(execFileSync("python3", ["-c", script], { input: stream, encoding: "utf8" }));
+  expect(out).toEqual([{ v: "0.2", scale: "float", cell: ["int", "int"] }, { code: "ENOENT" }]);
 });
 
 test("r=auto fits the content and reports its rows", async ({ page }) => {
@@ -40,7 +72,7 @@ test("a missing target is an error, and q quiets replies", async ({ page }) => {
   const { msgs } = await take(page);
   expect(msgs).toHaveLength(1);
   expect(msgs[0]!.get("a")).toBe("err");
-  expect((msgs[0]!.json as { code: string }).code).toBe("ENOTARGET");
+  expect((msgs[0]!.body as { code: string }).code).toBe("ENOTARGET");
 });
 
 test("delta ops change the document as §6 says", async ({ page }) => {
@@ -65,7 +97,7 @@ test("delta ops change the document as §6 says", async ({ page }) => {
   await send(page, { a: "delta", s: "x", op: "morph" }, "<p id=q>Q!</p><p id=missing></p>");
   const { msgs } = await take(page);
   expect(msgs.at(-1)!.get("a")).toBe("err");
-  expect((msgs.at(-1)!.json as { detail: string }).detail).toBe("missing");
+  expect((msgs.at(-1)!.body as { detail: string }).detail).toBe("missing");
   await expect(d.locator("#q")).toHaveText("Q!");
 });
 
@@ -84,7 +116,7 @@ test("morph keeps element identity and what the user typed", async ({ page }) =>
   await send(page, { a: "blur", s: "f", q: "2" });
   const { msgs } = await take(page);
   const evs = msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("e"), m.get("t"), m.body]);
-  expect(evs).toEqual([["change", "name", JSON.stringify({ value: "Ada" })], ["blur", "", ""]]);
+  expect(evs).toEqual([["change", "name", { value: "Ada" }], ["blur", "", null]]);
 });
 
 test("a stylesheet resource that arrives after the document restyles it", async ({ page }) => {
@@ -193,7 +225,7 @@ test("z stacks overlapping placements, and among equals the surface created late
   await send(page, { a: "place", s: "b", c: "10", r: "3", C: "1", z: "1001" });
   const { msgs } = await take(page);
   expect(msgs.at(-1)!.get("a")).toBe("err");
-  expect((msgs.at(-1)!.json as { code: string }).code).toBe("EINVAL");
+  expect((msgs.at(-1)!.body as { code: string }).code).toBe("EINVAL");
 });
 
 test("a transparent document shows the cells beneath it: the frame's colour scheme is the document's", async ({ page }) => {
@@ -321,7 +353,10 @@ test("a font or theme change re-lays out every surface, and the program hears `r
   const root = surface(page, "x").locator("html");
   await expect.poll(() => root.evaluate((el) => getComputedStyle(el).getPropertyValue("--hotty-bg").trim())).toBe("#fdf6e3");
   await expect.poll(() => root.evaluate((el) => getComputedStyle(el).colorScheme)).toBe("light");
-  await expect.poll(async () => (await take(page)).msgs.some((m) => m.get("e") === "resize")).toBe(true);
+  let resize: unknown;
+  await expect.poll(async () => (resize = (await take(page)).msgs.find((m) => m.get("e") === "resize")?.body) !== undefined).toBe(true);
+  // CSS pixels, floats even when whole (SPEC §9).
+  expect(resize).toEqual({ w: expect.any(Float), h: expect.any(Float) });
 });
 
 test("a browser's zoom keeps the font, and the program hears no `resize`", async ({ page }) => {
@@ -353,7 +388,7 @@ test("a browser's zoom keeps the font, and the program hears no `resize`", async
 async function fits(page: Page, n: number): Promise<unknown[]> {
   const got: unknown[] = [];
   const poll = async () => {
-    for (const m of (await take(page)).msgs) if (m.get("a") === "ev" && m.get("e") === "fit") got.push(m.json);
+    for (const m of (await take(page)).msgs) if (m.get("a") === "ev" && m.get("e") === "fit") got.push(m.body);
     return got.length;
   };
   await expect.poll(poll).toBe(n);

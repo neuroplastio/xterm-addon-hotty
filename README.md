@@ -78,6 +78,7 @@ runs programs for whoever connects.
 | piece | file | what it does |
 | --- | --- | --- |
 | wire | `src/wire.ts` | OSC 7279 control parsing, chunk reassembly, base64, zlib through `DecompressionStream`, and reply encoding |
+| bodies | `src/msgpack.ts` | SPEC §3.3: replies' and events' bodies as msgpack maps, each field as its type; a float field (`scale`, `resize`'s `w` and `h`) goes in a `Float`, even when whole |
 | addon | `src/addon.ts` | OSC handler, replies through `term.input(…, false)`, placement, synchronized output, RIS, the alternate screen, zoom and theme, and keys a surface does not use, through xterm.js's own keyboard handling |
 | surface | `src/surface.ts` | one sandboxed iframe per surface; events, focus and key routing |
 | keys | `src/keys.ts` | SPEC §10.2, §10.4: key names, the keys in what the terminal sends, keymaps (`data-keys`), and the actions on a field's text |
@@ -423,11 +424,14 @@ Measured 2026-09-29 in headless Chromium 153 (`bench/`):
 
 - the typecheck, the build and the declarations (what `npm pack` ships);
 - the unit tests (`node --test`: the wire, keys, the keys any focused
-  element gives the program, decoding the reference Python client, and the
-  conformance vectors' wire, keys, keymap and edit sections);
+  element gives the program, decoding the reference Python client, the
+  msgpack bodies, as the reference client reads them, and the conformance
+  vectors' wire, keys, keymap and edit sections);
 - the Playwright tests, against Chromium (and Firefox once installed:
   `npx playwright install firefox`):
-  - the protocol and the conformance vectors;
+  - the protocol and the conformance vectors. Every body the addon sends
+    is read with its fields' types (`tests/msgpack.ts`), and the vectors'
+    numbers keep theirs: `720.0` is a float, `720` an int;
   - interaction, with `form.py` through the bridge;
   - text fields' keymaps beyond the vectors (`fields.spec.ts`);
   - the hostile page and the embedder's CSP;

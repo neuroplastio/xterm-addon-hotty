@@ -24,7 +24,7 @@ async function clicks(page: Page, n: number) {
   await expect
     .poll(async () => {
       for (const m of (await take(page)).msgs) {
-        if (m.get("a") === "ev" && m.get("e") === "click") got.push({ t: m.get("t") ?? "", detail: sansArea(m.json) as Record<string, unknown> });
+        if (m.get("a") === "ev" && m.get("e") === "click") got.push({ t: m.get("t") ?? "", detail: sansArea(m.body) as Record<string, unknown> });
       }
       return got.length;
     })
@@ -47,7 +47,7 @@ test("images load when the host grants the origin and the document asks for it",
 
   // The program's values stand whatever loaded (SPEC §7.1).
   await send(page, { a: "q", n: "1" });
-  const caps = (await take(page)).msgs.find((m) => m.get("re") === "q")!.json as { net: object };
+  const caps = (await take(page)).msgs.find((m) => m.get("re") === "q")!.body as { net: object };
   expect(caps.net).toEqual({ "img-src": [o] });
 });
 
@@ -59,7 +59,7 @@ test("without the host's grant nothing is fetched, whatever the document asks", 
   await page.waitForTimeout(800);
   expect((await leaks(page)).slice(before)).toEqual([]);
   await send(page, { a: "q", n: "1" });
-  const caps = (await take(page)).msgs.find((m) => m.get("re") === "q")!.json as { net: object };
+  const caps = (await take(page)).msgs.find((m) => m.get("re") === "q")!.body as { net: object };
   expect(caps.net).toEqual({});
 });
 
@@ -149,7 +149,7 @@ test("an image from the network that loads after the placement and changes the h
   const fits: unknown[] = [];
   await expect
     .poll(async () => {
-      for (const m of (await take(page)).msgs) if (m.get("a") === "ev" && m.get("e") === "fit") fits.push(m.json);
+      for (const m of (await take(page)).msgs) if (m.get("a") === "ev" && m.get("e") === "fit") fits.push(m.body);
       return fits.length;
     })
     .toBe(1);

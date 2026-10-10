@@ -113,5 +113,5 @@ test("script, requests, navigation, popups and focus theft all fail", async ({ p
   expect(evs).toContain("click:link");
   expect(evs).toContain("submit:f");
   const link = msgs.find((m) => m.get("e") === "click" && m.get("t") === "link")!;
-  expect((link.json as { href: string }).href).toBe(L("nav"));
+  expect((link.body as { href: string }).href).toBe(L("nav"));
 });

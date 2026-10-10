@@ -6,7 +6,7 @@ import { readFileSync, rmSync } from "node:fs";
 import { open, sansArea, send, surface, take, write } from "./helpers.ts";
 
 const evs = (msgs: Awaited<ReturnType<typeof take>>["msgs"]) =>
-  msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("e"), m.get("t"), sansArea(m.json)]);
+  msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("e"), m.get("t"), sansArea(m.body)]);
 
 test("form.py runs unchanged: typing, Tab, Space, a click, Esc, q", async ({ page }, info) => {
   const log = info.outputPath("form-events.jsonl");
