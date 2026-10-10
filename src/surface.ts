@@ -181,6 +181,10 @@ const PAGE_FRACTION = 0.875;
  * not know is `text`. */
 const FIELD_TYPES = new Set(["text", "email", "password", "search", "tel", "url", "number"]);
 
+/** What a field is asked to do: an action, with Shift (`extend`) or
+ * without, or typing. */
+type Edit = { kind: "action"; action: string; extend?: boolean } | { kind: "type"; text: string };
+
 /** Date and time inputs, which have keys of their own (§10.2). */
 const DATE_TYPES = new Set(["date", "datetime-local", "month", "time", "week"]);
 
@@ -978,6 +982,8 @@ export class Surface {
     const keys: InputKey[] = data === null ? [{ key: domKeyName(e), data: "" }] : inputKeys(data);
     const keymap = this.keymapOf(el, multiline);
     const uses = keys.map((k) => (k.key === null ? null : keymap.lookup(k.key)));
+    // A move with Shift selects (§10.2).
+    const extend = keys.map((k) => k.key !== null && keymap.selects(k.key));
     if (uses.every((u) => u === null)) {
       // The program's, unless the document scrolls with it (SPEC §5.3); a
       // key bound to `program` is the program's first (§10.2).
@@ -1011,7 +1017,7 @@ export class Surface {
       } else if (use === "submit") {
         this.goal = null;
         submitFrom(el);
-      } else this.edit(el, multiline, { kind: "action", action: use });
+      } else this.edit(el, multiline, { kind: "action", action: use, extend: extend[i] });
     });
   }
 
@@ -1022,7 +1028,7 @@ export class Surface {
   }
 
   /** Does an action in a field, or types text in it. */
-  private edit(el: HTMLElement, multiline: boolean, what: { kind: "action"; action: string } | { kind: "type"; text: string }) {
+  private edit(el: HTMLElement, multiline: boolean, what: Edit) {
     if (what.kind === "action" && MULTILINE_ACTIONS.has(what.action) && !multiline) return;
     if (el.localName === "input" || el.localName === "textarea") this.editValue(el as HTMLInputElement | HTMLTextAreaElement, multiline, what);
     else this.editHost(el, what);
@@ -1031,7 +1037,7 @@ export class Surface {
   /** An input's or a textarea's value: the action's plan, applied with
    * the editing commands, so that the browser sends `input` (and `change`
    * when focus leaves) as for typing. */
-  private editValue(el: HTMLInputElement | HTMLTextAreaElement, multiline: boolean, what: { kind: "action"; action: string } | { kind: "type"; text: string }) {
+  private editValue(el: HTMLInputElement | HTMLTextAreaElement, multiline: boolean, what: Edit) {
     const cl = chars(el.value);
     // Code units at each character boundary.
     const at = [0];
@@ -1043,6 +1049,8 @@ export class Surface {
     };
     const start = index(el.selectionStart ?? el.value.length);
     const end = index(el.selectionEnd ?? el.value.length);
+    // The caret is the selection's focus; the other end is its anchor.
+    const caret = el.selectionDirection === "backward" ? start : end;
     if (what.kind === "type") {
       this.goal = null;
       this.replace(el, at[start]!, at[end]!, what.text);
@@ -1050,13 +1058,16 @@ export class Surface {
     }
     const action = what.action;
     const password = el.localName === "input" && this.inputType(el as HTMLInputElement) === "password";
-    const text: Text = { chars: cl, start, end, multiline, password };
+    const text: Text = { chars: cl, start, end, caret, multiline, password };
     const g = this.goal;
-    const goal = ROW_ACTIONS.has(action) && g && g.el === el && start === end && g.caret === start ? g.x : null;
+    const goal = ROW_ACTIONS.has(action) && g && g.el === el && g.caret === caret ? g.x : null;
     const rows = multiline && ROW_ACTIONS.has(action) ? this.textareaRows(el as HTMLTextAreaElement, cl) : null;
-    const p = plan(text, action, rows, goal);
+    const p = plan(text, action, rows, goal, what.extend);
     this.goal = p.kind === "move" && p.goal !== undefined ? { el, caret: p.to, x: p.goal } : null;
-    if (p.kind === "move") el.setSelectionRange(at[p.to]!, at[p.to]!);
+    if (p.kind === "move") {
+      const a = p.anchor ?? p.to;
+      el.setSelectionRange(at[Math.min(a, p.to)]!, at[Math.max(a, p.to)]!, a > p.to ? "backward" : "forward");
+    }
     else if (p.kind === "replace") this.replace(el, at[p.from]!, at[p.to]!, p.text);
   }
 
@@ -1135,7 +1146,7 @@ export class Surface {
    * own moves, a character at a time where they need to see the text, so
    * that words and lines are SPEC §10.2's, then the editing commands.
    */
-  private editHost(host: HTMLElement, what: { kind: "action"; action: string } | { kind: "type"; text: string }) {
+  private editHost(host: HTMLElement, what: Edit) {
     this.goal = null;
     const sel = this.doc.getSelection();
     if (!sel || !sel.rangeCount) return;
@@ -1147,6 +1158,10 @@ export class Surface {
     const action = what.action;
     if (action === "newline") {
       d.execCommand("insertLineBreak", false);
+      return;
+    }
+    if (action === "select-all") {
+      sel.selectAllChildren(host);
       return;
     }
     const within = () => sel.focusNode !== null && host.contains(sel.focusNode);
@@ -1191,29 +1206,31 @@ export class Surface {
       return;
     }
     const backward = ["char-backward", "word-backward", "line-start", "line-previous", "page-up", "input-start"].includes(action);
-    if (!sel.isCollapsed) {
+    // With Shift, a move extends from the selection's focus, the caret.
+    const alter = what.extend ? "extend" : "move";
+    if (!what.extend && !sel.isCollapsed) {
       if (backward) sel.collapseToStart();
       else sel.collapseToEnd();
       if (action === "char-backward" || action === "char-forward") return;
     }
     const by = { "char-backward": "char", "char-forward": "char", "word-backward": "word", "word-forward": "word", "line-start": "line", "line-end": "line" }[action];
     if (by) {
-      if (backward) back("move", by);
-      else forward("move", by);
+      if (backward) back(alter, by);
+      else forward(alter, by);
       return;
     }
     if (action === "input-start" || action === "input-end") {
-      sel.modify("move", backward ? "backward" : "forward", "documentboundary");
+      sel.modify(alter, backward ? "backward" : "forward", "documentboundary");
       return;
     }
     if (ROW_ACTIONS.has(action)) {
       const rows = action.startsWith("page") ? Math.max(1, Math.round(host.clientHeight / (parseFloat(this.frame.contentWindow!.getComputedStyle(host).lineHeight) || 16))) : 1;
       for (let i = 0; i < rows; i++) {
         const [fn, fo] = [sel.focusNode, sel.focusOffset];
-        sel.modify("move", backward ? "backward" : "forward", "line");
+        sel.modify(alter, backward ? "backward" : "forward", "line");
         if (sel.focusNode === fn && sel.focusOffset === fo) {
           // From the first row to the start, from the last to the end.
-          sel.modify("move", backward ? "backward" : "forward", "documentboundary");
+          sel.modify(alter, backward ? "backward" : "forward", "documentboundary");
           return;
         }
       }

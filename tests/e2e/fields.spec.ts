@@ -65,7 +65,7 @@ test("a textarea's rows are as it wraps them: ArrowDown goes to the next row of 
   expect(await inputs(page)).toEqual(["aaaa bxbbb cccc"]);
 });
 
-test("the user's selection: a delete action deletes it, a move collapses it, and Shift with a move moves", async ({ page }) => {
+test("the user's selection: a delete action deletes it, a move collapses it, and Shift with a move selects", async ({ page }) => {
   await field(page, `<input id=t data-on=input value="one two three">`, "t");
   const select = (a: number, b: number) => surface(page, "f").locator("#t").evaluate((el: HTMLInputElement, [a, b]) => el.setSelectionRange(a, b), [a, b] as const);
   await select(4, 7);
@@ -76,9 +76,35 @@ test("the user's selection: a delete action deletes it, a move collapses it, and
   await page.keyboard.type("x");
   await select(0, 3);
   await page.keyboard.press("ArrowRight"); // to its end
-  await page.keyboard.press("Shift+ArrowRight"); // moves, selects nothing
+  await page.keyboard.press("Shift+ArrowRight"); // selects the space
   await page.keyboard.type("y");
-  expect(await inputs(page)).toEqual(["one x three", "one yx three"]);
+  expect(await inputs(page)).toEqual(["one x three", "oneyx three"]);
+});
+
+test("Shift selects in a textarea by rows, from where the caret is, and Control+a selects all (SPEC §10.2)", async ({ page }) => {
+  await field(page, `<textarea id=t data-on=input rows=4 style="width:10ch;padding:0;border:0;resize:none">one\ntwo\nthree</textarea>`, "t");
+  await page.keyboard.press("Control+Home");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Shift+ArrowDown"); // "ne\nt"
+  await page.keyboard.press("Shift+ArrowRight"); // "ne\ntw"
+  await page.keyboard.type("X");
+  await page.keyboard.press("Control+a");
+  await page.keyboard.type("Y");
+  expect(await inputs(page)).toEqual(["oXo\nthree", "Y"]);
+  expect((await take(page)).raw).toBe("");
+});
+
+test("an editing host selects with Shift and Control+a (SPEC §10.2)", async ({ page }) => {
+  await field(page, `<div id=d contenteditable>foo bar baz</div>`, "d");
+  const text = () => surface(page, "f").locator("#d").evaluate((el) => el.textContent!.replace(/\u00a0/g, " "));
+  await page.keyboard.press("End");
+  await page.keyboard.press("Control+Shift+ArrowLeft");
+  await page.keyboard.type("x");
+  expect(await text()).toBe("foo bar x");
+  await page.keyboard.press("Control+a");
+  await page.keyboard.type("z");
+  expect(await text()).toBe("z");
+  expect((await take(page)).raw).toBe("");
 });
 
 test("an editing host edits with its keymap: words and lines as SPEC §10.2 has them", async ({ page }) => {

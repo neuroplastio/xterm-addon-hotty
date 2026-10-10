@@ -59,18 +59,25 @@ for (const v of vectors.keymap) {
     }
     const m = resolve(v.multiline, ...(v.terminal_keys ? [TERMINAL_KEYS] : []), ...v.keys);
     for (const [key, want] of Object.entries(v.lookup)) assert.equal(m.lookup(key), want, key);
+    for (const [key, want] of Object.entries(v.selects ?? {})) assert.equal(m.selects(key), want, `${key}: selects`);
   });
 }
 
 for (const v of vectors.edit) {
   test(`edit: ${v.name}`, () => {
     const f = v.field;
-    const field = new Field(f.value, f.caret, f.multiline ?? false, f.password ?? false, f.rows ?? 1);
+    const field = new Field(f.value, f.caret, f.multiline ?? false, f.password ?? false, f.rows ?? 1, f.anchor);
     v.steps.forEach((st: Record<string, unknown>, i: number) => {
-      const changed = "do" in st ? field.do(st.do as string) : field.type(st.type as string);
-      const where = `step ${i} (${String(st.do ?? st.type)})`;
+      let changed = false;
+      if ("do" in st) changed = field.do(st.do as string);
+      else if ("extend" in st) changed = field.extend(st.extend as string);
+      else if ("select" in st) field.select(...(st.select as [number, number]));
+      else changed = field.type(st.type as string);
+      const where = `step ${i} (${String(st.do ?? st.extend ?? st.select ?? st.type)})`;
       if ("value" in st) assert.equal(field.value, st.value, `${where}: value`);
       if ("caret" in st) assert.equal(field.caret, st.caret, `${where}: caret`);
+      // Nothing selected is an anchor at the caret (conformance/README.md).
+      if ("anchor" in st) assert.equal(field.anchor ?? field.caret, st.anchor, `${where}: anchor`);
       if ("changed" in st) assert.equal(changed, st.changed, `${where}: changed`);
     });
   });

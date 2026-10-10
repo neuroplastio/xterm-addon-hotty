@@ -27,6 +27,7 @@ export const ACTIONS = new Set([
   "page-down",
   "input-start",
   "input-end",
+  "select-all",
   "newline",
   "submit",
   "program",
@@ -48,7 +49,23 @@ export const ACTIONS = new Set([
 export const SCROLL_ACTIONS = new Set([...ACTIONS].filter((a) => a.startsWith("scroll-")));
 
 /** The actions only a multi-line field has (SPEC §10.2). */
-export const MULTILINE_ACTIONS = new Set(["line-previous", "line-next", "page-up", "page-down", "input-start", "input-end", "newline"]);
+export const MULTILINE_ACTIONS = new Set(["line-previous", "line-next", "page-up", "page-down", "newline"]);
+
+/** The moves, which select with Shift (SPEC §10.2). */
+export const MOVES = new Set([
+  "char-backward",
+  "char-forward",
+  "word-backward",
+  "word-forward",
+  "line-start",
+  "line-end",
+  "line-previous",
+  "line-next",
+  "page-up",
+  "page-down",
+  "input-start",
+  "input-end",
+]);
 
 /** The actions that move the caret by rows, keeping its place along them. */
 export const ROW_ACTIONS = new Set(["line-previous", "line-next", "page-up", "page-down"]);
@@ -59,12 +76,13 @@ const BACKWARD = new Set(["char-backward", "word-backward", "line-start", "line-
 /** What `lookup` returns for a character the field types. */
 export const INSERT = "insert";
 
-/** SDK.md §3.10's keymap: Bubble Tea's text input and text area. */
+/** SDK.md §3.10's keymap: Bubble Tea's text input and text area, but
+ * Control+a selects all. */
 export const TERMINAL_KEYS = [
   "ArrowLeft=char-backward Control+b=char-backward ArrowRight=char-forward Control+f=char-forward",
   "Alt+ArrowLeft=word-backward Control+ArrowLeft=word-backward Alt+b=word-backward",
   "Alt+ArrowRight=word-forward Control+ArrowRight=word-forward Alt+f=word-forward",
-  "Home=line-start Control+a=line-start End=line-end Control+e=line-end",
+  "Home=line-start End=line-end Control+e=line-end",
   "Backspace=delete-char-backward Control+h=delete-char-backward",
   "Delete=delete-char-forward Control+d=delete-char-forward",
   "Alt+Backspace=delete-word-backward Control+w=delete-word-backward Control+Backspace=delete-word-backward",
@@ -73,6 +91,7 @@ export const TERMINAL_KEYS = [
   "ArrowUp=line-previous Control+p=line-previous ArrowDown=line-next Control+n=line-next",
   "PageUp=page-up PageDown=page-down",
   "Alt+<=input-start Control+Home=input-start Alt+>=input-end Control+End=input-end",
+  "Control+a=select-all",
   "Control+m=newline",
 ].join(" ");
 
@@ -392,6 +411,16 @@ export class Keymap {
     if (isChar(value) && !mods.some((m) => m !== "Shift")) return INSERT;
     return null;
   }
+
+  /** Whether the field selects with a key (SPEC §10.2, *Shift selects*):
+   * it looks up a move, and the key's name has Shift. The field then moves
+   * its caret and keeps the selection's anchor. */
+  selects(name: string): boolean {
+    const k = parseKey(name);
+    if (k === null) return false;
+    const a = this.lookup(k);
+    return a !== null && MOVES.has(a) && splitKey(k)![0].includes("Shift");
+  }
 }
 
 /** A `data-keys` value's bindings in order, without those a host ignores. */
@@ -433,14 +462,25 @@ export function resolve(multiline: boolean, ...values: string[]): Keymap {
   for (const [k, a] of [
     ["ArrowLeft", "char-backward"],
     ["ArrowRight", "char-forward"],
+    ["Control+ArrowLeft", "word-backward"],
+    ["Control+ArrowRight", "word-forward"],
+    ["Alt+ArrowLeft", "word-backward"],
+    ["Alt+ArrowRight", "word-forward"],
     ["Home", "line-start"],
     ["End", "line-end"],
+    ["Control+Home", "input-start"],
+    ["Control+End", "input-end"],
     ["Backspace", "delete-char-backward"],
     ["Delete", "delete-char-forward"],
+    ["Control+Backspace", "delete-word-backward"],
+    ["Control+Delete", "delete-word-forward"],
+    ["Alt+Backspace", "delete-word-backward"],
+    ["Alt+Delete", "delete-word-forward"],
     ["ArrowUp", "line-previous"],
     ["ArrowDown", "line-next"],
     ["PageUp", "page-up"],
     ["PageDown", "page-down"],
+    ["Control+a", "select-all"],
     ["Enter", multiline ? "newline" : "submit"],
   ] as const)
     m.bind(k, a);
@@ -451,11 +491,13 @@ export function resolve(multiline: boolean, ...values: string[]): Keymap {
 // --- Actions on a value (§10.2) ----------------------------------------------
 
 /** A field's text and selection, in characters (`start` = `end` when it is
- * a caret). */
+ * a caret). `caret` is the selection's end the caret is at, its start or
+ * its end; the other is its anchor. */
 export interface Text {
   chars: string[];
   start: number;
   end: number;
+  caret: number;
   multiline: boolean;
   password: boolean;
 }
@@ -468,9 +510,13 @@ export interface Rows {
   page: number;
 }
 
-/** What an action does to a field: move its caret, replace a part of it
- * (the caret then after the text), or nothing it can do itself. */
-export type Plan = { kind: "move"; to: number; goal?: number } | { kind: "replace"; from: number; to: number; text: string } | { kind: "none" };
+/** What an action does to a field: move its caret, to `to`, selecting
+ * from `anchor` when it has one; replace a part of it (the caret then after
+ * the text); or nothing it can do itself. */
+export type Plan =
+  | { kind: "move"; to: number; anchor?: number; goal?: number }
+  | { kind: "replace"; from: number; to: number; text: string }
+  | { kind: "none" };
 
 function lineOf(t: Text, p: number): [number, number] {
   if (!t.multiline) return [0, t.chars.length];
@@ -496,11 +542,18 @@ function wordForward(t: Text, p: number): number {
 }
 
 /** What `action` does to `t` (SPEC §10.2). `goal` is the run of row moves
- * under way, if any. */
-export function plan(t: Text, action: string, rows: Rows | null, goal: number | null = null): Plan {
+ * under way, if any. With `extend`, a move is Shift's: it goes from the
+ * caret, and the selection keeps its anchor. */
+export function plan(t: Text, action: string, rows: Rows | null, goal: number | null = null, extend = false): Plan {
   if (MULTILINE_ACTIONS.has(action) && !t.multiline) return { kind: "none" };
   const n = t.chars.length;
   const selected = t.start < t.end;
+  if (action === "select-all") return { kind: "move", anchor: 0, to: n };
+  if (extend && MOVES.has(action)) {
+    const anchor = t.caret === t.start ? t.end : t.start;
+    const moved = plan({ ...t, start: t.caret, end: t.caret }, action, rows, goal);
+    return moved.kind === "move" ? { ...moved, anchor } : moved;
+  }
   if (action.startsWith("delete-")) {
     if (selected) return { kind: "replace", from: t.start, to: t.end, text: "" };
     const p = t.start;
@@ -573,39 +626,62 @@ export function lineRows(t: Text, page = 1): Rows {
   };
 }
 
-/** A text field's value and caret (SDK.md §4.6), as the conformance
- * vectors' edit section has one. */
+/** A text field's value, caret and selection (SDK.md §4.6), as the
+ * conformance vectors' edit section has one. The selection runs from
+ * `anchor` to the caret; nothing is selected when it is undefined or at the
+ * caret. */
 export class Field {
   value: string;
   caret: number;
+  anchor: number | undefined;
   readonly multiline: boolean;
   readonly password: boolean;
   readonly rows: number;
   private goal: number | null = null;
-  constructor(value: string, caret: number, multiline = false, password = false, rows = 1) {
+  constructor(value: string, caret: number, multiline = false, password = false, rows = 1, anchor?: number) {
     this.value = value;
     this.caret = caret;
     this.multiline = multiline;
     this.password = password;
     this.rows = rows;
+    this.anchor = anchor;
   }
 
   private text(): Text {
     const c = chars(this.value);
     const p = Math.min(Math.max(this.caret, 0), c.length);
-    return { chars: c, start: p, end: p, multiline: this.multiline, password: this.password };
+    const a = this.anchor === undefined ? p : Math.min(Math.max(this.anchor, 0), c.length);
+    return { chars: c, start: Math.min(a, p), end: Math.max(a, p), caret: p, multiline: this.multiline, password: this.password };
+  }
+
+  /** Selects from `anchor` to `caret`; equal, nothing is selected. It ends
+   * a run of row moves. */
+  select(anchor: number, caret: number) {
+    this.goal = null;
+    this.caret = caret;
+    this.anchor = anchor === caret ? undefined : anchor;
   }
 
   /** Does an action; whether the value changed. */
   do(action: string): boolean {
+    return this.act(action, false);
+  }
+
+  /** Does a move as Shift does: the caret moves from where it is, and the
+   * selection keeps its anchor. Another action is `do`'s. */
+  extend(action: string): boolean {
+    return this.act(action, true);
+  }
+
+  private act(action: string, extend: boolean): boolean {
     const t = this.text();
     const goal = ROW_ACTIONS.has(action) ? this.goal : null;
-    const p = plan(t, action, lineRows(t, this.rows), goal);
+    const p = plan(t, action, lineRows(t, this.rows), goal, extend);
     this.goal = p.kind === "move" && p.goal !== undefined ? p.goal : null;
     return this.apply(t, p);
   }
 
-  /** Types text at the caret; whether the value changed. */
+  /** Types text in place of the selection; whether the value changed. */
   type(text: string): boolean {
     this.goal = null;
     if (!text) return false;
@@ -614,11 +690,15 @@ export class Field {
   }
 
   private apply(t: Text, p: Plan): boolean {
-    if (p.kind === "move") this.caret = p.to;
+    if (p.kind === "move") {
+      this.caret = p.to;
+      this.anchor = p.anchor === undefined || p.anchor === p.to ? undefined : p.anchor;
+    }
     if (p.kind !== "replace") return false;
     const before = t.chars.slice(0, p.from).join("") + p.text;
     this.value = before + t.chars.slice(p.to).join("");
     this.caret = chars(before).length;
+    this.anchor = undefined;
     return true;
   }
 }
