@@ -1,0 +1,50 @@
+# Publishes @neuroplastio/xterm-addon-hotty to npm by trusted publishing
+# (OIDC): no npm token anywhere, and no 2FA prompt. The package's trusted
+# publisher on npmjs.com names this repository and this file, so a run of
+# this workflow is the one thing that can publish without a person's 2FA.
+# npm takes GitHub's hosted runners only; this repository is public.
+#
+# Bump the version on main, then:
+#   gh workflow run publish.yml -R neuroplastio/xterm-addon-hotty
+name: publish
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # the OIDC token npm exchanges for this one publish
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      # Node and npm as mise.toml pins them.
+      - uses: jdx/mise-action@v4
+      # No public version above 0.1.0 until the maintainer's versioning
+      # scheme: releases are 0.1.0-next.N under the next dist-tag.
+      - name: version
+        run: |
+          v=$(node -p 'require("./package.json").version')
+          case "$v" in
+            0.1.0-next.[0-9]*) ;;
+            *) echo "::error::$v: only 0.1.0-next.N goes to npm for now"; exit 1 ;;
+          esac
+          if [ -n "$(npm view "@neuroplastio/xterm-addon-hotty@$v" version 2>/dev/null)" ]; then
+            echo "::error::$v is on npm already: bump the version"; exit 1
+          fi
+          echo "publishing $v under next"
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: gate
+        run: npm run check
+        env:
+          HOTTY_BROWSERS: chromium
+      - name: publish
+        run: npm publish --tag next
