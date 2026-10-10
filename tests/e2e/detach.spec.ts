@@ -64,7 +64,7 @@ test.describe("§10.1: a click takes the keyboard only through an element that t
     expect(raw).toBe("x");
     // A button takes focus, and the keyboard with it.
     await d.locator("#b").click();
-    expect(evs((await take(page)).msgs)).toEqual([["focus", "", null], ["click", "b", null]]);
+    expect(evs((await take(page)).msgs)).toEqual([["focus", "b", null], ["click", "b", null]]);
   });
 
   test("a click on what takes no focus gives the keyboard back: the control commits, then blur", async ({ page }) => {
@@ -72,7 +72,7 @@ test.describe("§10.1: a click takes the keyboard only through an element that t
     const d = surface(page, "f");
     await d.locator("#i").click();
     await page.keyboard.type("Ada");
-    expect(evs((await take(page)).msgs)).toEqual([["focus", "", null]]);
+    expect(evs((await take(page)).msgs)).toEqual([["focus", "i", null]]);
     await d.locator("#p").click();
     await terminalHasKeyboard(page);
     await page.keyboard.press("y");
@@ -90,13 +90,13 @@ test.describe("§10.1: a click takes the keyboard only through an element that t
     expect(evs((await take(page)).msgs)).toEqual([]);
     expect(await opened(page)).toEqual(["https://example.com/x"]);
     await d.locator("#own").click();
-    expect(evs((await take(page)).msgs)).toEqual([["focus", "", null], ["click", "own", { href: "/own" }]]);
+    expect(evs((await take(page)).msgs)).toEqual([["focus", "own", null], ["click", "own", { href: "/own" }]]);
     // Holding the keyboard, a click on a hyperlink gives it back.
     await d.locator("#i").click();
     await page.keyboard.type("x");
     await d.locator("#hyper").click();
     await terminalHasKeyboard(page);
-    expect(evs((await take(page)).msgs)).toEqual([["change", "i", { value: "x" }], ["blur", "", null]]);
+    expect(evs((await take(page)).msgs)).toEqual([["focus", "i", null], ["change", "i", { value: "x" }], ["blur", "", null]]);
     expect(await opened(page)).toEqual(["https://example.com/x", "https://example.com/x"]);
   });
 
@@ -105,7 +105,7 @@ test.describe("§10.1: a click takes the keyboard only through an element that t
     await place(page, "r", `<a id=rel target=_blank href="docs/intro">rel</a>`);
     await page.evaluate(() => window.hotty.term.focus());
     await surface(page, "r").locator("#rel").click();
-    expect(evs((await take(page)).msgs)).toEqual([["focus", "", null], ["click", "rel", { href: "docs/intro" }]]);
+    expect(evs((await take(page)).msgs)).toEqual([["focus", "rel", null], ["click", "rel", { href: "docs/intro" }]]);
     expect(await opened(page)).toEqual([]);
   });
 
@@ -260,7 +260,7 @@ test.describe("§5.5: a detached surface", () => {
     await send(page, { a: "doc", s: "x", q: "2" }, html);
     await expect(d.locator("#b")).toBeEnabled();
     await d.locator("#b").click();
-    expect(evs((await take(page)).msgs)).toEqual([["focus", "", null], ["click", "b", null]]);
+    expect(evs((await take(page)).msgs)).toEqual([["focus", "b", null], ["click", "b", null]]);
     // Detached again: the keyboard goes back silently.
     await send(page, { a: "doc", s: "x", d: "1", q: "2" }, html);
     await terminalHasKeyboard(page);

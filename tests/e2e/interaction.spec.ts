@@ -27,10 +27,15 @@ test("form.py runs unchanged: typing, Tab, Space, a click, Esc, q", async ({ pag
   await expect.poll(() => page.evaluate(() => (window as unknown as { hotty: { exited: boolean } }).hotty.exited)).toBe(true);
   const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
   const got = lines.filter((l) => l.kind === "event").map((l) => [l.e, l.t, sansArea(l.detail)]);
+  // The program focused #name itself: no echo (SPEC §10.1). Each Tab and
+  // the click name where focus went, after the change they commit.
   expect(got).toEqual([
     ["change", "name", { value: "Ada Lovelace" }],
+    ["focus", "email", null],
     ["change", "email", { value: "ada@example.com" }],
+    ["focus", "notify", null],
     ["change", "notify", { checked: true, value: "yes" }],
+    ["focus", "save", null],
     ["click", "save", null],
     ["submit", "settings", { name: "Ada Lovelace", email: "ada@example.com", notify: "yes", theme: "dark" }],
     ["blur", "", null],
@@ -64,20 +69,27 @@ test.describe("without a pty", () => {
     await d.locator("#t").pressSequentially("hi");
     await d.locator("#go").click();
     const got = evs((await take(page)).msgs);
+    // Each click on what takes focus names it (SPEC §10.1); the button
+    // without an id, and no element around it with one, is focus with no t.
     expect(got).toEqual([
-      ["focus", "", null],
+      ["focus", "b", null],
       ["click", "b", { value: "v" }],
+      ["focus", "", null],
+      ["focus", "l", null],
       ["click", "l", { href: "/docs" }],
       // A span takes no focus: the click gives the keyboard back (§10.1),
       // and the summary takes it again.
       ["blur", "", null],
       ["click", "s", null],
-      ["focus", "", null],
+      ["focus", "sum", null],
       ["click", "sum", null],
+      ["focus", "c", null],
       ["change", "c", { checked: true, value: "yes" }],
+      ["focus", "t", null],
       ["input", "t", { value: "h" }],
       ["input", "t", { value: "hi" }],
       ["change", "t", { value: "hi" }], // committed as focus leaves it
+      ["focus", "go", null],
       ["click", "go", { value: "now" }],
       ["submit", "f", { q: "1", go: "now" }],
     ]);
@@ -150,7 +162,7 @@ test("p=1: every press in the window is reported, first, until a placement witho
     ["press", "card", null],
     // The press comes before the focus it causes, and before the blur.
     ["press", "t", null],
-    ["focus", "", null],
+    ["focus", "t", null],
     ["press", "", null],
     ["blur", "", null],
   ]);

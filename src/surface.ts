@@ -260,6 +260,9 @@ export class Surface {
   /** The document's base URL (SPEC §7.3). */
   private base = NO_BASE;
   private keyboard = false;
+  /** The element the program knows has focus: the last `focus` named it,
+   * or the program's `a=focus` gave it (SPEC §10.1). */
+  private told: Element | null = null;
   /** Detached (SPEC §5.5): nothing in the surface reaches the program. */
   private detachedState = false;
   /** A press is on something that takes no focus (SPEC §10.1): the focus
@@ -461,6 +464,7 @@ export class Surface {
       this.dropDrag(); // it ends with nothing more reported (SPEC §9.1)
       const had = this.keyboard || this.frameFocused();
       this.keyboard = false;
+      this.told = null;
       this.focusedControl()?.blur();
       if (had) this.giveBack();
     }
@@ -674,11 +678,17 @@ export class Surface {
     if (target && !el) throw new Error(target);
     this.programFocus = true;
     try {
-      this.frame.focus();
-      this.frame.contentWindow?.focus();
+      // Focusing the frame while focus is in it would blur its window:
+      // a blur the surface never had.
+      if (!this.frameFocused()) {
+        this.frame.focus();
+        this.frame.contentWindow?.focus();
+      }
       if (el) (el as HTMLElement).focus();
       else if (!this.focusedControl()) this.tabbable()[0]?.focus();
       this.keyboard = true;
+      // No echo (SPEC §10.1): the program knows where it put focus.
+      this.told = this.focusedControl();
     } finally {
       setTimeout(() => (this.programFocus = false), 0);
     }
@@ -686,6 +696,9 @@ export class Surface {
 
   /** `a=blur`, or the keyboard leaving: the edited control commits first. */
   blur() {
+    // A press still settling must not focus its element again: the
+    // keyboard left after it (Tab past the last element, or `a=blur`).
+    this.pressed = null;
     this.commit();
     if (this.keyboard) this.giveBack();
   }
@@ -746,6 +759,7 @@ export class Surface {
     if (this.keyboard) {
       this.commit();
       this.keyboard = false;
+      this.told = null;
       this.emit("blur", "");
     }
     this.settle();
@@ -775,16 +789,25 @@ export class Surface {
 
   /** An element got focus: the surface takes the keyboard if the element is
    * one that takes focus, and the focus is neither the program's (no echo)
-   * nor a detached surface's. */
+   * nor a detached surface's. The program hears where the user put focus,
+   * each time it is another element than the one it knows (SPEC §10.1). */
   private onFocusIn(e: FocusEvent) {
-    if (this.programFocus || this.auxPress) return;
-    if (this.detachedState || this.pressNothing || !isElement(e.target as EventTarget) || !takesFocus(e.target as Element, this.hyper)) {
+    const el = isElement(e.target as EventTarget) ? (e.target as Element) : null;
+    if (this.programFocus) {
+      this.told = el;
+      return;
+    }
+    if (this.auxPress) return;
+    if (this.detachedState || this.pressNothing || !el || !takesFocus(el, this.hyper)) {
       this.settle();
       return;
     }
-    if (this.keyboard) return;
+    const gained = !this.keyboard;
     this.keyboard = true;
-    this.emit("focus", "");
+    if (!gained && el === this.told) return;
+    this.told = el;
+    // `t`: the nearest element with an id, from the focused one outward.
+    this.emit("focus", el.closest('[id]:not([id=""])')?.id ?? "");
   }
 
   private tabbable(): HTMLElement[] {
@@ -1751,6 +1774,7 @@ export class Surface {
       this.commit();
       if (this.keyboard) {
         this.keyboard = false;
+        this.told = null;
         this.emit("blur", "");
       }
     });
