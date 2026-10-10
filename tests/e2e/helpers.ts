@@ -44,8 +44,9 @@ export interface Msg {
 
 /**
  * Everything the terminal sent to the program, decoded; `sent` is cleared.
- * Each body must be one msgpack map with each field of its type (SPEC
- * §3.3), and the test fails where one is not.
+ * Each body must decode as an SDK reads it (SDK.md §3.9) and be one
+ * msgpack map with each field of its type (SPEC §3.3), and the test fails
+ * where one is not.
  */
 export async function take(page: Page): Promise<{ msgs: Msg[]; raw: string }> {
   const raw = await page.evaluate(() => window.hotty.sent.splice(0).join(""));

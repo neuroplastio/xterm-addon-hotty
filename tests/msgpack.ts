@@ -1,6 +1,7 @@
 // What the addon sends, read back (SPEC §3.3): a msgpack reader that keeps
-// ints and floats apart, as the vectors are read (hotty.ts), and the type
-// of each body's fields, from SPEC §3.6, §4 and §9.
+// ints and floats apart, as the vectors are read (hotty.ts), and fails what
+// an SDK fails (SDK.md §3.9); and the type of each body's fields, from SPEC
+// §3.6, §4 and §9.
 import { Float } from "../src/msgpack.ts";
 
 /** A body nested deeper than this does not decode (SDK.md §3.9). */
@@ -9,12 +10,37 @@ const MAX_DEPTH = 32;
 const MAX = BigInt(Number.MAX_SAFE_INTEGER);
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
+/** A msgpack timestamp (extension −1): seconds from 1970, and nanoseconds. */
+export class Timestamp {
+  readonly seconds: number;
+  readonly nanoseconds: number;
+  constructor(seconds: number, nanoseconds: number) {
+    this.seconds = seconds;
+    this.nanoseconds = nanoseconds;
+  }
+}
+
+/** An extension of another type: no one defines one. */
+export class Ext {
+  readonly type: number;
+  readonly data: Uint8Array;
+  constructor(type: number, data: Uint8Array) {
+    this.type = type;
+    this.data = data;
+  }
+}
+
 /**
- * The one msgpack value in `b`: a map is a plain object (its keys strings),
- * an array an array, an int a number, a float a `Float`, a str a string,
- * nil null. Throws when `b` is anything else: not one value, bytes after
- * it, an int a double cannot hold, nesting past 32, or a form a host never
- * sends (bin, an extension).
+ * The one msgpack value in `b`, read as an SDK reads a body: a map is a
+ * plain object (its keys strings), an array an array, an int a number, a
+ * float a `Float`, a str a string, a bool a boolean, bin a `Uint8Array`, a
+ * timestamp a `Timestamp` and another extension an `Ext`. Throws where an
+ * SDK's body does not decode (SPEC §3.3, SDK.md §3.9), anywhere in it: not
+ * one value, bytes after it, nesting past 32, a nil, a map key that is not
+ * a str, a str that is not UTF-8, an int further than 2^53 − 1 from zero,
+ * or a timestamp of another size, with a second's nanoseconds or more, or
+ * with seconds further than 2^53 − 1 from 1970. And, where an SDK is not
+ * asked to, at a map's key twice: a host writes each once.
  */
 export function unpack(b: Uint8Array): unknown {
   const d = new DataView(b.buffer, b.byteOffset, b.byteLength);
@@ -38,9 +64,15 @@ export function unpack(b: Uint8Array): unknown {
     if (c <= 0x9f) return array(c & 0x0f, depth);
     if (c <= 0xbf) return str(c & 0x1f);
     switch (c) {
-      case 0xc0: return null;
+      case 0xc0: throw new TypeError("msgpack: a nil");
       case 0xc2: return false;
       case 0xc3: return true;
+      case 0xc4: return bytes(d.getUint8(take(1)));
+      case 0xc5: return bytes(d.getUint16(take(2)));
+      case 0xc6: return bytes(d.getUint32(take(4)));
+      case 0xc7: return ext(d.getUint8(take(1)));
+      case 0xc8: return ext(d.getUint16(take(2)));
+      case 0xc9: return ext(d.getUint32(take(4)));
       case 0xca: return new Float(d.getFloat32(take(4)));
       case 0xcb: return new Float(d.getFloat64(take(8)));
       case 0xcc: return d.getUint8(take(1));
@@ -51,6 +83,11 @@ export function unpack(b: Uint8Array): unknown {
       case 0xd1: return d.getInt16(take(2));
       case 0xd2: return d.getInt32(take(4));
       case 0xd3: return big(d.getBigInt64(take(8)));
+      case 0xd4: return ext(1);
+      case 0xd5: return ext(2);
+      case 0xd6: return ext(4);
+      case 0xd7: return ext(8);
+      case 0xd8: return ext(16);
       case 0xd9: return str(d.getUint8(take(1)));
       case 0xda: return str(d.getUint16(take(2)));
       case 0xdb: return str(d.getUint32(take(4)));
@@ -59,11 +96,35 @@ export function unpack(b: Uint8Array): unknown {
       case 0xde: return map(d.getUint16(take(2)), depth);
       case 0xdf: return map(d.getUint32(take(4)), depth);
     }
-    throw new RangeError(`msgpack: 0x${c.toString(16)} is no form a host sends`);
+    throw new RangeError(`msgpack: 0x${c.toString(16)} is no msgpack form`);
   };
   const str = (n: number) => {
     const at = take(n);
-    return utf8.decode(b.subarray(at, at + n));
+    try {
+      return utf8.decode(b.subarray(at, at + n));
+    } catch {
+      throw new TypeError("msgpack: a str that is not UTF-8");
+    }
+  };
+  const bytes = (n: number) => {
+    const at = take(n);
+    return new Uint8Array(b.subarray(at, at + n));
+  };
+  // An extension of n bytes: a timestamp, 4, 8 or 12 of them, or another.
+  const ext = (n: number) => {
+    const type = d.getInt8(take(1));
+    const at = take(n);
+    if (type !== -1) return new Ext(type, new Uint8Array(b.subarray(at, at + n)));
+    let s: bigint, ns: number;
+    if (n === 4) [s, ns] = [BigInt(d.getUint32(at)), 0];
+    else if (n === 8) {
+      const x = d.getBigUint64(at);
+      [s, ns] = [x & 0x3ffffffffn, Number(x >> 34n)];
+    } else if (n === 12) [s, ns] = [d.getBigInt64(at + 4), d.getUint32(at)];
+    else throw new RangeError(`msgpack: a timestamp of ${n} bytes`);
+    if (ns >= 1e9) throw new RangeError(`msgpack: a timestamp's ${ns} nanoseconds`);
+    if (s > MAX || s < -MAX) throw new RangeError(`msgpack: a timestamp's ${s} seconds are beyond 2^53 - 1`);
+    return new Timestamp(Number(s), ns);
   };
   const array = (n: number, depth: number) => {
     if (depth === MAX_DEPTH) throw new RangeError("msgpack: nested too deep");
@@ -74,7 +135,7 @@ export function unpack(b: Uint8Array): unknown {
     const out: Record<string, unknown> = {};
     for (let k = 0; k < n; k++) {
       const key = value(depth + 1);
-      if (typeof key !== "string") throw new TypeError(`msgpack: a map key that is not a str: ${String(key)}`);
+      if (typeof key !== "string") throw new TypeError(`msgpack: a map key that is not a str: ${show(key)}`);
       if (Object.hasOwn(out, key)) throw new TypeError(`msgpack: the key ${key} twice`);
       Object.defineProperty(out, key, { value: value(depth + 1), enumerable: true, writable: true, configurable: true });
     }
@@ -88,7 +149,8 @@ export function unpack(b: Uint8Array): unknown {
 /**
  * A field's type (SPEC §3.3): `int`, `float`, `str` or `bool`; `[T]`, an
  * array of T; `{ "*": T }`, a map from strings to T; any other object, a
- * map with these fields.
+ * map with these fields. The same as a vector's `types`
+ * (conformance/README.md). No field is bin, a timestamp or an extension.
  */
 export type Type = "int" | "float" | "str" | "bool" | [Type] | { [field: string]: Type };
 
@@ -130,11 +192,16 @@ export const DETAIL: Record<string, Type> = {
   hover: { c: "int", r: "int", out: "bool" },
 };
 
+/** A map as `unpack` reads one: a plain object. */
+const isMap = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && Object.getPrototypeOf(v) === Object.prototype;
+
 /**
  * Where `v` is not of type `t`, or null when it is. A host sends no field
- * the spec does not give it, so a field `t` does not name is wrong too.
+ * the spec does not give it, so a field `t` does not name is wrong too;
+ * with `others` "skip", it is not checked, as a vector's `types` checks
+ * only the fields it names (conformance/README.md).
  */
-export function mistyped(v: unknown, t: Type, at = "body"): string | null {
+export function mistyped(v: unknown, t: Type, others: "fail" | "skip" = "fail", at = "body"): string | null {
   const is = (ok: boolean) => (ok ? null : `${at}: want ${JSON.stringify(t)}, got ${show(v)}`);
   if (t === "int") return is(typeof v === "number" && Number.isSafeInteger(v));
   if (t === "float") return is(v instanceof Float);
@@ -143,22 +210,34 @@ export function mistyped(v: unknown, t: Type, at = "body"): string | null {
   if (Array.isArray(t)) {
     if (!Array.isArray(v)) return is(false);
     for (const [i, x] of v.entries()) {
-      const bad = mistyped(x, t[0], `${at}[${i}]`);
+      const bad = mistyped(x, t[0], others, `${at}[${i}]`);
       if (bad) return bad;
     }
     return null;
   }
-  if (v === null || typeof v !== "object" || Array.isArray(v) || v instanceof Float) return is(false);
+  if (!isMap(v)) return is(false);
   for (const [k, x] of Object.entries(v)) {
-    const f = t["*"] ?? t[k];
-    if (f === undefined) return `${at}.${k}: a field SPEC does not give it`;
-    const bad = mistyped(x, f, `${at}.${k}`);
+    const f = t["*"] ?? (Object.hasOwn(t, k) ? (t as Record<string, Type>)[k] : undefined);
+    if (f === undefined) {
+      if (others === "skip") continue;
+      return `${at}.${k}: a field SPEC does not give it`;
+    }
+    const bad = mistyped(x, f, others, `${at}.${k}`);
     if (bad) return bad;
   }
   return null;
 }
 
-/** A decoded value as text, with its floats marked: `{"w":"float(720)"}`. */
+/** A decoded value as text, with its floats and what JSON has not marked:
+ * `{"w":"float(720)"}`, `bin(00ff)`, `timestamp(0, 0)`, `ext(5, 00)`. */
 export function show(v: unknown): string {
-  return JSON.stringify(v, (_, x) => (x instanceof Float ? `float(${x.value})` : x));
+  const hex = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  const text = JSON.stringify(v, (_, x) => {
+    if (x instanceof Float) return `float(${x.value})`;
+    if (x instanceof Uint8Array) return `bin(${hex(x)})`;
+    if (x instanceof Timestamp) return `timestamp(${x.seconds}, ${x.nanoseconds})`;
+    if (x instanceof Ext) return `ext(${x.type}, ${hex(x.data)})`;
+    return x;
+  });
+  return text ?? String(v);
 }

@@ -3,14 +3,14 @@
 
 import { expect, test, type CDPSession, type Page } from "@playwright/test";
 import { readVectors } from "../hotty.ts";
-import { show } from "../msgpack.ts";
+import { mistyped, show, type Type } from "../msgpack.ts";
 import { cmd, open, take, write, type Msg } from "./helpers.ts";
 
 type Expected = Record<string, unknown>;
 type Step = {
   send?: Record<string, string>;
   payload?: string;
-  reply?: Record<string, string> | null;
+  reply?: Record<string, string | Type> | null;
   inspect?: [string, string];
   expect?: Record<string, unknown> | null;
   pointer?: "move" | "down" | "up" | "wheel";
@@ -320,7 +320,11 @@ function define(vector: { name: string; requires?: string | string[]; steps: Ste
         const got = replies[0]!;
         const body = (got.body ?? {}) as Record<string, string>;
         for (const [k, v] of Object.entries(step.reply)) {
-          expect(k === "code" || k === "detail" ? body[k] : got.get(k), `${where}: ${k}`).toBe(v);
+          // `types` (conformance/README.md): the body decoded as an SDK
+          // reads it (`take`), and each field it has is of its type, but
+          // those `types` does not name.
+          if (k === "types") expect(mistyped(got.body, v as Type, "skip"), `${where}: types, in ${show(got.body)}`).toBeNull();
+          else expect(k === "code" || k === "detail" ? body[k] : got.get(k), `${where}: ${k}`).toBe(v);
         }
       } else if (step.inspect) {
         const [s, id] = step.inspect;

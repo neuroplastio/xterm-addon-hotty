@@ -355,8 +355,11 @@ test("a font or theme change re-lays out every surface, and the program hears `r
   await expect.poll(() => root.evaluate((el) => getComputedStyle(el).colorScheme)).toBe("light");
   let resize: unknown;
   await expect.poll(async () => (resize = (await take(page)).msgs.find((m) => m.get("e") === "resize")?.body) !== undefined).toBe(true);
-  // CSS pixels, floats even when whole (SPEC §9).
+  // CSS pixels, floats even when whole (SPEC §9): msgpack floats, which the
+  // reader keeps apart from ints (`take`), and the width a whole one here.
   expect(resize).toEqual({ w: expect.any(Float), h: expect.any(Float) });
+  const { w } = resize as { w: Float };
+  expect(Number.isInteger(w.value), `w ${w.value}`).toBe(true);
 });
 
 test("a browser's zoom keeps the font, and the program hears no `resize`", async ({ page }) => {

@@ -52,6 +52,11 @@ export class Writer {
         this.value(x);
       }
     } else {
+      // A map's keys are strings: a plain object's own, never its symbols.
+      // Anything else that is an object (a Map, a Date, bytes) is a bug
+      // where it was made, not an empty map.
+      const proto = v === null || typeof v !== "object" ? undefined : Object.getPrototypeOf(v);
+      if (proto !== Object.prototype && proto !== null) throw new TypeError(`${String(v)} is no value a body holds`);
       const fields = Object.entries(v as Body).filter((f): f is [string, Value] => f[1] != null);
       this.head(0x80, 0, 0xde, 0xdf, fields.length);
       for (const [k, x] of fields) {

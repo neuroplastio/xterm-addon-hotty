@@ -5,15 +5,18 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseSteps, stepAt } from "../../src/steps.ts";
 
-test("data-steps: one or two whole numbers from 0 up, 0 for none along that axis", () => {
+test("data-steps: one or two whole numbers from 0 to 2^53 − 1, 0 for none along that axis", () => {
   assert.deepEqual(parseSteps("20"), [20, 0]);
   assert.deepEqual(parseSteps("0 20"), [0, 20]);
   assert.deepEqual(parseSteps(" 8\t4 "), [8, 4]);
   assert.deepEqual(parseSteps("007"), [7, 0]);
+  // Up to 2^53 − 1 (SPEC §3.3), each count.
+  assert.deepEqual(parseSteps("9007199254740991"), [9007199254740991, 0]);
+  assert.deepEqual(parseSteps("0 9007199254740991"), [0, 9007199254740991]);
 });
 
 test("data-steps: anything else gives no steps, and so does none along either axis", () => {
-  for (const v of [null, "", " ", "2.5", "2.0", "-3", "+3", "1e3", "a", "1 2 3", "1,2", "0", "0 0", "99999999999999999999"]) {
+  for (const v of [null, "", " ", "2.5", "2.0", "-3", "+3", "1e3", "a", "1 2 3", "1,2", "0", "0 0", "9007199254740992", "1 9007199254740992", "9007199254740992 1", "99999999999999999999"]) {
     assert.equal(parseSteps(v), null, JSON.stringify(v));
   }
 });

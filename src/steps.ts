@@ -6,7 +6,7 @@
 
 /** The counts `data-steps` gives, along x and along y (0 for none along that
  * axis), or null for no steps: a value that is not one or two whole numbers
- * from 0 up, or one whose counts are both 0. */
+ * from 0 to 2^53 − 1 (SPEC §3.3), or one whose counts are both 0. */
 export function parseSteps(value: string | null): [number, number] | null {
   if (value === null) return null;
   const words = value.trim().split(/\s+/);

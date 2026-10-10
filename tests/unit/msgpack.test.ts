@@ -1,13 +1,14 @@
 // The bodies the addon writes (SPEC §3.3): each field in a form of its type,
-// read back by this repository's reader and by the reference Python client.
+// read back by this repository's reader and by the reference Python client;
+// and that reader, which reads them as an SDK does (SDK.md §3.9).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { HOTTY_DIR } from "../hotty.ts";
+import { HOTTY_DIR, readVectors } from "../hotty.ts";
 import { Float, float, Writer, type Body } from "../../src/msgpack.ts";
-import { Control, encode } from "../../src/wire.ts";
-import { unpack } from "../msgpack.ts";
+import { Control, decodeAll, encode } from "../../src/wire.ts";
+import { CAPS, DETAIL, ERROR, Ext, mistyped, Timestamp, unpack, type Type } from "../msgpack.ts";
 
 const hex = (b: Body) => Buffer.from(new Writer().body(b)).toString("hex");
 /** A one-field body `{"x": v}`, without its map's and its key's bytes. */
@@ -69,6 +70,16 @@ test("a field with nothing (undefined, null) is left out: no nil", () => {
   assert.throws(() => hex({ a: [1, null as unknown as number] }), TypeError);
 });
 
+test("a map is a plain object, keyed by its own strings; anything else is refused, not written", () => {
+  assert.throws(() => new Writer().body(null as unknown as Body), TypeError);
+  for (const x of [1n, new Map([[1, 2]]), new Date(0), Uint8Array.of(1), Symbol("x"), () => 1]) {
+    assert.throws(() => field(x as unknown as Body[string]), TypeError, String(x));
+  }
+  // A symbol is no field; an object with no prototype is a map.
+  assert.equal(hex({ a: 1, [Symbol("s")]: 2 } as Body), "81a16101");
+  assert.equal(hex(Object.assign(Object.create(null) as Body, { a: 1 })), "81a16101");
+});
+
 test("the buffer grows, and is reused", () => {
   const w = new Writer();
   const long = "∑".repeat(50_000);
@@ -92,6 +103,70 @@ test("the reader takes one map and nothing more, at most 32 deep", () => {
   assert.doesNotThrow(() => unpack(deep(32)));
   assert.throws(() => unpack(deep(33)), /too deep/);
 });
+
+test("the reader fails a body that holds, anywhere, what no host sends (SDK.md §3.9)", () => {
+  const fails: [string, RegExp][] = [
+    ["81a178c0", /a nil/], // {x: nil}
+    ["81a17891c0", /a nil/], // {x: [nil]}
+    ["81c0a178", /a nil/], // {nil: "x"}
+    ["8101a178", /not a str/], // {1: "x"}
+    ["81a17881c401787f", /not a str/], // {x: {bin "x": 127}}
+    ["81a178a2c328", /UTF-8/], // a broken sequence
+    ["81a2c328a178", /UTF-8/], // in a key
+    ["81a178a3eda080", /UTF-8/], // a surrogate
+    ["81a178a4f4908080", /UTF-8/], // past U+10FFFF
+    ["81a178cf0020000000000000", /2\^53/], // 2^53
+    ["81a17891d3ffe0000000000000", /2\^53/], // -(2^53)
+    ["81a178d5ff0000", /timestamp of 2 bytes/],
+    ["81a178d7ffee6b280000000000", /nanoseconds/], // 1e9 of them
+    ["81a178c70cff000000000020000000000000", /seconds/], // 2^53 of them
+  ];
+  for (const [b, why] of fails) assert.throws(() => unpack(Buffer.from(b, "hex")), why, b);
+});
+
+test("the reader reads bin, timestamps and extensions as an SDK does, and no field's type is one", () => {
+  // {b: bin 00ff, t: 1 s (4 bytes), u: 2 s 1 ns (8), v: -(2^53 − 1) s 999999999 ns (12), e: extension 5}
+  const b = "85a162c40200ffa174d6ff00000001a175d7ff0000000400000002a176c70cff3b9ac9ffffe0000000000001a165d40500";
+  const got = unpack(Buffer.from(b, "hex")) as Record<string, unknown>;
+  assert.deepEqual(got, {
+    b: Uint8Array.of(0, 255),
+    t: new Timestamp(1, 0),
+    u: new Timestamp(2, 1),
+    v: new Timestamp(-Number.MAX_SAFE_INTEGER, 999_999_999),
+    e: new Ext(5, Uint8Array.of(0)),
+  });
+  const types: Type[] = ["int", "float", "str", "bool", ["int"], { "*": "int" }, {}];
+  for (const v of Object.values(got)) for (const t of types) assert.notEqual(mistyped(v, t, "skip"), null, `${JSON.stringify(t)}`);
+});
+
+// The SDKs' decode vectors (conformance/README.md), each body read with its
+// reply's or event's type, fields the type does not name skipped: it reads
+// here exactly where an SDK fills something from it. The vectors about the
+// wire alone (decode.*) are not about bodies.
+const vectors = readVectors();
+const needs = (v: { requires?: string | string[] }) => (v.requires === undefined ? [] : [v.requires].flat());
+for (const v of vectors.decode.filter((v: { bodies?: unknown; requires?: string[] }) => v.bodies && !needs(v).some((r) => r.startsWith("decode.")))) {
+  test(`decode: ${v.name}`, async () => {
+    const commands = await decodeAll((v.seqs as string[]).join(""));
+    assert.equal(commands.length, v.messages.length);
+    commands.forEach((c, i) => {
+      const m = v.messages[i];
+      const [a, e] = [c.control.get("a"), c.control.get("e") ?? ""];
+      const type = a === "ev" ? DETAIL[e] : a === "err" ? ERROR : a === "ok" && c.control.get("re") === "q" ? CAPS : undefined;
+      if (!c.payload.length || type === undefined) return;
+      let reads = true;
+      try {
+        reads = mistyped(unpack(c.payload), type, "skip") === null;
+      } catch {
+        reads = false;
+      }
+      // What an SDK fills from a body (SDK.md §3.9).
+      const event = ["value", "checked", "fields", "link", "size", "fit_rows", "drag", "hover", "area"];
+      const filled = m.caps != null || m.reply?.code != null || m.reply?.detail != null || event.some((k) => m.event?.[k] != null);
+      assert.equal(reads, filled, `message ${i + 1}: ${a} ${e}`);
+    });
+  });
+}
 
 test("the reference Python client reads the details by their types", () => {
   const ev = (kind: string, detail: Body) => encode(new Control().set("a", "ev").set("s", "x").set("e", kind).set("t", "id"), new Writer().body(detail));

@@ -83,7 +83,7 @@ runs programs for whoever connects.
 | piece | file | what it does |
 | --- | --- | --- |
 | wire | `src/wire.ts` | OSC 7279 control parsing, chunk reassembly, base64, zlib through `DecompressionStream`, and reply encoding |
-| bodies | `src/msgpack.ts` | SPEC §3.3: replies' and events' bodies as msgpack maps, each field as its type; a float field (`scale`, `resize`'s `w` and `h`) goes in a `Float`, even when whole |
+| bodies | `src/msgpack.ts` | SPEC §3.3: replies' and events' bodies as msgpack maps, each field as its type; a float field (`scale`, `resize`'s `w` and `h`) goes in a `Float`, even when whole. A field with nothing is left out, never nil, and a map is a plain object, keyed by strings |
 | addon | `src/addon.ts` | OSC handler, replies through `term.input(…, false)`, placement, synchronized output, RIS, the alternate screen, zoom and theme, and keys a surface does not use, through xterm.js's own keyboard handling |
 | surface | `src/surface.ts` | one sandboxed iframe per surface; events, focus and key routing |
 | keys | `src/keys.ts` | SPEC §10.2, §10.4: key names, the keys in what the terminal sends, keymaps (`data-keys`), and the actions on a field's text |
@@ -193,11 +193,12 @@ runs programs for whoever connects.
   target, and nothing more is heard until every finger lifts. A long press,
   or Alt held at the touch, never drags. Any other touch pans as below.
 
-  An element that also has `data-steps="<x> [<y>]"` (whole numbers, 0 for
-  none along that axis) says where in it the pointer is: every event of a
-  drag of it carries `x` and `y`, the pointer's step along its border box
-  (`getBoundingClientRect`, as it is at each move), rounded to the nearest
-  and clamped to 0 and the count, wherever the pointer or the finger is.
+  An element that also has `data-steps="<x> [<y>]"` (whole numbers up to
+  2^53 − 1, 0 for none along that axis) says where in it the pointer is:
+  every event of a drag of it carries `x` and `y`, the pointer's step
+  along its border box (`getBoundingClientRect`, as it is at each move),
+  rounded to the nearest and clamped to 0 and the count, wherever the
+  pointer or the finger is.
   A `drag` also goes out each time the step changes. The counts are read
   when the drag starts; once the element has left the document, the step
   stays as it last was, as it does in a `dragend` that ends a drag early.
@@ -430,13 +431,16 @@ Measured 2026-09-29 in headless Chromium 153 (`bench/`):
 - the typecheck, the build and the declarations (what `npm pack` ships);
 - the unit tests (`node --test`: the wire, keys, the keys any focused
   element gives the program, decoding the reference Python client, the
-  msgpack bodies, as the reference client reads them, and the conformance
-  vectors' wire, keys, keymap and edit sections);
+  msgpack bodies, as the reference client reads them, the tests' reader
+  against the SDKs' decode vectors, and the conformance vectors' wire,
+  keys, keymap and edit sections);
 - the Playwright tests, against Chromium (and Firefox once installed:
   `npx playwright install firefox`):
   - the protocol and the conformance vectors. Every body the addon sends
-    is read with its fields' types (`tests/msgpack.ts`), and the vectors'
-    numbers keep theirs: `720.0` is a float, `720` an int;
+    is read as an SDK reads it, so a nil, a key that is not a string or an
+    int past 2^53 − 1 anywhere fails the test (SDK.md §3.9), and with its
+    fields' types (`tests/msgpack.ts`); the vectors' numbers keep theirs:
+    `720.0` is a float, `720` an int;
   - interaction, with `form.py` through the bridge;
   - text fields' keymaps beyond the vectors (`fields.spec.ts`);
   - the hostile page and the embedder's CSP;
