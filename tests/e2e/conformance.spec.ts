@@ -10,7 +10,7 @@ type Expected = Record<string, unknown>;
 type Step = {
   send?: Record<string, string>;
   payload?: string;
-  reply?: Record<string, string | Type> | null;
+  reply?: Record<string, string | Type | Expected> | null;
   inspect?: [string, string];
   expect?: Record<string, unknown> | null;
   pointer?: "move" | "down" | "up" | "wheel";
@@ -318,13 +318,18 @@ function define(vector: { name: string; requires?: string | string[]; steps: Ste
         }
         expect(replies.length, where).toBeGreaterThan(0);
         const got = replies[0]!;
-        const body = (got.body ?? {}) as Record<string, string>;
+        const body = (got.body ?? {}) as Record<string, unknown>;
         for (const [k, v] of Object.entries(step.reply)) {
           // `types` (conformance/README.md): the body decoded as an SDK
           // reads it (`take`), and each field it has is of its type, but
           // those `types` does not name.
           if (k === "types") expect(mistyped(got.body, v as Type, "skip"), `${where}: types, in ${show(got.body)}`).toBeNull();
-          else expect(k === "code" || k === "detail" ? body[k] : got.get(k), `${where}: ${k}`).toBe(v);
+          // `body`: the fields an `a=ok`'s body must have, equal as values,
+          // each of its type (a `Float` a float, as the vectors are read).
+          else if (k === "body") {
+            expect(got.get("a"), `${where}: a body is an a=ok's`).toBe("ok");
+            for (const [f, want] of Object.entries(v as Expected)) expect(body[f], `${where}: body ${f}, in ${show(got.body)}`).toStrictEqual(want);
+          } else expect(k === "code" || k === "detail" ? body[k] : got.get(k), `${where}: ${k}`).toBe(v);
         }
       } else if (step.inspect) {
         const [s, id] = step.inspect;

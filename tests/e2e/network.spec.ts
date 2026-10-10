@@ -46,7 +46,7 @@ test("images load when the host grants the origin and the document asks for it",
   expect((await leaks(page)).slice(before).sort()).toEqual(["/leak/net-asks/bg.png", "/leak/net-asks/pic.png"]);
 
   // The program's values stand whatever loaded (SPEC §7.1).
-  await send(page, { a: "q", n: "1" });
+  await send(page, { a: "q", n: "1", v: "0.2" });
   const caps = (await take(page)).msgs.find((m) => m.get("re") === "q")!.body as { net: object };
   expect(caps.net).toEqual({ "img-src": [o] });
 });
@@ -58,7 +58,7 @@ test("without the host's grant nothing is fetched, whatever the document asks", 
   await place(page, "x", `<base href="${o}/leak/net-ungranted/"><meta name="hotty-network" content="img-src ${o} https:"><img src="pic.png"><img src="${o}/leak/net-ungranted/abs.png">`);
   await page.waitForTimeout(800);
   expect((await leaks(page)).slice(before)).toEqual([]);
-  await send(page, { a: "q", n: "1" });
+  await send(page, { a: "q", n: "1", v: "0.2" });
   const caps = (await take(page)).msgs.find((m) => m.get("re") === "q")!.body as { net: object };
   expect(caps.net).toEqual({});
 });

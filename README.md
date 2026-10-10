@@ -18,7 +18,10 @@ installs it (`prepare`).
 It implements HOTTY 0.2, whose replies and events carry msgpack bodies
 (SPEC §3.3). 0.1.0-next.8 is the first release that does, and it breaks
 with programs written for 0.1, which read JSON bodies: programs and hosts
-update together.
+update together. A program's query names the versions it speaks
+(`a=q:n=1:v=0.2`, SPEC §4): the addon answers a query that lists 0.2 with
+its capabilities, and any other, a 0.1 program's with no `v` included, with
+`EVERSION`, so that such a program finds no host and falls back to text.
 
 ```ts
 import { Terminal } from "@xterm/xterm";

@@ -13,7 +13,7 @@ import { cell, cmd, open, send, surface, take, write } from "./helpers.ts";
 test.beforeEach(async ({ page }) => open(page));
 
 test("a=q answers with capabilities", async ({ page }) => {
-  await send(page, { a: "q", n: "7" });
+  await send(page, { a: "q", n: "7", v: "0.2" });
   const { msgs } = await take(page);
   expect(msgs).toHaveLength(1);
   expect(msgs[0]!.get("a")).toBe("ok");
@@ -30,8 +30,10 @@ test("a=q answers with capabilities", async ({ page }) => {
 });
 
 test("the reference client reads the replies, each field of its type", async ({ page }) => {
-  await send(page, { a: "q", n: "1" });
+  await send(page, { a: "q", n: "1", v: "0.2" });
   await send(page, { a: "place", s: "gone", c: "1" });
+  // A 0.1 program's query, which names no version (SPEC §4).
+  await send(page, { a: "q", n: "2" });
   const stream = await page.evaluate(() => window.hotty.sent.splice(0).join(""));
   // Each sequence, as the client's Decoder takes it: the reply to q has
   // capabilities only if each field it knows is of its type.
@@ -52,7 +54,7 @@ for seq in sys.stdin.buffer.read().split(b"\\x1b\\\\"):
 print(json.dumps(out))
 `;
   const out = JSON.parse(execFileSync("python3", ["-c", script], { input: stream, encoding: "utf8" }));
-  expect(out).toEqual([{ v: "0.2", scale: "float", cell: ["int", "int"] }, { code: "ENOENT" }]);
+  expect(out).toEqual([{ v: "0.2", scale: "float", cell: ["int", "int"] }, { code: "ENOENT" }, { code: "EVERSION" }]);
 });
 
 test("r=auto fits the content and reports its rows", async ({ page }) => {

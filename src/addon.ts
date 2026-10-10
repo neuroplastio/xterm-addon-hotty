@@ -103,6 +103,23 @@ export interface Inspected {
  * milliseconds: a wheel's notches, or a touchpad's scroll and its momentum. */
 const GESTURE_MS = 150;
 
+/** The HOTTY versions the addon speaks (SPEC §4), highest first. */
+const SPEAKS = ["0.2"];
+
+/**
+ * The version a query is answered in (SPEC §4): the highest the addon
+ * speaks of those its `v` lists, comma-separated. A version has one
+ * spelling (`major.minor`, no leading zeros), so an entry is one only
+ * exactly: `0.20` is not 0.2. None, as with no `v` at all, is `EVERSION`,
+ * its detail the versions the addon speaks (§3.6).
+ */
+function answerIn(v: string | undefined): string {
+  const listed = (v ?? "").split(",");
+  const shared = SPEAKS.find((s) => listed.includes(s));
+  if (shared === undefined) throw new Failure("EVERSION", SPEAKS.join(","));
+  return shared;
+}
+
 /** `drag` stands for `dragstart`, `drag` and `dragend` (SPEC §4, §9.1). */
 export const EVENTS = ["click", "change", "input", "submit", "press", "drag", "focus", "blur", "resize", "fit"];
 
@@ -314,7 +331,9 @@ export class HottyAddon implements ITerminalAddon {
     const c = cmd.control;
     switch (action) {
       case "q":
-        return { body: this.capabilities() };
+        // Answered at once, `late=1` or not: the addon is attached to its
+        // terminal from the start, so it holds no query (§4).
+        return { body: this.capabilities(answerIn(c.get("v"))) };
       case "doc": {
         const name = this.surfaceName(c);
         let s = this.surfaces.get(name);
@@ -398,14 +417,14 @@ export class HottyAddon implements ITerminalAddon {
     }
   }
 
-  /** The capabilities (SPEC §4), each field as its type. */
-  private capabilities(): Body {
+  /** The capabilities (SPEC §4) in version `v`, each field as its type. */
+  private capabilities(v: string): Body {
     const { cellW, cellH } = this.cell();
     const scale = window.devicePixelRatio || 1;
     // A limit is an int; an embedder's Infinity is none, and left out.
     const limit = (n: number) => (Number.isFinite(n) ? Math.min(Math.floor(n), Number.MAX_SAFE_INTEGER) : undefined);
     return {
-      v: "0.2",
+      v,
       ops: OPS,
       events: EVENTS,
       cell: { w: Math.round(cellW * scale), h: Math.round(cellH * scale) },

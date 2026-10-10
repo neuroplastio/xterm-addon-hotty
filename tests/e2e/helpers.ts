@@ -72,7 +72,7 @@ export function surface(page: Page, name: string): FrameLocator {
 }
 
 export async function cell(page: Page): Promise<{ w: number; h: number }> {
-  await send(page, { a: "q", n: "0" });
+  await send(page, { a: "q", n: "0", v: "0.2" });
   const { msgs } = await take(page);
   const caps = msgs.find((m) => m.get("re") === "q")!.body as { cell: { w: number; h: number }; scale: Float };
   return { w: caps.cell.w / caps.scale.value, h: caps.cell.h / caps.scale.value };
