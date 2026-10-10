@@ -1625,17 +1625,21 @@ export class Surface {
   /**
    * The cells an element's border box covers as the user sees it, scrolled
    * included (SPEC §9: `area`), counted from the surface's top left cell:
-   * whole, where it is clipped or scrolled away. An edge within half a
-   * device pixel of a cell's is on it: layout rounds positions to fractions
-   * of a pixel, and the user sees no less than a device pixel.
+   * whole, where it is clipped or scrolled away. An edge close enough to a
+   * cell's is on it: within half a device pixel, which the user cannot see,
+   * plus what layout loses on the way there. Layout keeps lengths in fixed
+   * units (1/64 px in Chromium, 1/60 in Firefox) and cuts each box's to
+   * them, so with a cell a fraction of a pixel, a row 29 boxes of one cell
+   * down starts up to 29/64 px short of its cell.
    */
   private areaOf(el: Element): Area {
     const b = el.getBoundingClientRect();
-    const tol = 0.5 / (this.frame.ownerDocument.defaultView?.devicePixelRatio || 1);
-    const c = Math.floor((b.left + tol) / this.cellW);
-    const r = Math.floor((b.top + tol) / this.cellH);
-    const right = Math.ceil((b.right - tol) / this.cellW);
-    const bottom = Math.ceil((b.bottom - tol) / this.cellH);
+    const half = 0.5 / (this.frame.ownerDocument.defaultView?.devicePixelRatio || 1);
+    const slack = (edge: number, cell: number) => half + Math.abs(edge / cell) / 60;
+    const c = Math.floor((b.left + slack(b.left, this.cellW)) / this.cellW);
+    const r = Math.floor((b.top + slack(b.top, this.cellH)) / this.cellH);
+    const right = Math.ceil((b.right - slack(b.right, this.cellW)) / this.cellW);
+    const bottom = Math.ceil((b.bottom - slack(b.bottom, this.cellH)) / this.cellH);
     return { c, r, w: Math.max(0, right - c), h: Math.max(0, bottom - r) };
   }
 

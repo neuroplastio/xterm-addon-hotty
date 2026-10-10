@@ -47,28 +47,32 @@ test.describe("where a cell is not a whole number of pixels", () => {
   // pixel, its CSS size is a fraction, and layout rounds the boxes it sizes.
   test.use({ deviceScaleFactor: 1.25 });
 
-  test("elements sized in cells report whole cells, however far down and across", async ({ page }) => {
-    await open(page);
-    expect(await page.evaluate(() => window.devicePixelRatio)).toBe(1.25);
-    // A column of thirty rows, and a row of boxes three cells wide.
-    const rows = Array.from({ length: 30 }, (_, i) => `<div id=r${i} data-on=click style="height:${H};width:calc(2*${W})">${i}</div>`).join("");
-    const boxes = Array.from({ length: 8 }, (_, i) => `<i id=c${i} data-on=click style="position:absolute;top:0;left:calc(${3 + 3 * i}*${W});width:calc(3*${W});height:${H}">${i}</i>`).join("");
-    await send(page, { a: "doc", s: "x", q: "2" }, `<style>body{margin:0}i{display:block;font-style:normal}</style>${rows}${boxes}`);
-    await send(page, { a: "place", s: "x", c: "30", r: "30", q: "2" });
-    const w = await surface(page, "x").locator("html").evaluate((el) => parseFloat(getComputedStyle(el).getPropertyValue("--hotty-cell-w")));
-    expect(Number.isInteger(w)).toBe(false);
-    await take(page);
-    for (const [id, area] of [
-      ["r0", { c: 0, r: 0, w: 2, h: 1 }],
-      ["r17", { c: 0, r: 17, w: 2, h: 1 }],
-      ["r29", { c: 0, r: 29, w: 2, h: 1 }],
-      ["c0", { c: 3, r: 0, w: 3, h: 1 }],
-      ["c7", { c: 24, r: 0, w: 3, h: 1 }],
-    ] as const) {
-      await surface(page, "x").locator(`#${id}`).click();
-      expect(await heard(page, 1), id).toEqual([["click", id, { area }]]);
-    }
-  });
+  // Each font its own fraction: DejaVu Sans Mono's lost a row 29 rows down
+  // (a runner's fallback font, not the demo's MesloLGS).
+  for (const font of ["MesloLGS Nerd Font Mono", "DejaVu Sans Mono"]) {
+    test(`elements sized in cells report whole cells, however far down and across (${font})`, async ({ page }) => {
+      await open(page, `?pty=0&font=${encodeURIComponent(font)}`);
+      expect(await page.evaluate(() => window.devicePixelRatio)).toBe(1.25);
+      // A column of thirty rows, and a row of boxes three cells wide.
+      const rows = Array.from({ length: 30 }, (_, i) => `<div id=r${i} data-on=click style="height:${H};width:calc(2*${W})">${i}</div>`).join("");
+      const boxes = Array.from({ length: 8 }, (_, i) => `<i id=c${i} data-on=click style="position:absolute;top:0;left:calc(${3 + 3 * i}*${W});width:calc(3*${W});height:${H}">${i}</i>`).join("");
+      await send(page, { a: "doc", s: "x", q: "2" }, `<style>body{margin:0}i{display:block;font-style:normal}</style>${rows}${boxes}`);
+      await send(page, { a: "place", s: "x", c: "30", r: "30", q: "2" });
+      const w = await surface(page, "x").locator("html").evaluate((el) => parseFloat(getComputedStyle(el).getPropertyValue("--hotty-cell-w")));
+      expect(Number.isInteger(w)).toBe(false);
+      await take(page);
+      for (const [id, area] of [
+        ["r0", { c: 0, r: 0, w: 2, h: 1 }],
+        ["r17", { c: 0, r: 17, w: 2, h: 1 }],
+        ["r29", { c: 0, r: 29, w: 2, h: 1 }],
+        ["c0", { c: 3, r: 0, w: 3, h: 1 }],
+        ["c7", { c: 24, r: 0, w: 3, h: 1 }],
+      ] as const) {
+        await surface(page, "x").locator(`#${id}`).click();
+        expect(await heard(page, 1), id).toEqual([["click", id, { area }]]);
+      }
+    });
+  }
 });
 
 test("a link that wraps reports the cells of its whole box: both lines", async ({ page }) => {
