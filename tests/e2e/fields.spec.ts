@@ -1,5 +1,6 @@
 // A text field's keys (SPEC §10.2, §10.4) beyond the shared vectors: keys
-// named from what the program would read in the encoding it enabled, the
+// offered as pressed first, then named from what the program would read in
+// the encoding it enabled, the
 // fields whose caret the browser hides, rows as a textarea wraps them, the
 // user's selection, and editing hosts.
 import { expect, test, type Page } from "@playwright/test";
@@ -20,7 +21,7 @@ async function inputs(page: Page): Promise<string[]> {
   return (await take(page)).msgs.filter((m) => m.get("e") === "input").map((m) => (m.json as { value: string }).value);
 }
 
-test("with the kitty keyboard protocol on, keys are named from its encoding, and the program still gets the rest in it", async ({ page }) => {
+test("with the kitty keyboard protocol on, a field has its keys, and the program still gets the rest in that encoding", async ({ page }) => {
   await field(page, `<input id=t data-on=input value=abc data-keys="Control+a=line-start">`, "t");
   await write(page, "\x1b[=1;1u"); // disambiguate: Control+a is CSI 97;5u
   await take(page);
@@ -104,6 +105,21 @@ test("an editing host selects with Shift and Control+a (SPEC §10.2)", async ({ 
   await page.keyboard.press("Control+a");
   await page.keyboard.type("z");
   expect(await text()).toBe("z");
+  expect((await take(page)).raw).toBe("");
+});
+
+test("a key that types no text is offered as pressed first, before xterm.js translates it (SPEC §10.4)", async ({ page }) => {
+  await field(page, `<input id=t data-on=input value="one two">`, "t");
+  await page.keyboard.press("End");
+  await page.keyboard.press("Control+Backspace");
+  await page.keyboard.press("Meta+ArrowLeft");
+  await page.keyboard.type("x");
+  await page.keyboard.press("Meta+Shift+ArrowRight");
+  await page.keyboard.type("y");
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.type("z");
+  await page.keyboard.press("Meta+Backspace");
+  expect(await inputs(page)).toEqual(["one ", "xone ", "xy", "z", ""]);
   expect((await take(page)).raw).toBe("");
 });
 

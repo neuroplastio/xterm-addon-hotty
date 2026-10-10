@@ -969,7 +969,10 @@ export class Surface {
   }
 
   /**
-   * A key in a text field. It is named as the program would read it: from
+   * A key in a text field, offered at most twice (SPEC §10.4). A key that
+   * types no text is offered first as pressed, named from the DOM's event,
+   * before xterm.js translates it (on a Mac, Option+ArrowLeft is ESC b to
+   * the program). Otherwise it is named as the program would read it: from
    * what xterm.js would send the program for it, in the encoding the
    * program enabled, read as SPEC §10.4 says. The field's keymap (the
    * default, then each `data-keys` from the root to the field) says what
@@ -978,9 +981,11 @@ export class Surface {
    */
   private fieldKey(e: KeyboardEvent, el: HTMLElement, multiline: boolean) {
     if (this.host.browserKey(e)) return; // the browser's: reload, zoom, …
-    const data = this.host.encodeKey(e);
-    const keys: InputKey[] = data === null ? [{ key: domKeyName(e), data: "" }] : inputKeys(data);
     const keymap = this.keymapOf(el, multiline);
+    const pressed = typesNoText(e) ? domKeyName(e) : null;
+    const first = pressed !== null && keymap.lookup(pressed) !== null;
+    const data = first ? "" : this.host.encodeKey(e);
+    const keys: InputKey[] = first ? [{ key: pressed, data: "" }] : data === null ? [{ key: domKeyName(e), data: "" }] : inputKeys(data);
     const uses = keys.map((k) => (k.key === null ? null : keymap.lookup(k.key)));
     // A move with Shift selects (§10.2).
     const extend = keys.map((k) => k.key !== null && keymap.selects(k.key));
@@ -2263,9 +2268,21 @@ function keyText(key: string): string {
   return v === "Space" ? " " : v;
 }
 
-/** A key's name from the DOM's event (SPEC §10.4), for a terminal that
- * cannot say what it would send: the modifiers, then the key's value, Shift
- * left out before a character. */
+/** A key that types no text (SPEC §10.4): one that is not a character, or a
+ * character with Control or Meta. A field is offered it as pressed first;
+ * typing comes only as the program would read it. */
+function typesNoText(e: KeyboardEvent): boolean {
+  if (e.getModifierState?.("AltGraph")) return false;
+  if ([...e.key].length === 1) return e.ctrlKey || e.metaKey;
+  return !NOT_KEYS.has(e.key);
+}
+
+/** Key values that are no key a field is offered: modifiers, dead keys, an
+ * input method's. */
+const NOT_KEYS = new Set(["Unidentified", "Dead", "Process", "Compose", "Shift", "Control", "Alt", "AltGraph", "Meta", "OS", "Super", "Hyper", "Fn", "FnLock", "CapsLock", "NumLock", "ScrollLock", "Symbol", "SymbolLock"]);
+
+/** A key's name from the DOM's event (SPEC §10.4): the modifiers, then the
+ * key's value, Shift left out before a character. */
 function domKeyName(e: KeyboardEvent): string {
   const char = [...e.key].length === 1;
   const mods = [e.ctrlKey && "Control", e.altKey && "Alt", e.metaKey && "Meta", e.shiftKey && !char && "Shift"].filter(Boolean);

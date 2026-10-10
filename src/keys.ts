@@ -481,6 +481,12 @@ export function resolve(multiline: boolean, ...values: string[]): Keymap {
     ["PageUp", "page-up"],
     ["PageDown", "page-down"],
     ["Control+a", "select-all"],
+    ["Meta+ArrowLeft", "line-start"],
+    ["Meta+ArrowRight", "line-end"],
+    ["Meta+ArrowUp", "input-start"],
+    ["Meta+ArrowDown", "input-end"],
+    ["Meta+Backspace", "delete-to-line-start"],
+    ["Meta+a", "select-all"],
     ["Enter", multiline ? "newline" : "submit"],
   ] as const)
     m.bind(k, a);

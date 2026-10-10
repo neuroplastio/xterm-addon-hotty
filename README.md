@@ -114,10 +114,13 @@ runs programs for whoever connects.
   selection works as usual. A right click leaves focus where the browser
   put it, so the context menu's Copy copies the surface's selection.
 - **A text field's keys** (SPEC §10.2, §10.4) are the program's keymap.
-  Each key goes through xterm.js's keyboard handling, with what it would
-  send the program kept back, and is named from that, so a field sees the
-  key the program would read, in the encoding the program enabled. The
-  field's keymap (the default, then each `data-keys` from the root to the
+  A key that types no text (not a character, or a character with Control
+  or Meta) is offered first as pressed, named from the DOM's event, before
+  xterm.js translates it: on a Mac, Option+Left is Alt+ArrowLeft, not the
+  ESC b the program would read. Otherwise the key goes through xterm.js's
+  keyboard handling, with what it would send the program kept back, and
+  is named from that, so a field sees the key the program would read, in
+  the encoding the program enabled. The field's keymap (the default, then each `data-keys` from the root to the
   field) decides: an action, which the addon does itself on the field's
   text with the editing commands, so the browser sends `input` and
   `change` as for typing; a character, which the browser types; or the
