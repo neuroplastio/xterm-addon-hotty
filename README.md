@@ -91,6 +91,7 @@ runs programs for whoever connects.
 | surface | `src/surface.ts` | one sandboxed iframe per surface; events, focus and key routing |
 | keys | `src/keys.ts` | SPEC §10.2, §10.4: key names, the keys in what the terminal sends, keymaps (`data-keys`), and the actions on a field's text |
 | deltas | `src/delta.ts` | SPEC §6: the ops and morph |
+| reveal and view | `src/view.ts` | SPEC §6.1, §9.5: the boxes that hold an element, scrolling it into view in them, and whether some of it is shown |
 | resources | `src/resources.ts`, `src/resolver.ts` | `cid:` as `blob:` URLs; sanitizing everything before it reaches a live document |
 | host stylesheet | `src/hostcss.ts` | §8 from `term.options` (theme, font, cell size), in a cascade layer: the palette, `--hotty-accent`, and controls, focus, links and selection in the terminal's colours |
 
@@ -330,18 +331,61 @@ runs programs for whoever connects.
     browser's own action may be the element's (a radio button's arrows).
     Where nothing can move that way, the key goes on to the program, as any
     key the surface does not use.
-  - Focus scrolls an element into view, as the browser does. The program
-    hears nothing of scrolling. A delta keeps the offsets, and so do hiding
+  - Focus scrolls an element into view, as the browser does, and so does
+    `reveal` (below). The program hears of scrolling only through `view`
+    (below). A delta keeps the offsets, and so do hiding
     and placing again; a new document starts at the top left. `r=auto` and
     `fit` measure the document with its root clipped, so the root's
     scrollbar does not make its lines wrap.
   - Where the page scrolls (`scroll: "page"`), the browser chains a
     gesture from the document to the page natively.
-- **Where an element is** (SPEC §9: `area` on `click` and `press`): the
-  cells of its bounding box in the frame, as the user sees it, scrolled
-  included, divided by the cell size. An edge within half a device pixel of
-  a cell's counts as on it, since layout rounds positions to fractions of a
-  pixel. A press with no id carries none.
+- **Where an element is** (SPEC §9: `area` on `click`, `press` and
+  `view`): the cells of its bounding box in the frame, as the user sees it,
+  scrolled included, divided by the cell size. An edge within half a device
+  pixel of a cell's counts as on it, since layout rounds positions to
+  fractions of a pixel. A press with no id carries none.
+- **Reveal** (SPEC §6.1: `op=reveal`, the capabilities' `ops` list it)
+  scrolls the boxes that hold the target, innermost first and the root
+  last, as `scrollIntoView` would with `start`, `end` or `nearest`, but
+  only those the document scrolls (`overflow: auto` or `scroll` along an
+  axis it asked for, and the root), and never one outside the document:
+  the browser's own `scrollIntoView` would scroll the box that shows the
+  window, xterm.js's and the page too, and `overflow: hidden` boxes. A box
+  holds the target where its containing blocks pass through it, as CSS has
+  it: an absolutely positioned element leaves the boxes between it and its
+  containing block. Each box's offset is worked out from where the target
+  will be once the boxes inside have moved, so all scroll at once, and the
+  document's `scroll-behavior: smooth` animates them. A surface not placed
+  scrolls nothing; one out of view is laid out unseen for it, as `r=auto`
+  measures, and keeps the offsets.
+- **View** (SPEC §9.5, the capabilities' `events` list it). The elements
+  with `view` in `data-on` and an id are in view where some of their border
+  box, as `getBoundingClientRect` has it (transforms included), lies inside
+  the window, within the viewport's scrollbars, and inside the scrollport
+  of each box that holds and clips it (overflow other than `visible`, or
+  paint containment), by more than half a device pixel. An element thinner
+  than that, an empty one, is in view where it lies inside, as a cell's top
+  edge is the cell's. One `display: none`, `visibility: hidden`, or inside
+  a closed `<details>` is not (`checkVisibility`). `end` is the root's
+  `scrollTop` within a pixel of its end. When:
+  - A check waits for the next frame, so a frame sends one `view` at most,
+    and it goes out only when what it carries differs from what the
+    program heard last. Each of these asks for one: a placement, a
+    document, a delta, a resource, the host stylesheet, an image, a
+    stylesheet or a font loading, a `<details>` toggled, a transition or
+    an animation ending, the root, the body or an element that reports
+    changing size (`ResizeObserver`), and an element that reports coming
+    into the window or leaving it (`IntersectionObserver`, with the window
+    as its margins).
+  - A scroll holds checks until every box it moves has come to rest: its
+    `scrollend`, or, where the browser has none, 150 ms without a scroll
+    (600 ms stands for a `scrollend` that never came). A gesture's
+    momentum and a smooth scroll send one `view`, where they end.
+  - Each `a=place` is a new placement, whose first `view` goes out once it
+    is drawn, whatever the program heard before; `a=hide` stops them, and
+    a placement out of view checks once it is shown again. A new document
+    sends one once laid out. A detached surface sends none.
+  - Two elements with one id report as one: the first in view.
 - **Cursor.** After `a=place` the cursor moves below the surface, as in the
   native host. xterm.js has no public API for that, so the addon uses the same
   private calls as the official image addon.

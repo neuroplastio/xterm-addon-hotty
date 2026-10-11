@@ -192,6 +192,7 @@ export const DETAIL: Record<string, Type> = {
   resize: { w: "float", h: "float" },
   fit: { r: "int" },
   hover: { c: "int", r: "int", out: "bool" },
+  view: { in: { "*": AREA }, end: "bool" },
 };
 
 /** A map as `unpack` reads one: a plain object. */

@@ -121,7 +121,7 @@ function answerIn(v: string | undefined): string {
 }
 
 /** `drag` stands for `dragstart`, `drag` and `dragend` (SPEC §4, §9.1). */
-export const EVENTS = ["click", "change", "input", "submit", "press", "drag", "focus", "blur", "resize", "fit"];
+export const EVENTS = ["click", "change", "input", "submit", "press", "drag", "focus", "blur", "resize", "fit", "view"];
 
 interface Placement {
   surface: Surface;
@@ -489,6 +489,8 @@ export class HottyAddon implements ITerminalAddon {
     // Fit (SPEC §5.2): the placement's too, from its own rows. The
     // placement keeps its size: re-placing is the program's to do.
     s.setFit(c.get("f") === "1" ? rows : null);
+    // View (SPEC §9.5): the placement's too; its first goes out once drawn.
+    s.beginPlacement();
 
     const buf = this.term.buffer.active;
     const col = buf.cursorX;
@@ -555,6 +557,7 @@ export class HottyAddon implements ITerminalAddon {
     p.marker?.dispose();
     p.surface.presses = false;
     p.surface.setFit(null);
+    p.surface.endPlacement();
     p.surface.park();
   }
 

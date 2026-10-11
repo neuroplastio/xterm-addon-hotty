@@ -16,15 +16,22 @@ export class DeltaError extends Error {
   }
 }
 
-export const OPS = ["morph", "inner", "replace", "append", "prepend", "before", "after", "remove", "attr", "unattr", "text", "var"];
+export const OPS = ["morph", "inner", "replace", "append", "prepend", "before", "after", "remove", "attr", "unattr", "text", "var", "reveal"];
+
+/** Where `reveal` puts its target in each box that holds it (SPEC §6.1):
+ * its top at the top, its bottom at the bottom, or "" for the nearest. */
+export type Reveal = "start" | "end" | "";
 
 export class Deltas {
   private readonly doc: Document;
   private readonly resolver: Resolver;
+  /** Scrolls an element into view: the surface's to do (`reveal`). */
+  private readonly revealer: (el: Element, where: Reveal) => void;
 
-  constructor(doc: Document, resolver: Resolver) {
+  constructor(doc: Document, resolver: Resolver, revealer: (el: Element, where: Reveal) => void) {
     this.doc = doc;
     this.resolver = resolver;
+    this.revealer = revealer;
   }
 
   /** Parses a fragment inert, cleaned and resolved. */
@@ -131,6 +138,14 @@ export class Deltas {
         const k = needKey();
         const name = k.startsWith("--") ? k : `--${k}`;
         (t as HTMLElement).style?.setProperty(name, payload);
+        return;
+      }
+      case "reveal": {
+        // It changes no node (SPEC §6.1). The payload is exact: `START` is
+        // another payload.
+        const t = find();
+        if (payload !== "" && payload !== "start" && payload !== "end") throw new DeltaError("EINVAL", `op=reveal takes start, end or nothing, not ${JSON.stringify(payload)}`);
+        this.revealer(t, payload);
         return;
       }
       default:

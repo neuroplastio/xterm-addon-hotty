@@ -185,9 +185,13 @@ for (const v of vectors.decode.filter((v: { bodies?: unknown; requires?: string[
       } catch (err) {
         fails = ["reader", (err as Error).message];
       }
-      // What an SDK fills from a body (SDK.md §3.9).
-      const event = ["value", "checked", "fields", "link", "size", "fit_rows", "drag", "hover", "area"];
-      const filled = m.caps != null || m.reply?.code != null || m.reply?.detail != null || event.some((k) => m.event?.[k] != null);
+      // What an SDK fills from a body (SDK.md §3.9): these from any event's,
+      // and a view's areas only from a view's. A message that lists none of
+      // them (a click's, read for a view) says nothing of the body.
+      const event = ["value", "checked", "fields", "link", "size", "fit_rows", "drag", "hover", "area", ...(e === "view" ? ["view"] : [])];
+      const listed = event.filter((k) => m.event !== undefined && k in m.event);
+      if (m.caps === undefined && m.reply === undefined && listed.length === 0) return;
+      const filled = m.caps != null || m.reply?.code != null || m.reply?.detail != null || listed.some((k) => m.event[k] != null);
       const at = `message ${i + 1}: ${a} ${e}${fails ? ` (${fails[1]})` : ""}`;
       assert.equal(fails === null, filled, at);
       if (fails && why) assert.equal(fails[0], why, at);

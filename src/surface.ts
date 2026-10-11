@@ -14,7 +14,8 @@
 import { LONG_PRESS_MS, panBlocked, Touch, type TouchBegin, touchPans } from "./touch.ts";
 import { parseSteps, stepAt } from "./steps.ts";
 import { CLIP, MEASURE, rootTouchAction, scrollCss, UNCLIPPED } from "./hostcss.ts";
-import { Deltas } from "./delta.ts";
+import { Deltas, type Reveal } from "./delta.ts";
+import { atEnd, rendered, reveal, shows, slack } from "./view.ts";
 import { Resolver } from "./resolver.ts";
 import type { Body, Value } from "./msgpack.ts";
 import { cspSources, intersect, parse, type Policy } from "./network.ts";
@@ -173,6 +174,15 @@ const SCROLL_ACTIONS: Record<string, KeyScroll> = {
 };
 
 type Axis = "x" | "y";
+
+/** Whether the browser says when a scroll comes to rest (`scrollend`). */
+const SCROLL_ENDS = typeof window !== "undefined" && "onscrollend" in window;
+/** Where it does not, a scroll is at rest once nothing has scrolled for
+ * this long (SPEC §9.5): a gesture's momentum scrolls every frame. */
+const SCROLL_REST_MS = 150;
+/** Where it does, this long without a scroll stands for a `scrollend` that
+ * never came. */
+const SCROLL_REST_LONG_MS = 600;
 
 /** A line of a key's scroll, in CSS pixels, as Chromium has it. */
 const LINE_PX = 40;
@@ -333,6 +343,27 @@ export class Surface {
   private wheelBox: Element | null = null;
   /** Some element may carry `CLIP`. */
   private clipping = false;
+  /** Placed (SPEC §5.2), from `a=place` until the placement goes: drawn or
+   * not, as the terminal scrolls it in and out of view (§5.4). */
+  private placed = false;
+  /** What the program heard last of which elements are in view (`view`,
+   * SPEC §9.5), as `checkView` compares it; null when it has heard nothing
+   * of this placement and document. */
+  private viewSent: string | null = null;
+  /** What is in view may have changed since the last check. */
+  private viewDirty = false;
+  /** The frame a check waits for. */
+  private viewFrame = 0;
+  /** What notices the elements that report whether they are in view
+   * changing size, or coming into the window or leaving it, whatever moved
+   * them, once one asks; and the elements they watch. */
+  private viewObservers: { size: ResizeObserver; window: IntersectionObserver } | null = null;
+  private viewWatched = new Set<Element>();
+  /** The boxes that scroll now (the document, for its root), until each
+   * comes to rest (`scrollend`), or, where the browser tells no rest, until
+   * none has moved for a while (`restTimer`). */
+  private moving = new Set<EventTarget>();
+  private restTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(name: string, host: SurfaceHost, hostCss: string, scheme: Scheme) {
     this.name = name;
@@ -386,7 +417,7 @@ export class Surface {
     this.css = hostCss;
     this.restyle();
     this.resolver = new Resolver(host.store);
-    this.deltas = new Deltas(doc, this.resolver);
+    this.deltas = new Deltas(doc, this.resolver, (el, where) => this.reveal(el, where));
     this.listen();
   }
 
@@ -394,7 +425,7 @@ export class Surface {
     this.css = css;
     this.restyle();
     if (this.frame.style.colorScheme !== scheme) this.frame.style.colorScheme = scheme;
-    this.refit(); // the cell size or the font
+    this.relayout(); // the cell size or the font
   }
 
   private restyle() {
@@ -440,7 +471,9 @@ export class Surface {
       this.doc.documentElement.scrollTo(0, 0);
       this.doc.body.scrollTo(0, 0);
     }
-    this.refit();
+    // A new document sends a view once it is laid out (SPEC §9.5).
+    this.viewSent = null;
+    this.relayout();
   }
 
   /** A delta (SPEC §6). On a detached surface, the controls it adds are
@@ -451,7 +484,7 @@ export class Surface {
     } finally {
       if (this.detachedState) this.sync();
       else this.clip();
-      this.refit();
+      this.relayout();
     }
   }
 
@@ -613,7 +646,183 @@ export class Surface {
 
   /** A resource changed (`a=res`, `a=del`): what names it resolves again. */
   refresh(names: Set<string>) {
-    if (this.resolver.refresh(names)) this.refit();
+    if (this.resolver.refresh(names)) this.relayout();
+  }
+
+  /** The layout may have changed: `fit` and `view` check it in the next
+   * frame drawn. */
+  private relayout() {
+    this.refit();
+    this.requestView();
+  }
+
+  // --- Reveal and view (SPEC §6.1, §9.5) -----------------------------------
+
+  /**
+   * A placement begins (`a=place`, SPEC §5.2). Its first `view` goes out
+   * once the document is laid out in it and drawn, whatever the program
+   * heard before (§9.5). Placing again, a new window, is a new placement.
+   */
+  beginPlacement() {
+    this.endPlacement();
+    this.placed = true;
+    this.requestView();
+  }
+
+  /** The placement goes (`a=hide`, `a=del`, its line gone): no `view` until
+   * the next (SPEC §9.5). */
+  endPlacement() {
+    this.placed = false;
+    this.viewSent = null;
+    this.viewDirty = false;
+    if (this.viewFrame) this.frame.ownerDocument.defaultView?.cancelAnimationFrame(this.viewFrame);
+    this.viewFrame = 0;
+    this.viewObservers?.size.disconnect();
+    this.viewObservers?.window.disconnect();
+    this.viewObservers = null;
+    this.viewWatched.clear();
+    this.moving.clear();
+    if (this.restTimer) clearTimeout(this.restTimer);
+    this.restTimer = null;
+  }
+
+  /**
+   * `reveal` (SPEC §6.1): scrolls the boxes that hold `el`, along the axes
+   * the document scrolls. A surface not placed has nothing in view to bring
+   * it into, and scrolls nothing. One placed but out of view (§5.4) is laid
+   * out unseen for it, as `r=auto` measures, and its offsets stay as it is
+   * hidden again (as hiding keeps them).
+   */
+  private reveal(el: Element, where: Reveal) {
+    if (!this.placed || !this.axes) return;
+    const box = this.box.style;
+    const out = box.display === "none";
+    const visibility = box.visibility;
+    if (out) Object.assign(box, { display: "block", visibility: "hidden" });
+    try {
+      reveal(el, where, this.axes, 0.5 / (this.frame.ownerDocument.defaultView?.devicePixelRatio || 1));
+    } finally {
+      if (out) Object.assign(box, { display: "none", visibility });
+    }
+  }
+
+  /**
+   * What is in view may have changed (SPEC §9.5): a check in the next frame
+   * drawn, once every scroll under way has come to rest. One check per
+   * frame, so one `view` at most. A placement out of view draws no frame,
+   * and checks once it is shown again.
+   */
+  private requestView() {
+    if (!this.placed) return;
+    this.viewDirty = true;
+    if (this.viewFrame || this.moving.size || this.box.style.display === "none") return;
+    this.viewFrame = this.frame.ownerDocument.defaultView!.requestAnimationFrame(() => {
+      this.viewFrame = 0;
+      this.checkView();
+    });
+  }
+
+  /** A box scrolled (SPEC §9.5): what is in view waits for it to rest. */
+  private viewScrolled(e: Event) {
+    if (!this.placed || !e.target) return;
+    this.moving.add(e.target);
+    this.viewDirty = true;
+    if (this.restTimer) clearTimeout(this.restTimer);
+    this.restTimer = setTimeout(() => this.rested(), SCROLL_ENDS ? SCROLL_REST_LONG_MS : SCROLL_REST_MS);
+  }
+
+  /** A box came to rest (`scrollend`): once all have, what is in view is
+   * checked. */
+  private scrollEnded(e: Event) {
+    if (e.target && this.moving.delete(e.target) && !this.moving.size) this.rested();
+  }
+
+  private rested() {
+    if (this.restTimer) clearTimeout(this.restTimer);
+    this.restTimer = null;
+    this.moving.clear();
+    this.requestView();
+  }
+
+  /**
+   * `view` (SPEC §9.5), if what it would carry changed since the program
+   * last heard it: every element with `view` in its `data-on` and an id
+   * that is in view, with its area, and `end`. A document with none that
+   * asks sends none. A detached surface sends none (§5.5).
+   */
+  private checkView() {
+    if (!this.placed || !this.viewDirty || this.moving.size || this.box.style.display === "none") return;
+    this.viewDirty = false;
+    if (this.detachedState) return;
+    const asks = Array.from(this.doc.querySelectorAll("[data-on~=view][id]")).filter((el) => el.id !== "");
+    this.watchViews(asks);
+    if (!asks.length) {
+      this.viewSent = null;
+      return;
+    }
+    const inView: Record<string, Area> = Object.create(null);
+    const shown = this.shownRect();
+    const dpr = this.frame.ownerDocument.defaultView?.devicePixelRatio || 1;
+    const tol = (edge: number, axis: Axis) => slack(edge, axis === "x" ? this.cellW : this.cellH, dpr);
+    for (const el of asks) {
+      // Two elements of one id are one handle: the first in view stands.
+      if (el.id in inView || !el.id.isWellFormed() || !rendered(el) || !shows(el, shown, tol)) continue;
+      inView[el.id] = this.areaOf(el);
+    }
+    const end = atEnd(this.doc, this.axes);
+    const key = JSON.stringify([end, Object.keys(inView).sort().map((id) => [id, inView[id]])]);
+    if (key === this.viewSent) return;
+    this.viewSent = key;
+    this.emit("view", "", { in: inView, end });
+  }
+
+  /** The placement's window (SPEC §5.2) within the viewport, without its
+   * scrollbars, in the frame's pixels: what the user can see of the
+   * document. */
+  private shownRect() {
+    const root = this.doc.documentElement;
+    const left = Math.round(this.win.x * this.cellW);
+    const top = this.win.y * this.cellH;
+    return {
+      left,
+      top,
+      right: Math.min(root.clientWidth, left + Math.round(this.win.w * this.cellW)),
+      bottom: Math.min(root.clientHeight, top + this.win.h * this.cellH),
+    };
+  }
+
+  /** The observers watch the elements that ask, as deltas add and remove
+   * them, and the root and the body, from the first that asks in the
+   * placement. */
+  private watchViews(asks: Element[]) {
+    if (!asks.length && !this.viewObservers) return;
+    if (!this.viewObservers) {
+      // Coming into the window or leaving it: the window, as margins inside
+      // the surface's viewport (SPEC §5.2).
+      const w = this.win;
+      const [left, top] = [Math.round(w.x * this.cellW), w.y * this.cellH];
+      const [right, bottom] = [Math.round(this.cols * this.cellW) - left - Math.round(w.w * this.cellW), (this.rows - w.y - w.h) * this.cellH];
+      this.viewObservers = {
+        size: new ResizeObserver(() => this.requestView()),
+        window: new IntersectionObserver(() => this.requestView(), { root: this.doc, rootMargin: `${-top}px ${-right}px ${-bottom}px ${-left}px` }),
+      };
+      this.viewObservers.size.observe(this.doc.documentElement);
+      this.viewObservers.size.observe(this.doc.body);
+    }
+    const o = this.viewObservers;
+    const now = new Set(asks);
+    for (const el of this.viewWatched) {
+      if (now.has(el)) continue;
+      o.size.unobserve(el);
+      o.window.unobserve(el);
+      this.viewWatched.delete(el);
+    }
+    for (const el of now) {
+      if (this.viewWatched.has(el)) continue;
+      o.size.observe(el);
+      o.window.observe(el);
+      this.viewWatched.add(el);
+    }
   }
 
   /** The surface is `cols`×`rows` cells, and the box shows `win` of it:
@@ -647,6 +856,7 @@ export class Surface {
     this.box.style.visibility = "visible";
     this.box.style.display = "block";
     if (this.fitDirty) this.refit(); // what changed while out of view
+    if (this.viewDirty) this.requestView();
   }
 
   /** Out of view (its line left the screen): a drag under way ends
@@ -665,6 +875,7 @@ export class Surface {
 
   destroy() {
     this.setFit(null);
+    this.endPlacement();
     this.dropDrag();
     this.dropAlt();
     if (this.settling) clearTimeout(this.settling);
@@ -1673,20 +1884,15 @@ export class Surface {
    * The cells an element's border box covers as the user sees it, scrolled
    * included (SPEC §9: `area`), counted from the surface's top left cell:
    * whole, where it is clipped or scrolled away. An edge close enough to a
-   * cell's is on it: within half a device pixel, which the user cannot see,
-   * plus what layout loses on the way there. Layout keeps lengths in fixed
-   * units (1/64 px in Chromium, 1/60 in Firefox) and cuts each box's to
-   * them, so with a cell a fraction of a pixel, a row 29 boxes of one cell
-   * down starts up to 29/64 px short of its cell.
+   * cell's (`slack`) is on it.
    */
   private areaOf(el: Element): Area {
     const b = el.getBoundingClientRect();
-    const half = 0.5 / (this.frame.ownerDocument.defaultView?.devicePixelRatio || 1);
-    const slack = (edge: number, cell: number) => half + Math.abs(edge / cell) / 60;
-    const c = Math.floor((b.left + slack(b.left, this.cellW)) / this.cellW);
-    const r = Math.floor((b.top + slack(b.top, this.cellH)) / this.cellH);
-    const right = Math.ceil((b.right - slack(b.right, this.cellW)) / this.cellW);
-    const bottom = Math.ceil((b.bottom - slack(b.bottom, this.cellH)) / this.cellH);
+    const dpr = this.frame.ownerDocument.defaultView?.devicePixelRatio || 1;
+    const c = Math.floor((b.left + slack(b.left, this.cellW, dpr)) / this.cellW);
+    const r = Math.floor((b.top + slack(b.top, this.cellH, dpr)) / this.cellH);
+    const right = Math.ceil((b.right - slack(b.right, this.cellW, dpr)) / this.cellW);
+    const bottom = Math.ceil((b.bottom - slack(b.bottom, this.cellH, dpr)) / this.cellH);
     return { c, r, w: Math.max(0, right - c), h: Math.max(0, bottom - r) };
   }
 
@@ -1747,11 +1953,18 @@ export class Surface {
     d.addEventListener("dragstart", (e) => e.preventDefault(), true);
     d.addEventListener("wheel", (e) => this.onWheel(e), { capture: true, passive: false });
     d.addEventListener("scroll", (e) => this.onScroll(e), true);
+    // What is in view waits for a scroll to rest (SPEC §9.5).
+    d.addEventListener("scroll", (e) => this.viewScrolled(e), true);
+    d.addEventListener("scrollend", (e) => this.scrollEnded(e), true);
     // An image or a stylesheet that loads late, a resource's or one fetched
     // from the network (SPEC §7.1, §7.2), and a font: the height may change.
-    d.addEventListener("load", () => this.refit(), true);
-    d.addEventListener("error", () => this.refit(), true);
-    d.fonts.addEventListener("loadingdone", () => this.refit());
+    d.addEventListener("load", () => this.relayout(), true);
+    d.addEventListener("error", () => this.relayout(), true);
+    d.fonts.addEventListener("loadingdone", () => this.relayout());
+    // What the user does that moves elements without resizing the root or
+    // the body: a <details> opened inside a box of fixed height, a
+    // transition or an animation that ends (SPEC §9.5).
+    for (const kind of ["toggle", "transitionend", "animationend"]) d.addEventListener(kind, () => this.requestView(), true);
     // A touch drag is the terminal's, as a wheel is (SPEC §9); taps and long
     // presses stay the surface's. Where the page scrolls, the browser
     // scrolls it from here, as from the cells, but for a drag on an element
