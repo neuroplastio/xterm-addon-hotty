@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { HOTTY_DIR } from "../hotty.ts";
-import { Assembler, Control, decodeAll, encode, text, CHUNK } from "../../src/wire.ts";
+import { deflateSync } from "node:zlib";
+import { Assembler, Control, decodeAll, encode, inflate, text, CHUNK, MAX_COMMAND } from "../../src/wire.ts";
 
 const CLIENT = join(HOTTY_DIR, "clients", "python");
 
@@ -32,6 +33,27 @@ test("a chunked command interrupted by another command is reported, and the next
   const got = await a.feed("a=del:s=x");
   assert.equal(got[0]!.kind, "invalid");
   assert.equal(got[1]!.kind, "command");
+});
+
+test("zlib past the limit is refused, and inflating stops there", async () => {
+  const bomb = deflateSync(new Uint8Array(4096), { level: 9 });
+  assert.equal((await inflate(bomb, 4096)).length, 4096);
+  await assert.rejects(inflate(bomb, 4095), /command too large/);
+  const big = Buffer.from(deflateSync(new Uint8Array(MAX_COMMAND + 1), { level: 9 })).toString("base64");
+  const [got] = await new Assembler().feed(`a=res:id=x:o=z;${big}`);
+  assert.equal(got!.kind, "invalid");
+});
+
+test("a chunked command past the limit is dropped whole, and reported once", async () => {
+  const a = new Assembler();
+  const chunk = "A".repeat(CHUNK);
+  const kinds: string[] = [];
+  const feed = async (data: string) => kinds.push(...(await a.feed(data)).map((d) => d.kind));
+  await feed(`a=doc:s=x:m=1;${chunk}`);
+  for (let i = 0; i < MAX_COMMAND / CHUNK + 2; i++) await feed(`m=1;${chunk}`);
+  await feed(`m=0;${chunk}`);
+  await feed("a=del:s=x");
+  assert.deepEqual(kinds.filter((k) => k !== "partial"), ["invalid", "command"]);
 });
 
 test("decodes what the reference Python client sends: zlib, chunks, UTF-8", async () => {

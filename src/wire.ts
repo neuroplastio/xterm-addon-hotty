@@ -7,7 +7,7 @@
 export const OSC = 7279;
 /** Largest base64 chunk a host sends (VTE ignores longer strings). */
 export const CHUNK = 4096;
-/** Largest reassembled command, in base64 bytes. */
+/** Largest reassembled command, in base64 bytes, and its payload once decoded. */
 export const MAX_COMMAND = 16 << 20;
 
 /** `key=value` pairs separated by `:`, in order. */
@@ -83,6 +83,8 @@ export type Decoded =
  */
 export class Assembler {
   private partial: { control: Control; b64: string[]; size: number } | null = null;
+  /** A chunked command was dropped as too large: its further chunks are dropped too, until its last. */
+  private dropping = false;
 
   /** Feeds the data of one OSC 7279 sequence. */
   feed(data: string): Decoded[] | Promise<Decoded[]> {
@@ -97,12 +99,22 @@ export class Assembler {
       return [{ kind: "invalid", reason: String((e as Error).message) }];
     }
     const more = control.get("m") === "1";
+    const dropping = this.dropping;
+    this.dropping = false;
+    if (dropping && !this.partial && control.get("m") !== undefined && control.onlyChunkKeys()) {
+      // A further chunk of a command dropped as too large.
+      this.dropping = more;
+      return [{ kind: "partial" }];
+    }
     const partial = this.partial;
     this.partial = null;
     if (partial && control.onlyChunkKeys()) {
       partial.b64.push(b64);
       partial.size += b64.length;
-      if (partial.size > MAX_COMMAND) return [{ kind: "invalid", reason: "command too large" }];
+      if (partial.size > MAX_COMMAND) {
+        this.dropping = more;
+        return [{ kind: "invalid", reason: "command too large" }];
+      }
       if (more) {
         this.partial = partial;
         return [{ kind: "partial" }];
@@ -159,10 +171,31 @@ export function toBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
-/** zlib (RFC 1950), which `DecompressionStream` calls "deflate". */
-export async function inflate(bytes: Uint8Array): Promise<Uint8Array> {
-  const stream = new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream("deflate"));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+/**
+ * zlib (RFC 1950), which `DecompressionStream` calls "deflate". More than max
+ * bytes out is refused, and inflating stops there.
+ */
+export async function inflate(bytes: Uint8Array, max = MAX_COMMAND): Promise<Uint8Array> {
+  const reader = new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream("deflate")).getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > max) {
+      void reader.cancel().catch(() => {});
+      throw new Error("command too large");
+    }
+    parts.push(value);
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
 }
 
 const utf8 = new TextDecoder("utf-8", { fatal: false });
