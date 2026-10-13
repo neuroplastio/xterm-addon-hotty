@@ -2,7 +2,9 @@
 // An element that opts in to drags may divide its width and its height into
 // steps with `data-steps="<x> [<y>]"`; each event of a drag of it then says
 // at which step the pointer is, measured against its border box wherever the
-// pointer is, and a drag goes out each time the step changes.
+// pointer is, and a drag goes out each time the step changes. A drag's
+// target, t, with drop in its data-on and data-steps says where in it the
+// pointer is as well, tx and ty, measured the same way against t (SPEC §9.1).
 
 /** The counts `data-steps` gives, along x and along y (0 for none along that
  * axis), or null for no steps: a value that is not one or two whole numbers

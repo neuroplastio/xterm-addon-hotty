@@ -18,7 +18,7 @@ test("a=q answers with capabilities", async ({ page }) => {
   expect(msgs).toHaveLength(1);
   expect(msgs[0]!.get("a")).toBe("ok");
   expect(msgs[0]!.get("n")).toBe("7");
-  const caps = msgs[0]!.body as { v: string; ops: string[]; cell: { w: number; h: number }; scale: Float; scroll: boolean; host: string; version: string; limits: Record<string, number>; count: boolean };
+  const caps = msgs[0]!.body as { v: string; ops: string[]; cell: { w: number; h: number }; scale: Float; scroll: boolean; host: string; version: string; limits: Record<string, number>; count: boolean; drop: boolean };
   expect(caps.v).toBe("0.2");
   expect(caps.scroll).toBe(true);
   expect(caps.host).toBe(HOST);
@@ -29,6 +29,8 @@ test("a=q answers with capabilities", async ({ page }) => {
   expect(caps.limits.message).toBe(MAX_COMMAND);
   // A repeated click carries its count (SPEC §9).
   expect(caps.count).toBe(true);
+  // A drop-only t, and where in t a drag is (SPEC §9.1).
+  expect(caps.drop).toBe(true);
   // A float even when whole (SPEC §3.3, §4): 1.0 at this page's scale.
   expect(caps.scale).toStrictEqual(new Float(1));
 });

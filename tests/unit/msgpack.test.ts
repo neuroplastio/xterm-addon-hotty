@@ -232,7 +232,7 @@ print(json.dumps(out))
   const out = JSON.parse(execFileSync("python3", ["-c", script], { input: stream, encoding: "utf8" }));
   assert.deepEqual(out, [
     ["float", "float"],
-    { c: -2, r: 300, keys: ["shift", "ctrl"], x: 3, y: null },
+    { c: -2, r: 300, keys: ["shift", "ctrl"], x: 3, y: null, tx: null, ty: null },
     [["next", null], { c: 0, r: 1, w: 10, h: 2 }],
     [true, null],
     { q: "hi", theme: "dark" },

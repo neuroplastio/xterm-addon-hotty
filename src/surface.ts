@@ -112,8 +112,8 @@ export interface SurfaceHost {
 type Control = "none" | "text" | "textarea" | "date" | "select" | "activatable";
 
 /** A drag under way (SPEC §9.1): the pointer it holds, the element that
- * started it, its steps if it has them, and the target, cell, keys and step
- * the program heard of last. */
+ * started it, its steps if it has them, and the target, cell, keys, step and
+ * step in the target the program heard of last. */
 interface Drag {
   pointer: number;
   start: string;
@@ -123,6 +123,7 @@ interface Drag {
   r: number;
   keys: string[];
   step: Step;
+  tstep: TargetStep;
 }
 
 /** The steps of the element a drag started on (SPEC §9.1): the element, and
@@ -136,6 +137,10 @@ interface Steps {
 /** Where in the dragged element the pointer is, in its steps: `x` and `y`,
  * each only along an axis it has steps on. */
 type Step = { x?: number; y?: number };
+
+/** Where in a drag's target the pointer is, in the target's steps: `tx` and
+ * `ty`, each only along an axis it has steps on. */
+type TargetStep = { tx?: number; ty?: number };
 
 /** The theme's colour scheme, as the host stylesheet declares it. */
 export type Scheme = "dark" | "light";
@@ -1545,7 +1550,7 @@ export class Surface {
     if (!id) return;
     const [c, r] = this.cellOf(e);
     const keys = keysOf(e);
-    const d: Drag = { pointer: e.pointerId, start: id, steps: stepsOf(start!), target: id, c, r, keys, step: {} };
+    const d: Drag = { pointer: e.pointerId, start: id, steps: stepsOf(start!), target: id, c, r, keys, step: {}, tstep: {} };
     d.step = this.stepIn(d, e.clientX, e.clientY);
     this.drag = d;
     this.emit("dragstart", id, { c, r, keys, ...d.step });
@@ -1569,12 +1574,21 @@ export class Surface {
    * changes more than one. */
   private moveDrag(d: Drag, x: number, y: number, keys: string[]) {
     const [c, r] = this.cellAt(x, y);
-    const target = this.dragTarget(this.elementAtPoint(x, y, c, r));
+    const t = this.dragTarget(this.elementAtPoint(x, y, c, r));
+    const target = t?.getAttribute("id") ?? "";
     const step = this.stepIn(d, x, y);
-    if (target !== d.target || (target === "" && (c !== d.c || r !== d.r)) || step.x !== d.step.x || step.y !== d.step.y) {
-      this.emit("drag", target, { c, r, keys, ...step });
+    const tstep = stepInTarget(t, x, y);
+    if (
+      target !== d.target ||
+      (target === "" && (c !== d.c || r !== d.r)) ||
+      step.x !== d.step.x ||
+      step.y !== d.step.y ||
+      tstep.tx !== d.tstep.tx ||
+      tstep.ty !== d.tstep.ty
+    ) {
+      this.emit("drag", target, { c, r, keys, ...step, ...tstep });
     }
-    Object.assign(d, { target, c, r, keys, step });
+    Object.assign(d, { target, c, r, keys, step, tstep });
   }
 
   /**
@@ -1601,14 +1615,21 @@ export class Surface {
     if (!d || e.pointerId !== d.pointer || e.button !== 0) return;
     this.drag = null;
     const [c, r] = this.cellOf(e);
-    const at = this.elementAt(e, c, r);
-    const target = this.dragTarget(at);
-    this.emit("dragend", target, { c, r, keys: keysOf(e), ...this.stepIn(d, e.clientX, e.clientY) });
     // The browser's click goes where the capture was (the root), or to
     // where the press and the release meet: the drag reports its own.
+    this.endDrag(d, e.clientX, e.clientY, c, r, this.elementAt(e, c, r), keysOf(e));
+  }
+
+  /** A drag released at (x, y) of the document, cell (c, r), over `at`:
+   * `dragend`, then the click it is where it began (SPEC §9.1): where the
+   * nearest element that opts in to drags is the one it started on, whatever
+   * its target, a drop-only element inside it included. */
+  private endDrag(d: Drag, x: number, y: number, c: number, r: number, at: Element | null, keys: string[]) {
+    const t = this.dragTarget(at);
+    this.emit("dragend", t?.getAttribute("id") ?? "", { c, r, keys, ...this.stepIn(d, x, y), ...stepInTarget(t, x, y) });
     this.dragReleased = true;
     setTimeout(() => (this.dragReleased = false), 0);
-    if (target === d.start && at) this.reportClick(ancestry(at));
+    if (at && this.draggedAt(at) === d.start) this.reportClick(ancestry(at));
   }
 
   /** The browser took the pointer away before the release. */
@@ -1652,10 +1673,20 @@ export class Surface {
     return this.elementAtPoint(e.clientX, e.clientY, c, r);
   }
 
-  /** A drag's target: the nearest element with an id and `drag` in its
-   * `data-on`, from `el` outward; "" where there is none. */
-  private dragTarget(el: Element | null): string {
+  /** A drag's target, t: the nearest element with an id and `drag` or
+   * `drop` in its `data-on`, from `el` outward; null where there is none. */
+  private dragTarget(el: Element | null): Element | null {
     for (let n = el; n; n = n.parentElement) {
+      if (n.getAttribute("id") && (listens(n, "drag") || listens(n, "drop"))) return n;
+    }
+    return null;
+  }
+
+  /** The id of the nearest element with an id and `drag` in its `data-on`,
+   * from `el` outward: a drag that ends where this is the element it began
+   * on is a click (SPEC §9.1). "" where there is none. */
+  private draggedAt(el: Element): string {
+    for (let n: Element | null = el; n; n = n.parentElement) {
       const id = n.getAttribute("id");
       if (id && listens(n, "drag")) return id;
     }
@@ -1758,7 +1789,7 @@ export class Surface {
     // The touch's own events have its start as their target, so the
     // press's path is the touched element's.
     this.reportPress(e);
-    const d: Drag = { pointer: NaN, start: id, steps: stepsOf(start!), target: id, c, r, keys, step: {} };
+    const d: Drag = { pointer: NaN, start: id, steps: stepsOf(start!), target: id, c, r, keys, step: {}, tstep: {} };
     d.step = this.stepIn(d, begin.x, begin.y);
     this.drag = d;
     this.emit("dragstart", id, { c, r, keys, ...d.step });
@@ -1782,12 +1813,7 @@ export class Surface {
     if (!d) return;
     this.drag = null;
     const [c, r] = this.cellAt(x, y);
-    const at = this.elementAtPoint(x, y, c, r);
-    const target = this.dragTarget(at);
-    this.emit("dragend", target, { c, r, keys: keysOf(e), ...this.stepIn(d, x, y) });
-    this.dragReleased = true;
-    setTimeout(() => (this.dragReleased = false), 0);
-    if (target === d.start && at) this.reportClick(ancestry(at));
+    this.endDrag(d, x, y, c, r, this.elementAtPoint(x, y, c, r), keysOf(e));
   }
 
   /** The surface's cell at (x, y) of the document, counting on past its
@@ -2370,6 +2396,20 @@ function listens(el: Element, what: string): boolean {
 function stepsOf(el: Element): Steps | null {
   const n = parseSteps(el.getAttribute("data-steps"));
   return n && { el, x: n[0], y: n[1] };
+}
+
+/** Where (x, y) of the document is in `t`, a drag's target, in t's steps
+ * (SPEC §9.1): `tx` and `ty`, measured against its border box where the user
+ * sees it now, by the counts it has now. None when it has no `drop` in its
+ * `data-on`, or no steps. */
+function stepInTarget(t: Element | null, x: number, y: number): TargetStep {
+  const n = t && listens(t, "drop") && parseSteps(t.getAttribute("data-steps"));
+  if (!t || !n) return {};
+  const box = t.getBoundingClientRect();
+  const step: TargetStep = {};
+  if (n[0]) step.tx = stepAt(x - box.left, box.width, n[0]);
+  if (n[1]) step.ty = stepAt(y - box.top, box.height, n[1]);
+  return step;
 }
 
 /** `el` and its ancestors, as an event's path would have them. */

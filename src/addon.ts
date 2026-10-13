@@ -434,6 +434,7 @@ export class HottyAddon implements ITerminalAddon {
       net: this.policy,
       scroll: true,
       steps: true,
+      drop: true,
       count: true,
       host: HOST,
       version: VERSION,

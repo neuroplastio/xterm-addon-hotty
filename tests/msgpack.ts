@@ -157,7 +157,7 @@ export function unpack(b: Uint8Array): unknown {
 export type Type = "int" | "float" | "str" | "bool" | [Type] | { [field: string]: Type };
 
 const AREA: Type = { c: "int", r: "int", w: "int", h: "int" };
-const DRAG: Type = { c: "int", r: "int", keys: ["str"], x: "int", y: "int" };
+const DRAG: Type = { c: "int", r: "int", keys: ["str"], x: "int", y: "int", tx: "int", ty: "int" };
 
 /** SPEC §3.6: an error's body. */
 export const ERROR: Type = { code: "str", detail: "str" };
@@ -175,6 +175,7 @@ export const CAPS: Type = {
   passthrough: "bool",
   scroll: "bool",
   steps: "bool",
+  drop: "bool",
   count: "bool",
   host: "str",
   version: "str",
