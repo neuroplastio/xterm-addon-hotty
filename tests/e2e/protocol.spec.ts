@@ -18,7 +18,7 @@ test("a=q answers with capabilities", async ({ page }) => {
   expect(msgs).toHaveLength(1);
   expect(msgs[0]!.get("a")).toBe("ok");
   expect(msgs[0]!.get("n")).toBe("7");
-  const caps = msgs[0]!.body as { v: string; ops: string[]; cell: { w: number; h: number }; scale: Float; scroll: boolean; host: string; version: string; limits: Record<string, number> };
+  const caps = msgs[0]!.body as { v: string; ops: string[]; cell: { w: number; h: number }; scale: Float; scroll: boolean; host: string; version: string; limits: Record<string, number>; count: boolean };
   expect(caps.v).toBe("0.2");
   expect(caps.scroll).toBe(true);
   expect(caps.host).toBe(HOST);
@@ -27,6 +27,8 @@ test("a=q answers with capabilities", async ({ page }) => {
   expect(caps.cell.h).toBeGreaterThan(0);
   // The limit it enforces on a message, decoded (SPEC §13).
   expect(caps.limits.message).toBe(MAX_COMMAND);
+  // A repeated click carries its count (SPEC §9).
+  expect(caps.count).toBe(true);
   // A float even when whole (SPEC §3.3, §4): 1.0 at this page's scale.
   expect(caps.scale).toStrictEqual(new Float(1));
 });

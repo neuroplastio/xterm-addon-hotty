@@ -96,6 +96,10 @@ export interface SurfaceHost {
    *  or clicked: the terminal's, as an OSC 8 hyperlink is. `box` is the
    *  link's box in the page. */
   hyperlink(kind: "activate" | "hover" | "leave", e: MouseEvent, url: string, box: DOMRect): void;
+  /** A click's place in its run of clicks (SPEC §9), from the platform's
+   *  count, a MouseEvent's `detail` (0 from the keyboard): a run starts
+   *  again on another element or another surface. */
+  clickCount(surface: string, el: Element, detail: number): number;
   /** A wheel event over the surface, or a touch drag made one: the
    *  terminal's (SPEC §9), at a point in the page. */
   wheel(e: WheelEvent, pageX: number, pageY: number): void;
@@ -2211,6 +2215,8 @@ export class Surface {
     const detail: Record<string, Value> = { href: this.resolver.get(link, "href") ?? "" };
     if (url) detail.url = url;
     detail.area = this.areaOf(link);
+    const n = this.host.clickCount(this.name, link, e.detail);
+    if (n > 1) detail.count = n;
     this.emit("click", link.getAttribute("id") ?? "", detail);
   }
 
@@ -2269,11 +2275,13 @@ export class Surface {
       this.onLink(link, e);
       return;
     }
-    this.reportClick(e.composedPath());
+    this.reportClick(e.composedPath(), e.detail);
   }
 
-  /** The click of the nearest element on `path` that reports one (SPEC §9). */
-  private reportClick(path: EventTarget[]) {
+  /** The click of the nearest element on `path` that reports one (SPEC §9),
+   * the `count`th of its run as the platform counts clicks (`detail`; a
+   * drag's release is the first). */
+  private reportClick(path: EventTarget[], count = 1) {
     for (const n of path) {
       if (!isElement(n)) continue;
       if (n.localName === "a" && n.hasAttribute("href")) {
@@ -2284,6 +2292,8 @@ export class Surface {
         const detail: Record<string, Value> = { href: this.resolver.get(n, "href") ?? "" };
         if (url) detail.url = url;
         detail.area = this.areaOf(n);
+        const c = this.host.clickCount(this.name, n, count);
+        if (c > 1) detail.count = c;
         this.emit("click", n.getAttribute("id") ?? "", detail);
         return;
       }
@@ -2301,6 +2311,8 @@ export class Surface {
         const value = this.resolver.get(el, "value");
         if (value !== null) detail.value = value;
         detail.area = this.areaOf(el);
+        const c = this.host.clickCount(this.name, el, count);
+        if (c > 1) detail.count = c;
         this.emit("click", id, detail);
       }
       break;

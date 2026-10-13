@@ -175,13 +175,14 @@ export const CAPS: Type = {
   passthrough: "bool",
   scroll: "bool",
   steps: "bool",
+  count: "bool",
   host: "str",
   version: "str",
 };
 
 /** SPEC §9: each event kind's detail; the kinds not here carry none. */
 export const DETAIL: Record<string, Type> = {
-  click: { href: "str", url: "str", value: "str", area: AREA },
+  click: { href: "str", url: "str", value: "str", area: AREA, count: "int" },
   press: { area: AREA },
   change: { checked: "bool", value: "str" },
   input: { value: "str" },

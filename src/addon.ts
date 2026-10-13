@@ -434,6 +434,7 @@ export class HottyAddon implements ITerminalAddon {
       net: this.policy,
       scroll: true,
       steps: true,
+      count: true,
       host: HOST,
       version: VERSION,
     };
@@ -582,6 +583,9 @@ export class HottyAddon implements ITerminalAddon {
 
   // --- Geometry and look ---------------------------------------------------
 
+  /** The run of clicks the last click was in (SurfaceHost.clickCount). */
+  private clickRun: { surface: string; el: Element; base: number } | null = null;
+
   private host(): SurfaceHost {
     return {
       layer: this.ensureLayer(),
@@ -632,6 +636,17 @@ export class HottyAddon implements ITerminalAddon {
       // A hyperlink (SPEC §9) goes where xterm.js sends an OSC 8 one: the
       // terminal's linkHandler, or its confirm-then-open default, and only
       // for http and https unless the handler allows other schemes.
+      // The platform counts clicks (MouseEvent.detail), by the user's own
+      // settings; a run is kept to one element of one surface (SPEC §9).
+      clickCount: (surface, el, detail) => {
+        if (detail < 1) {
+          this.clickRun = null;
+          return 1;
+        }
+        const r = this.clickRun;
+        if (detail === 1 || !r || r.surface !== surface || r.el !== el) this.clickRun = { surface, el, base: detail };
+        return detail - this.clickRun!.base + 1;
+      },
       hyperlink: (kind, e, url, box) => {
         const handler = this.term.options.linkHandler;
         if (!handler?.allowNonHttpProtocols) {

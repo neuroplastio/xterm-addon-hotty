@@ -20,6 +20,7 @@ type Step = {
   by?: [number, number];
   key?: string;
   keys?: string[];
+  count?: number;
   terminal?: boolean;
   events?: Expected[];
 };
@@ -119,16 +120,16 @@ class Mouse {
       if (step.pointer === "down") this.down = true;
       if (step.pointer === "up") this.down = false;
       const cdp = await this.page.context().newCDPSession(this.page);
-      await cdp.send("Input.dispatchMouseEvent", { type, x: this.x, y: this.y, button: "left", buttons: this.down ? 1 : 0, clickCount: 1, modifiers });
+      await cdp.send("Input.dispatchMouseEvent", { type, x: this.x, y: this.y, button: "left", buttons: this.down ? 1 : 0, clickCount: step.count ?? 1, modifiers });
       await cdp.detach();
       return;
     }
     const names = { shift: "Shift", ctrl: "Control", alt: "Alt", meta: "Meta" } as Record<string, string>;
     for (const k of keys) await this.page.keyboard.down(names[k]!);
     if (step.pointer === "move") await this.page.mouse.move(this.x, this.y);
-    else if (step.pointer === "down") await this.page.mouse.down();
+    else if (step.pointer === "down") await this.page.mouse.down({ clickCount: step.count ?? 1 });
     else if (step.pointer === "wheel") for (const [dx, dy] of await this.notches(step.by!)) await this.page.mouse.wheel(dx, dy);
-    else await this.page.mouse.up();
+    else await this.page.mouse.up({ clickCount: step.count ?? 1 });
     for (const k of [...keys].reverse()) await this.page.keyboard.up(names[k]!);
   }
 
@@ -253,7 +254,7 @@ async function point(page: Page, s: string, at: string | [number, number]): Prom
 // CDP: Playwright gives Firefox no touch moves. It does not let the pointer
 // through surfaces yet (§9.3, `passthrough`), and does not send `hover` yet
 // (§9.4: not in `EVENTS`).
-const reported = (browser: string) => new Set<string>(["scroll", "steps", "view", ...(browser === "chromium" ? ["touch"] : [])]);
+const reported = (browser: string) => new Set<string>(["scroll", "steps", "view", "count", ...(browser === "chromium" ? ["touch"] : [])]);
 
 const needs = (v: { requires?: string | string[] }) => (v.requires === undefined ? [] : [v.requires].flat());
 
