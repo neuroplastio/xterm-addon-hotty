@@ -124,6 +124,10 @@ interface Drag {
   keys: string[];
   step: Step;
   tstep: TargetStep;
+  /** The press's place in its run of clicks, as the browser counts them
+   * (its mousedown's `detail`): the click the drag reports where it began
+   * carries it (SPEC §9). */
+  clicks: number;
 }
 
 /** The steps of the element a drag started on (SPEC §9.1): the element, and
@@ -1550,7 +1554,7 @@ export class Surface {
     if (!id) return;
     const [c, r] = this.cellOf(e);
     const keys = keysOf(e);
-    const d: Drag = { pointer: e.pointerId, start: id, steps: stepsOf(start!), target: id, c, r, keys, step: {}, tstep: {} };
+    const d: Drag = { pointer: e.pointerId, start: id, steps: stepsOf(start!), target: id, c, r, keys, step: {}, tstep: {}, clicks: 1 };
     d.step = this.stepIn(d, e.clientX, e.clientY);
     this.drag = d;
     this.emit("dragstart", id, { c, r, keys, ...d.step });
@@ -1629,7 +1633,7 @@ export class Surface {
     this.emit("dragend", t?.getAttribute("id") ?? "", { c, r, keys, ...this.stepIn(d, x, y), ...stepInTarget(t, x, y) });
     this.dragReleased = true;
     setTimeout(() => (this.dragReleased = false), 0);
-    if (at && this.draggedAt(at) === d.start) this.reportClick(ancestry(at));
+    if (at && this.draggedAt(at) === d.start) this.reportClick(ancestry(at), d.clicks);
   }
 
   /** The browser took the pointer away before the release. */
@@ -1789,7 +1793,7 @@ export class Surface {
     // The touch's own events have its start as their target, so the
     // press's path is the touched element's.
     this.reportPress(e);
-    const d: Drag = { pointer: NaN, start: id, steps: stepsOf(start!), target: id, c, r, keys, step: {}, tstep: {} };
+    const d: Drag = { pointer: NaN, start: id, steps: stepsOf(start!), target: id, c, r, keys, step: {}, tstep: {}, clicks: 1 };
     d.step = this.stepIn(d, begin.x, begin.y);
     this.drag = d;
     this.emit("dragstart", id, { c, r, keys, ...d.step });
@@ -1959,6 +1963,9 @@ export class Surface {
         }
         // A press with no pointerdown before it is a tap's (SPEC §9).
         if (!this.pointerPress && e.button === 0) this.reportPress(e);
+        // The press that started a drag: its place in a run of clicks, for
+        // the click the drag reports (the pointerdown's detail is 0).
+        if (this.drag && e.button === 0 && e.detail > 0) this.drag.clicks = e.detail;
         this.pointerPress = false;
         this.onPress(e);
       },
