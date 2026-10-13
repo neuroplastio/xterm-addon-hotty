@@ -264,6 +264,15 @@ runs programs for whoever connects.
 
   new HottyAddon({ browserKeys: (e) => browserKeys(e) || (e.ctrlKey && e.key === "k") });
   ```
+- **Copying** (SPEC §11, the `copyKeys` option): while something is
+  selected, on the cells or in a surface, Ctrl+C and Cmd+C copy it to the
+  clipboard and keep it selected, and neither a surface nor the program
+  hears the key. A focused field's selection is the one copied, and a
+  password field's never is. With nothing selected, the key goes where it
+  would: Ctrl+C interrupts. There is one selection: a press on the cells,
+  or a selection made there, drops a surface's, and a press in a surface
+  drops the others'. `copyKeys: () => false` turns this off; the exported
+  `copyKeys` is the default.
 - **Nothing in a surface scrolls unless its document asks** (SPEC §5.3, §9):
   - It shows no scrollbars, and pans nothing on a touch
     (`touch-action: none`). Any scroll offset the browser sets goes back to

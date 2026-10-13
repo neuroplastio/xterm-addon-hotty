@@ -67,6 +67,14 @@ export interface HottyOptions {
    * screen, the developer tools, and on a Mac everything with Cmd.
    */
   browserKeys?: (e: KeyboardEvent) => boolean;
+  /**
+   * Keys that copy what is selected (SPEC §11), on the cells or in a
+   * surface, to the clipboard. While something is selected they reach
+   * neither the surface nor the program; with nothing selected they go
+   * where they would, so Ctrl+C still interrupts. Default: `copyKeys`,
+   * Ctrl+C and Cmd+C. `() => false` leaves copying to the browser alone.
+   */
+  copyKeys?: (e: KeyboardEvent) => boolean;
 }
 
 const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -84,6 +92,11 @@ export function browserKeys(e: KeyboardEvent): boolean {
   if (mod && ["=", "+", "-", "0"].includes(e.key)) return true;
   if (e.ctrlKey && e.shiftKey && ["i", "j", "c"].includes(k)) return true;
   return false;
+}
+
+/** The copy keys (the default for `copyKeys`): Ctrl+C, and Cmd+C (Meta). */
+export function copyKeys(e: KeyboardEvent): boolean {
+  return (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "c";
 }
 
 export interface FrameStats {
@@ -156,6 +169,11 @@ export class HottyAddon implements ITerminalAddon {
   private readonly writer = new Writer();
   private readonly disposables: IDisposable[] = [];
   private layer: HTMLDivElement | null = null;
+  /** The terminal's element, whose presses drop the surfaces' selections. */
+  private pressed: HTMLElement | null = null;
+  private readonly dropSelections = () => {
+    for (const s of this.surfaces.values()) s.clearSelection();
+  };
   /** Commands held while synchronized output is on (PROTOCOL §5). */
   private held: Command[] = [];
   private heldTimer: ReturnType<typeof setTimeout> | null = null;
@@ -189,7 +207,14 @@ export class HottyAddon implements ITerminalAddon {
   activate(term: Terminal): void {
     this.term = term;
     // The browser's keys: xterm.js leaves them alone, and the browser acts.
-    term.attachCustomKeyEventHandler((e) => !this.browserKey(e));
+    term.attachCustomKeyEventHandler((e) => !this.copyKey(e) && !this.browserKey(e));
+    // One selection (SPEC §11): a selection made on the cells drops a
+    // surface's, as a press there does (`ensureLayer`).
+    this.disposables.push(
+      term.onSelectionChange(() => {
+        if (term.hasSelection()) this.dropSelections();
+      }),
+    );
     const p = term.parser;
     this.disposables.push(
       p.registerOscHandler(OSC, (data) => this.onOsc(data)),
@@ -223,6 +248,8 @@ export class HottyAddon implements ITerminalAddon {
     this.disposables.length = 0;
     this.layer?.remove();
     this.layer = null;
+    this.pressed?.removeEventListener("mousedown", this.dropSelections, true);
+    this.pressed = null;
   }
 
   /**
@@ -596,6 +623,11 @@ export class HottyAddon implements ITerminalAddon {
         this.send(encode(c, detail === undefined ? "" : this.writer.body(detail)));
       },
       browserKey: (e) => this.browserKey(e),
+      copyKey: (e) => this.copyKey(e),
+      pressed: (keep) => {
+        if (keep !== null) this.term.clearSelection();
+        for (const [name, s] of this.surfaces) if (name !== keep) s.clearSelection();
+      },
       key: (e) => this.terminalKey(e),
       encodeKey: (e) => {
         // What xterm.js sends for the key, kept from the program: its
@@ -868,11 +900,45 @@ export class HottyAddon implements ITerminalAddon {
     Object.assign(layer.style, { position: "absolute", inset: "0", overflow: "hidden", zIndex: "6", pointerEvents: "none" });
     screen.append(layer);
     this.layer = layer;
+    // A press on the cells drops a surface's selection: there is one (SPEC
+    // §11). A press in a surface stays in its frame.
+    const el = this.term.element!;
+    if (this.pressed !== el) {
+      this.pressed?.removeEventListener("mousedown", this.dropSelections, true);
+      el.addEventListener("mousedown", this.dropSelections, true);
+      this.pressed = el;
+    }
     return layer;
   }
 
   private browserKey(e: KeyboardEvent): boolean {
     return (this.opts.browserKeys ?? browserKeys)(e);
+  }
+
+  /** A copy key while something is selected (SPEC §11): the selection goes
+   * to the clipboard, and the key no further, the browser's copy included. */
+  private copyKey(e: KeyboardEvent): boolean {
+    if (!(this.opts.copyKeys ?? copyKeys)(e)) return false;
+    const text = this.selectedText();
+    if (text === "") return false;
+    e.preventDefault();
+    if (e.type === "keydown") navigator.clipboard?.writeText(text).catch(() => {});
+    return true;
+  }
+
+  /** What the copy keys copy: the selection of the surface holding the
+   * keyboard, else the terminal's, else another surface's. A press leaves
+   * one of them at most (SPEC §11). */
+  private selectedText(): string {
+    const surfaces = [...this.surfaces.values()];
+    const focused = surfaces.find((s) => s.hasKeyboard())?.selectedText() ?? "";
+    if (focused !== "") return focused;
+    if (this.term.hasSelection()) return this.term.getSelection();
+    for (const s of surfaces) {
+      const t = s.selectedText();
+      if (t !== "") return t;
+    }
+    return "";
   }
 
   /** A box in the page as the buffer cells it covers (1-based, as xterm.js

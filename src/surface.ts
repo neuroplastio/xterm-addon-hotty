@@ -77,6 +77,13 @@ export interface SurfaceHost {
   /** A key the browser keeps (the `browserKeys` option): the surface
    *  leaves it to the browser rather than hand it to the terminal. */
   browserKey(e: KeyboardEvent): boolean;
+  /** A copy key while something is selected (SPEC §11): the host copied
+   *  it, and the key goes no further. */
+  copyKey(e: KeyboardEvent): boolean;
+  /** A press of the primary button on surface `keep`, or with Alt (null,
+   *  the cells'): there is one selection (SPEC §11), so every other one is
+   *  dropped. */
+  pressed(keep: string | null): void;
   /** Gives the keyboard back to the terminal. */
   focusTerminal(): void;
   /** The host's half of the network policy (SPEC §7.2). */
@@ -902,6 +909,30 @@ export class Surface {
     return this.keyboard;
   }
 
+  /** The text selected in the surface, for the host's copy keys (SPEC
+   * §11): the focused text field's selection, never a password field's, or
+   * else the document's. */
+  selectedText(): string {
+    const el = this.doc.activeElement as HTMLInputElement | null;
+    if (el && (el.localName === "input" || el.localName === "textarea")) {
+      const type = (this.resolver.get(el, "type") ?? el.type ?? "").toLowerCase();
+      if (type === "password") return "";
+      try {
+        const [a, b] = [el.selectionStart, el.selectionEnd];
+        return a === null || b === null ? "" : el.value.slice(a, b);
+      } catch {
+        return ""; // a type with no text selection
+      }
+    }
+    return this.doc.getSelection()?.toString() ?? "";
+  }
+
+  /** Drops the document's selection: the user pressed elsewhere (SPEC §11). */
+  clearSelection() {
+    const sel = this.doc.getSelection();
+    if (sel && sel.rangeCount > 0) sel.removeAllRanges();
+  }
+
   /** `a=focus`: the surface takes the keyboard, at `target` if given. */
   focus(target?: string) {
     const el = target ? this.doc.getElementById(target) : null;
@@ -1083,6 +1114,11 @@ export class Surface {
 
   private onKey(e: KeyboardEvent) {
     if (e.isComposing || e.defaultPrevented) return;
+    // While something is selected, a copy key is the host's (SPEC §11).
+    if (this.host.copyKey(e)) {
+      e.stopPropagation();
+      return;
+    }
     if (!this.keyboard) {
       // The frame has the browser's focus without the keyboard, for a moment
       // (a press that took nothing): every key is the terminal's.
@@ -1939,6 +1975,7 @@ export class Surface {
     d.addEventListener(
       "pointerdown",
       (e) => {
+        if (e.button === 0 && e.isPrimary) this.host.pressed(e.altKey ? null : this.name);
         if (this.onAltDown(e)) return;
         if (e.button === 0) this.maskField(e.target, false);
         this.pointerPress = e.pointerType !== "touch";

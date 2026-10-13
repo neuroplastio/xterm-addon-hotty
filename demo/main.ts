@@ -58,6 +58,8 @@ if (params.has("record-links")) {
 }
 // `?page-key=k`: Ctrl+K is the page's too, on top of the browser's own keys.
 const pageKey = params.get("page-key");
+// `?copy=0`: no copy keys; Ctrl+C always reaches the program.
+const noCopy = params.get("copy") === "0";
 // `?scroll=page`: the page scrolls, not the terminal, which is as tall as
 // three windows.
 const pageScrolls = params.get("scroll") === "page";
@@ -68,6 +70,7 @@ const hotty = new HottyAddon({
   network,
   browserKeys: pageKey ? (e) => browserKeys(e) || (e.ctrlKey && e.key === pageKey) : undefined,
   scroll: pageScrolls ? "page" : undefined,
+  copyKeys: noCopy ? () => false : undefined,
 });
 const fit = new FitAddon();
 term.loadAddon(fit);
