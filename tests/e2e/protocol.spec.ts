@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { Float } from "../../src/msgpack.ts";
 import { HOST, VERSION } from "../../src/version.ts";
-import { Control, encode } from "../../src/wire.ts";
+import { Control, encode, MAX_COMMAND } from "../../src/wire.ts";
 import { HOTTY_DIR } from "../hotty.ts";
 import { cell, cmd, open, send, surface, take, write } from "./helpers.ts";
 
@@ -18,13 +18,15 @@ test("a=q answers with capabilities", async ({ page }) => {
   expect(msgs).toHaveLength(1);
   expect(msgs[0]!.get("a")).toBe("ok");
   expect(msgs[0]!.get("n")).toBe("7");
-  const caps = msgs[0]!.body as { v: string; ops: string[]; cell: { w: number; h: number }; scale: Float; scroll: boolean; host: string; version: string };
+  const caps = msgs[0]!.body as { v: string; ops: string[]; cell: { w: number; h: number }; scale: Float; scroll: boolean; host: string; version: string; limits: Record<string, number> };
   expect(caps.v).toBe("0.2");
   expect(caps.scroll).toBe(true);
   expect(caps.host).toBe(HOST);
   expect(caps.version).toBe(VERSION);
   expect(caps.ops).toContain("morph");
   expect(caps.cell.h).toBeGreaterThan(0);
+  // The limit it enforces on a message, decoded (SPEC §13).
+  expect(caps.limits.message).toBe(MAX_COMMAND);
   // A float even when whole (SPEC §3.3, §4): 1.0 at this page's scale.
   expect(caps.scale).toStrictEqual(new Float(1));
 });

@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { HOTTY_DIR } from "../hotty.ts";
 import { deflateSync } from "node:zlib";
-import { Assembler, Control, decodeAll, encode, inflate, text, CHUNK, MAX_COMMAND } from "../../src/wire.ts";
+import { Assembler, Control, decodeAll, encode, encodedMax, inflate, text, toBase64, CHUNK, MAX_COMMAND } from "../../src/wire.ts";
 
 const CLIENT = join(HOTTY_DIR, "clients", "python");
 
@@ -50,10 +50,24 @@ test("a chunked command past the limit is dropped whole, and reported once", asy
   const kinds: string[] = [];
   const feed = async (data: string) => kinds.push(...(await a.feed(data)).map((d) => d.kind));
   await feed(`a=doc:s=x:m=1;${chunk}`);
-  for (let i = 0; i < MAX_COMMAND / CHUNK + 2; i++) await feed(`m=1;${chunk}`);
+  for (let i = 0; i < encodedMax(MAX_COMMAND) / CHUNK + 2; i++) await feed(`m=1;${chunk}`);
   await feed(`m=0;${chunk}`);
   await feed("a=del:s=x");
   assert.deepEqual(kinds.filter((k) => k !== "partial"), ["invalid", "command"]);
+});
+
+test("the limit is on decoded bytes: MAX_COMMAND plain decodes, one more does not", async () => {
+  for (const [n, kind] of [[MAX_COMMAND, "command"], [MAX_COMMAND + 1, "invalid"]] as const) {
+    const b64 = toBase64(new Uint8Array(n));
+    const a = new Assembler();
+    const kinds: string[] = [];
+    for (let i = 0; i < b64.length; i += CHUNK) {
+      const m = i + CHUNK < b64.length ? 1 : 0;
+      const ctl = i === 0 ? `a=res:id=x:type=text/plain:m=${m}` : `m=${m}`;
+      kinds.push(...(await a.feed(`${ctl};${b64.slice(i, i + CHUNK)}`)).map((d) => d.kind));
+    }
+    assert.deepEqual(kinds.filter((k) => k !== "partial"), [kind], `${n} bytes`);
+  }
 });
 
 test("decodes what the reference Python client sends: zlib, chunks, UTF-8", async () => {

@@ -7,8 +7,14 @@
 export const OSC = 7279;
 /** Largest base64 chunk a host sends (VTE ignores longer strings). */
 export const CHUNK = 4096;
-/** Largest reassembled command, in base64 bytes, and its payload once decoded. */
+/**
+ * Largest reassembled command, decoded: what base64 and zlib leave. The host
+ * reports it as `limits.message` (SPEC §13).
+ */
 export const MAX_COMMAND = 16 << 20;
+
+/** The most base64 a command of max decoded bytes takes, zlib's overhead included. */
+export const encodedMax = (max: number) => Math.ceil((max + Math.floor(max / 256) + 64) / 3) * 4;
 
 /** `key=value` pairs separated by `:`, in order. */
 export class Control {
@@ -111,7 +117,7 @@ export class Assembler {
     if (partial && control.onlyChunkKeys()) {
       partial.b64.push(b64);
       partial.size += b64.length;
-      if (partial.size > MAX_COMMAND) {
+      if (partial.size > encodedMax(MAX_COMMAND)) {
         this.dropping = more;
         return [{ kind: "invalid", reason: "command too large" }];
       }
@@ -151,6 +157,7 @@ function emit(control: Control, b64: string): Decoded | Promise<Decoded> {
     return { kind: "command", command: { control, payload } };
   };
   if (control.get("o") === "z") return inflate(bytes).then(done, fail);
+  if (bytes.length > MAX_COMMAND) return { kind: "invalid", reason: "command too large" };
   return done(bytes);
 }
 

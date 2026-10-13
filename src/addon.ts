@@ -22,7 +22,7 @@ import { Store } from "./resources.ts";
 import { type Route, type Scheme, Surface, type SurfaceHost } from "./surface.ts";
 import { Touch } from "./touch.ts";
 import { HOST, VERSION } from "./version.ts";
-import { Assembler, Control, encode, OSC, text, type Command, type Decoded } from "./wire.ts";
+import { Assembler, Control, encode, MAX_COMMAND, OSC, text, type Command, type Decoded } from "./wire.ts";
 
 export interface HottyOptions {
   /** Most surfaces at once (reported under `limits`). Default 64. */
@@ -430,7 +430,7 @@ export class HottyAddon implements ITerminalAddon {
       cell: { w: Math.round(cellW * scale), h: Math.round(cellH * scale) },
       scale: float(scale),
       scheme: this.scheme(),
-      limits: { resources: limit(this.store.quota), surfaces: limit(this.opts.maxSurfaces) },
+      limits: { resources: limit(this.store.quota), surfaces: limit(this.opts.maxSurfaces), message: MAX_COMMAND },
       net: this.policy,
       scroll: true,
       steps: true,
