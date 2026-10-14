@@ -64,7 +64,10 @@ const noCopy = params.get("copy") === "0";
 // three windows.
 const pageScrolls = params.get("scroll") === "page";
 if (pageScrolls) Object.assign(document.getElementById("term")!.style, { position: "static", margin: "8px", height: "300vh" });
+// `?key-timeout=ms`: how long a key sequence waits (SPEC §10.5).
+const keyTimeout = params.get("key-timeout");
 const hotty = new HottyAddon({
+  keyTimeout: keyTimeout ? Number(keyTimeout) : undefined,
   onFrame: (f) => frames.push(f),
   onInvalid: (r) => invalid.push(r),
   network,

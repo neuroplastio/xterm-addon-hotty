@@ -177,6 +177,10 @@ export const CAPS: Type = {
   steps: "bool",
   drop: "bool",
   count: "bool",
+  mod: "str",
+  edit: { "*": ["str"] },
+  keys: { leader: "str", timeout: "int" },
+  menu: "bool",
   host: "str",
   version: "str",
 };
@@ -195,6 +199,8 @@ export const DETAIL: Record<string, Type> = {
   fit: { r: "int" },
   hover: { c: "int", r: "int", out: "bool" },
   view: { in: { "*": AREA }, end: "bool" },
+  command: { name: "str", key: "str", text: "str" },
+  caps: CAPS,
 };
 
 /** A map as `unpack` reads one: a plain object. */

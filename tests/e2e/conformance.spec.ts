@@ -253,8 +253,9 @@ async function point(page: Page, s: string, at: string | [number, number]): Prom
 // `touch` (§9.1, §16) where this runner can touch it, in Chromium, through
 // CDP: Playwright gives Firefox no touch moves. It does not let the pointer
 // through surfaces yet (§9.3, `passthrough`), and does not send `hover` yet
-// (§9.4: not in `EVENTS`).
-const reported = (browser: string) => new Set<string>(["scroll", "steps", "drop", "view", "count", "undo", ...(browser === "chromium" ? ["touch"] : [])]);
+// (§9.4: not in `EVENTS`). It reads key sequences (§10.5, `keys`) and
+// takes edit commands (§10.6).
+const reported = (browser: string) => new Set<string>(["scroll", "steps", "drop", "view", "count", "undo", "keys", "commands", ...(browser === "chromium" ? ["touch"] : [])]);
 
 const needs = (v: { requires?: string | string[] }) => (v.requires === undefined ? [] : [v.requires].flat());
 
@@ -272,7 +273,11 @@ function define(vector: { name: string; requires?: string | string[]; steps: Ste
     const has = reported(browserName);
     const missing = requires.filter((r) => !has.has(r));
     test.skip(missing.length > 0, `needs ${missing.join(", ")}, which this runner can't give in ${browserName}`);
-    await open(page);
+    // A key sequence waits as long as a step takes (SPEC §10.5).
+    await open(page, "?pty=0&key-timeout=3600000");
+    // The terminal has the keyboard, as in a page that gave it focus: a key
+    // goes to the cells until a surface takes it.
+    await page.evaluate(() => window.hotty.term.focus());
     const mouse = new Mouse(page, browserName);
     const finger = new Finger(page);
     for (const [i, step] of vector.steps.entries()) {
@@ -306,7 +311,11 @@ function define(vector: { name: string; requires?: string | string[]; steps: Ste
         await frames(page, 2);
         const { msgs, raw } = await take(page);
         checkEvents(where, msgs, step.events);
-        if (step.terminal !== undefined) expect(raw !== "", `${where}: the program got ${JSON.stringify(step.key)} (${JSON.stringify(raw)})`).toBe(step.terminal);
+        // xterm.js sends nothing for Meta with an arrow, Home or End (the
+        // browser's line keys on a Mac): that such a key went on to the
+        // terminal cannot be seen, only that the surface did not use it.
+        const silent = keys.includes("meta") && /^(Arrow.*|Home|End)$/.test(step.key) && raw === "";
+        if (step.terminal !== undefined && !(silent && step.terminal)) expect(raw !== "", `${where}: the program got ${JSON.stringify(step.key)} (${JSON.stringify(raw)})`).toBe(step.terminal);
       } else if (step.send) {
         await take(page);
         await write(page, cmd(step.send, step.payload ?? ""));

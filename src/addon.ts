@@ -19,7 +19,9 @@ import { OPS, DeltaError } from "./delta.ts";
 import { float, Writer, type Body } from "./msgpack.ts";
 import { clean, type Policy } from "./network.ts";
 import { Store } from "./resources.ts";
-import { type Route, type Scheme, Surface, type SurfaceHost } from "./surface.ts";
+import { EDIT_ACTIONS, editAction, editOf, type Platform, readKey } from "./keys.ts";
+import { type Menu, readMenu } from "./seq.ts";
+import { type KeySettings, pressedName, type Route, type Scheme, Surface, type SurfaceHost } from "./surface.ts";
 import { Touch } from "./touch.ts";
 import { HOST, VERSION } from "./version.ts";
 import { Assembler, Control, encode, MAX_COMMAND, OSC, text, type Command, type Decoded } from "./wire.ts";
@@ -77,6 +79,13 @@ export interface HottyOptions {
    * default, whatever this says.
    */
   copyKeys?: (e: KeyboardEvent) => boolean;
+  /** The user's leader (SPEC §10.5, reported as `keys.leader`): the keys
+   * `<leader>` stands for in a `data-key`, as a sequence. Default
+   * `"Space"`. */
+  leader?: string;
+  /** How long a key sequence waits for its next key, in milliseconds
+   * (SPEC §10.5, `keys.timeout`). Default 2000. */
+  keyTimeout?: number;
 }
 
 const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -136,7 +145,12 @@ function answerIn(v: string | undefined): string {
 }
 
 /** `drag` stands for `dragstart`, `drag` and `dragend` (SPEC §4, §9.1). */
-export const EVENTS = ["click", "change", "input", "submit", "press", "drag", "focus", "blur", "resize", "fit", "view"];
+export const EVENTS = ["click", "change", "input", "submit", "press", "drag", "focus", "blur", "resize", "fit", "view", "command", "caps"];
+
+/** The longest label a menu shows, in characters; the rest is cut. */
+const LABEL_CHARS = 32;
+/** The most items a column of a menu holds. */
+const COLUMN_ITEMS = 10;
 
 interface Placement {
   surface: Surface;
@@ -196,9 +210,29 @@ export class HottyAddon implements ITerminalAddon {
   /** The wheel gesture under way: the surface its last wheel was over ("" for
    * the cells), where it goes, and when that wheel came. */
   private gesture: { surface: string; route: Route; at: number } | null = null;
+  /** How keys are read (SPEC §10.4, §10.5): `Mod` is Meta on a Mac. */
+  private readonly keys: KeySettings;
+  /** The edit commands the program takes on each screen (SPEC §10.6). */
+  private readonly taken = { normal: new Set<string>(), alternate: new Set<string>() };
+  /** Keys whose keydown was a command: their release sends nothing. */
+  private readonly commandCodes = new Set<string>();
+  /** A paste command waiting for the browser's paste, which brings the
+   * clipboard's text: the key, and the fallback that reads it instead. */
+  private pasting: { key: string; timer: ReturnType<typeof setTimeout> } | null = null;
+  /** `encodeKey` runs a key through xterm.js: it is not typed. */
+  private encoding = false;
+  /** The which-key menus (SPEC §10.5, §10.6): a surface's while a sequence
+   * waits, over the program's, and where they show. */
+  private surfaceMenu: Menu | null = null;
+  private programMenu: Menu | null = null;
+  private menuEl: HTMLDivElement | null = null;
+  /** The terminal's element, whose paste a `paste` command takes. */
+  private pasteOn: HTMLElement | null = null;
 
   constructor(options: HottyOptions = {}) {
     this.opts = { maxSurfaces: 64, resourceQuota: 64 << 20, ...options };
+    const platform: Platform = { mod: mac ? "Meta" : "Control" };
+    this.keys = { platform, leader: options.leader ?? "Space", timeout: options.keyTimeout ?? 2000 };
     this.policy = clean(options.network);
     this.store = new Store(this.opts.resourceQuota);
     this.store.onChange = (names) => {
@@ -209,7 +243,19 @@ export class HottyAddon implements ITerminalAddon {
   activate(term: Terminal): void {
     this.term = term;
     // The browser's keys: xterm.js leaves them alone, and the browser acts.
-    term.attachCustomKeyEventHandler((e) => !this.copyKey(e) && !this.browserKey(e));
+    // A key of an edit command the program takes is the command (SPEC
+    // §10.6), after the terminal's selection is copied.
+    term.attachCustomKeyEventHandler((e) => {
+      if (this.copyKey(e)) return false;
+      if (!this.encoding) {
+        if (e.type === "keyup" && this.commandCodes.delete(e.code)) return false;
+        if (e.type === "keydown") {
+          this.cellsKey(e);
+          if (this.command(e)) return false;
+        }
+      }
+      return !this.browserKey(e);
+    });
     // One selection (SPEC §11): a selection made on the cells drops a
     // surface's, as a press there does (`ensureLayer`).
     this.disposables.push(
@@ -229,11 +275,16 @@ export class HottyAddon implements ITerminalAddon {
       // RIS: every surface goes (PROTOCOL §4).
       p.registerEscHandler({ final: "c" }, () => {
         this.reset();
+        this.taken.normal.clear();
+        this.taken.alternate.clear();
+        this.programMenu = null;
+        this.drawMenu();
         return false;
       }),
       term.buffer.onBufferChange((b) => this.onBufferChange(b.type)),
       term.onRender(() => {
         this.bindTouch();
+        this.bindPaste();
         this.checkMetrics();
       }),
       term.onResize(() => this.checkMetrics()),
@@ -243,6 +294,12 @@ export class HottyAddon implements ITerminalAddon {
   }
 
   dispose(): void {
+    if (this.pasting) clearTimeout(this.pasting.timer);
+    this.pasting = null;
+    this.pasteOn?.removeEventListener("paste", this.onPaste, true);
+    this.pasteOn = null;
+    this.menuEl?.remove();
+    this.menuEl = null;
     this.cellTouch?.dispose();
     this.cellTouch = null;
     this.reset();
@@ -439,6 +496,18 @@ export class HottyAddon implements ITerminalAddon {
       case "blur":
         this.existing(c).blur();
         return;
+      case "edit": {
+        // The commands the program on this screen takes (SPEC §10.6); a
+        // name the addon does not know is ignored.
+        const take = (c.get("take") ?? "").split(",").filter((n) => (EDIT_ACTIONS as readonly string[]).includes(n));
+        this.taken[this.term.buffer.active.type] = new Set(take);
+        return;
+      }
+      case "menu":
+        // The program's which-key menu (SPEC §10.6); none hides it.
+        this.programMenu = cmd.payload.length ? readMenu(cmd.payload) : null;
+        this.drawMenu();
+        return;
       case "":
         throw new Failure("EINVAL", "missing a=<action>");
       default:
@@ -465,6 +534,10 @@ export class HottyAddon implements ITerminalAddon {
       steps: true,
       drop: true,
       count: true,
+      mod: this.keys.platform.mod,
+      edit: editOf(this.keys.platform),
+      keys: { leader: this.keys.leader, timeout: this.keys.timeout },
+      menu: true,
       host: HOST,
       version: VERSION,
     };
@@ -608,6 +681,13 @@ export class HottyAddon implements ITerminalAddon {
       // Surfaces placed on the alternate screen die with it (PROTOCOL §4).
       if (p.kind === "alt" && type === "normal") this.remove(p.surface.name);
     }
+    // Leaving the alternate screen drops the commands taken there, and any
+    // change hides the program's menu (SPEC §10.6).
+    if (type === "normal") this.taken.alternate.clear();
+    if (this.programMenu) {
+      this.programMenu = null;
+      this.drawMenu();
+    }
     this.reposition();
   }
 
@@ -643,13 +723,21 @@ export class HottyAddon implements ITerminalAddon {
         const own = Object.prototype.hasOwnProperty.call(cs, "triggerDataEvent");
         const prev = cs.triggerDataEvent;
         cs.triggerDataEvent = (d: string) => void (data += d);
+        this.encoding = true;
         try {
           this.terminalKey(e);
         } finally {
+          this.encoding = false;
           if (own) cs.triggerDataEvent = prev;
           else delete (cs as { triggerDataEvent?: unknown }).triggerDataEvent;
         }
         return data;
+      },
+      keys: this.keys,
+      command: (e) => this.command(e),
+      menu: (m) => {
+        this.surfaceMenu = m;
+        this.drawMenu();
       },
       sendKey: (data) => {
         const cs = (this.term as unknown as { _core: { coreService: DataSink } })._core.coreService;
@@ -913,6 +1001,170 @@ export class HottyAddon implements ITerminalAddon {
       this.pressed = el;
     }
     return layer;
+  }
+
+  // --- Commands in the cells and menus (SPEC §10.5, §10.6) ----------------
+
+  /** The paste a `paste` command's key brings (SPEC §10.6), heard before
+   * xterm.js's own on its textarea: its text goes with the command, and
+   * xterm.js pastes nothing. */
+  private bindPaste() {
+    const el = this.term.element;
+    if (!el || this.pasteOn === el) return;
+    this.pasteOn?.removeEventListener("paste", this.onPaste, true);
+    el.addEventListener("paste", this.onPaste, true);
+    this.pasteOn = el;
+  }
+
+  private readonly onPaste = (e: ClipboardEvent) => {
+    const p = this.pasting;
+    if (!p) return;
+    this.pasting = null;
+    clearTimeout(p.timer);
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    this.sendCommand("paste", p.key, e.clipboardData?.getData("text/plain") ?? "");
+  };
+
+  /**
+   * A key of an edit command the program on the active screen takes (SPEC
+   * §10.6), named as pressed: the command goes to the program, in place of
+   * the key's bytes. A `paste` brings the clipboard's text, from the
+   * browser's paste where the key makes one, or else read.
+   */
+  private command(e: KeyboardEvent): boolean {
+    const taken = this.taken[this.term.buffer.active.type];
+    if (taken.size === 0) return false;
+    const key = pressedName(e);
+    const name = key === null ? null : editAction(this.keys.platform, key);
+    if (key === null || name === null || !taken.has(name)) return false;
+    this.commandCodes.add(e.code);
+    if (name !== "paste") {
+      e.preventDefault();
+      this.sendCommand(name, readKey(this.keys.platform, key)!);
+      return true;
+    }
+    if (this.pasting) clearTimeout(this.pasting.timer);
+    const k = readKey(this.keys.platform, key)!;
+    // A key the user typed on the cells pastes, as the browser's default
+    // action; one a surface gave on, or a browser that makes no paste of
+    // it, has the clipboard read.
+    const read = () => {
+      this.pasting = null;
+      void (navigator.clipboard?.readText().catch(() => "") ?? Promise.resolve("")).then((text) => this.sendCommand("paste", k, text));
+    };
+    if (!e.isTrusted || this.forwarding) {
+      e.preventDefault();
+      read();
+    } else this.pasting = { key: k, timer: setTimeout(read, 0) };
+    return true;
+  }
+
+  /** The event `command` (SPEC §10.6): of no surface and no element. A
+   * paste's text is left out where the clipboard holds none. */
+  private sendCommand(name: string, key: string, text?: string) {
+    const c = new Control().set("a", "ev").set("e", "command");
+    this.send(encode(c, this.writer.body({ name, key, text: text || undefined })));
+  }
+
+  /** A key typed on the cells while the program's menu shows (SPEC §10.6):
+   * Escape, and a key the menu does not list, hide it. The key still
+   * reaches the program. */
+  private cellsKey(e: KeyboardEvent) {
+    const m = this.programMenu;
+    const key = pressedName(e);
+    if (!m || key === null) return;
+    const p = this.keys.platform;
+    const k = readKey(p, key);
+    if (k !== "Escape" && m.items.some((i) => readKey(p, i.key) === k)) return;
+    this.programMenu = null;
+    this.drawMenu();
+  }
+
+  /**
+   * Draws the which-key menu (SPEC §10.5, §10.6) at the bottom right of
+   * the screen, on cells: a surface's while a sequence waits, else the
+   * program's. A title row, the keys typed and their group's label, then
+   * each key that can follow with what it does, in columns of at most
+   * `COLUMN_ITEMS`. A group's label has a `+`, and a disabled item is
+   * dimmed.
+   */
+  private drawMenu() {
+    const m = this.surfaceMenu ?? this.programMenu;
+    if (!m) {
+      this.menuEl?.remove();
+      this.menuEl = null;
+      return;
+    }
+    let layer: HTMLDivElement;
+    try {
+      layer = this.ensureLayer();
+    } catch {
+      return; // not open yet
+    }
+    const { cellW, cellH } = this.cell();
+    const o = this.term.options;
+    const p = palette(o.theme);
+    const accent = p.ansi[p.dark ? 12 : 4]!;
+    const el = (this.menuEl ??= document.createElement("div"));
+    el.className = "hotty-menu";
+    el.replaceChildren();
+    Object.assign(el.style, {
+      position: "absolute",
+      left: "0",
+      top: "0",
+      width: "",
+      height: "",
+      boxSizing: "border-box",
+      padding: `0 ${cellW}px`,
+      background: `color-mix(in srgb, ${p.fg} 10%, ${p.bg})`,
+      color: p.fg,
+      fontFamily: o.fontFamily ?? "monospace",
+      fontSize: `${o.fontSize ?? 15}px`,
+      lineHeight: `${cellH}px`,
+      whiteSpace: "pre",
+      zIndex: "7",
+      pointerEvents: "none",
+    });
+    const span = (text: string, style: Partial<CSSStyleDeclaration>) => {
+      const s = document.createElement("span");
+      s.textContent = text;
+      Object.assign(s.style, style);
+      return s;
+    };
+    const title = document.createElement("div");
+    title.append(span(m.seq.join(" "), { color: accent }));
+    if (m.label) title.append(" " + m.label);
+    const cols = document.createElement("div");
+    Object.assign(cols.style, { display: "flex", gap: `${2 * cellW}px` });
+    const per = Math.max(1, Math.ceil(m.items.length / Math.max(1, Math.ceil(m.items.length / COLUMN_ITEMS))));
+    for (let i = 0; i < m.items.length; i += per) {
+      const col = document.createElement("div");
+      for (const item of m.items.slice(i, i + per)) {
+        let label = item.group && !item.label.startsWith("+") ? `+${item.label}` : item.label;
+        const chars = [...label];
+        if (chars.length > LABEL_CHARS) label = chars.slice(0, LABEL_CHARS - 1).join("") + "…";
+        const row = document.createElement("div");
+        row.style.height = `${cellH}px`;
+        if (!item.enabled) row.style.opacity = "0.5";
+        else if (item.group) row.style.color = p.ansi[5]!;
+        row.append(span(item.key, { color: accent, fontWeight: "bold" }), " " + label);
+        col.append(row);
+      }
+      cols.append(col);
+    }
+    el.append(title, cols);
+    if (el.parentElement !== layer) layer.append(el);
+    // On whole cells, in the bottom right corner of the screen.
+    const w = Math.min(this.term.cols, Math.ceil(el.offsetWidth / cellW));
+    const h = Math.min(this.term.rows, Math.ceil(el.offsetHeight / cellH));
+    Object.assign(el.style, {
+      width: `${w * cellW}px`,
+      height: `${h * cellH}px`,
+      left: `${(this.term.cols - w) * cellW}px`,
+      top: `${(this.term.rows - h) * cellH}px`,
+      overflow: "hidden",
+    });
   }
 
   private browserKey(e: KeyboardEvent): boolean {

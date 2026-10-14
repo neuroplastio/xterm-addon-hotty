@@ -265,7 +265,8 @@ runs programs for whoever connects.
   new HottyAddon({ browserKeys: (e) => browserKeys(e) || (e.ctrlKey && e.key === "k") });
   ```
 - **Copying** (SPEC §10.2, §11): a surface's selection is copied by its
-  keymap, Ctrl+C and Cmd+C by default, and neither the surface nor the
+  keymap, `Mod+c` by default (Cmd+C on a Mac, Ctrl+C elsewhere: `Mod` is
+  the platform's, §10.4), and neither the surface nor the
   program hears the key; a document that binds one to `program` gives it
   to the program while its text is selected. A focused field copies its
   selection, never a password field's. With nothing selected the key goes
@@ -280,10 +281,25 @@ runs programs for whoever connects.
   own paste (an `input` drops line breaks, as HTML's does), and Ctrl+Z,
   Ctrl+Shift+Z and Ctrl+Y undo and redo, each field with its own history,
   kept by the addon so that every browser groups edits as the spec does.
-  Meta+V, where the browser does not paste with it, reads
-  `navigator.clipboard`. A cut with nothing selected, or in a password
+  A key a document binds to `paste` that the browser does not paste with
+  reads `navigator.clipboard`. A cut with nothing selected, or in a password
   field, reaches the program. On a Mac, Cmd keys stay the browser's
   (`browserKeys`), its own cut, paste and undo.
+- **Key sequences** (SPEC §10.5): a `data-key` runs its element, read on
+  the platform (`Mod`), with the `leader` option as `<leader>` (default
+  Space) and `keyTimeout` as the wait (default 2000 ms). While one waits,
+  a which-key menu shows at the bottom right of the screen, on whole cells,
+  300 ms after it began. Keys a wait gives back go on as if typed: the
+  addon does what the browser would have done with them (a field types, a
+  button's Space or Enter clicks it, a select's arrows pick), except a date
+  field's, which are lost.
+- **Commands in the cells** (SPEC §10.6): `a=edit` is kept per screen, and
+  a key of a command taken goes to the program as `command`, after the
+  cells' selection is copied (`copyKeys`). A paste brings the text of the
+  browser's own paste where the key makes one, as on the cells; from a
+  surface it reads `navigator.clipboard`, and keys typed while that reads
+  can reach the program first. The program's `a=menu` shows where a
+  surface's does, and a surface's wait shows over it.
 - **Nothing in a surface scrolls unless its document asks** (SPEC §5.3, §9):
   - It shows no scrollbars, and pans nothing on a touch
     (`touch-action: none`). Any scroll offset the browser sets goes back to

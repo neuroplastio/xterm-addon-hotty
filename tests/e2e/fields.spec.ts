@@ -111,16 +111,25 @@ test("an editing host selects with Shift and Control+a (SPEC §10.2)", async ({ 
 test("a key that types no text is offered as pressed first, before xterm.js translates it (SPEC §10.4)", async ({ page }) => {
   await field(page, `<input id=t data-on=input value="one two">`, "t");
   await page.keyboard.press("End");
+  // xterm.js sends BS, which the program reads as Backspace.
   await page.keyboard.press("Control+Backspace");
-  await page.keyboard.press("Meta+ArrowLeft");
+  await page.keyboard.press("Control+ArrowLeft");
   await page.keyboard.type("x");
-  await page.keyboard.press("Meta+Shift+ArrowRight");
+  await page.keyboard.press("Shift+End");
   await page.keyboard.type("y");
-  await page.keyboard.press("Meta+a");
+  await page.keyboard.press("Control+a");
   await page.keyboard.type("z");
-  await page.keyboard.press("Meta+Backspace");
-  expect(await inputs(page)).toEqual(["one ", "xone ", "xy", "z", ""]);
+  expect(await inputs(page)).toEqual(["one ", "xone ", "xy", "z"]);
   expect((await take(page)).raw).toBe("");
+});
+
+test("a key with Meta that xterm.js sends without it is not the field's: the program has it (SPEC §10.4)", async ({ page }) => {
+  await field(page, `<input id=t data-on=input value="one two">`, "t");
+  // Meta+Backspace is DEL to the program, but no Backspace to the field.
+  await page.keyboard.press("Meta+Backspace");
+  const { msgs, raw } = await take(page);
+  expect(msgs).toEqual([]);
+  expect(raw).toBe("\x7f");
 });
 
 test("an editing host edits with its keymap: words and lines as SPEC §10.2 has them", async ({ page }) => {

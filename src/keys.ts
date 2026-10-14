@@ -6,7 +6,10 @@
 // against it (tests/unit/conformance.test.ts); the surface applies its plans
 // to the document's fields (surface.ts).
 
-const MODIFIERS = ["Control", "Alt", "Meta", "Shift"] as const;
+/** The modifiers, in the order a key's name writes them (SPEC §10.4).
+ * `Mod` is a binding's platform modifier, which a keymap reads as its
+ * platform's; a pressed key is never named with it. */
+const MODIFIERS = ["Mod", "Control", "Alt", "Meta", "Shift"] as const;
 
 export const ACTIONS = new Set([
   "char-backward",
@@ -82,7 +85,7 @@ const BACKWARD = new Set(["char-backward", "word-backward", "line-start", "line-
 export const INSERT = "insert";
 
 /** SDK.md §3.10's keymap: Bubble Tea's text input and text area, but
- * Control+a selects all. */
+ * Mod+a selects all. */
 export const TERMINAL_KEYS = [
   "ArrowLeft=char-backward Control+b=char-backward ArrowRight=char-forward Control+f=char-forward",
   "Alt+ArrowLeft=word-backward Control+ArrowLeft=word-backward Alt+b=word-backward",
@@ -96,7 +99,7 @@ export const TERMINAL_KEYS = [
   "ArrowUp=line-previous Control+p=line-previous ArrowDown=line-next Control+n=line-next",
   "PageUp=page-up PageDown=page-down",
   "Alt+<=input-start Control+Home=input-start Alt+>=input-end Control+End=input-end",
-  "Control+a=select-all",
+  "Mod+a=select-all",
   "Control+m=newline",
 ].join(" ");
 
@@ -166,10 +169,78 @@ function keyName(mods: string[], value: string): string {
   return [...MODIFIERS.filter((x) => m.has(x)), value === " " ? "Space" : value].join("+");
 }
 
-/** A key's name in its canonical form (SPEC §10.4), or null. */
+/** A key's name in its canonical form (SPEC §10.4), or null. A binding's
+ * `Mod` is kept, written first. */
 export function parseKey(name: string): string | null {
   const k = splitKey(name);
   return k ? keyName(...k) : null;
+}
+
+// --- Platforms (§10.2, §10.4) ------------------------------------------------
+
+/** How a host reads bindings: the modifier `Mod` stands for, and its edit
+ * shortcuts, each edit action with its keys (absent: `defaultEdit`). */
+export interface Platform {
+  mod?: "Control" | "Meta";
+  edit?: Record<string, string[]>;
+}
+
+/** The edit actions, in SPEC §10.2's order. */
+export const EDIT_ACTIONS = ["select-all", "copy", "cut", "paste", "undo", "redo"] as const;
+
+/** The default edit shortcuts for a `Mod` (SPEC §10.2). */
+export function defaultEdit(mod: "Control" | "Meta" = "Control"): Record<string, string[]> {
+  const e: Record<string, string[]> = {};
+  EDIT_ACTIONS.forEach((a, i) => (e[a] = [`${mod}+${"acxvzZ"[i]}`]));
+  if (mod === "Control") e.redo!.push("Control+y");
+  return e;
+}
+
+/** The platform's edit shortcuts. */
+export function editOf(p: Platform): Record<string, string[]> {
+  return p.edit ?? defaultEdit(p.mod);
+}
+
+/** A key's name as the platform reads it: canonical, with `Mod` read; null
+ * when it does not parse. */
+export function readKey(p: Platform, name: string): string | null {
+  const k = splitKey(name);
+  if (!k) return null;
+  const mod = p.mod ?? "Control";
+  const mods = k[0].includes("Mod") ? [...new Set(k[0].map((m) => (m === "Mod" ? mod : m)))] : k[0];
+  return keyName(mods, k[1]);
+}
+
+/** The edit action whose shortcut a pressed key is (SPEC §10.6), or null:
+ * its own binding only, so Control+V is not Control+v's paste. */
+export function editAction(p: Platform, name: string): string | null {
+  const m = new Keymap(false, p.mod);
+  const edit = editOf(p);
+  for (const a of EDIT_ACTIONS) for (const k of edit[a] ?? []) m.bind(k, a);
+  const k = readKey(p, name);
+  return k === null ? null : (m.bindings.get(k) ?? null);
+}
+
+/** A `data-key` value's keys (SPEC §10.5), each as `readKey` reads it, and
+ * `<leader>` as the keys of `leader`. Null for a value a host ignores: no
+ * keys, a key that does not parse, Tab, Shift+Tab or Escape, or any other
+ * name in angle brackets. */
+export function parseSequence(p: Platform, leader: string, value: string): string[] | null {
+  const out: string[] = [];
+  for (const w of value.split(/[ \t\n\f\r]+/)) {
+    if (!w) continue;
+    if (w === "<leader>") {
+      const l = parseSequence(p, "", leader);
+      if (!l) return null;
+      out.push(...l);
+      continue;
+    }
+    if (w.length > 2 && w.startsWith("<") && w.endsWith(">")) return null;
+    const k = readKey(p, w);
+    if (k === null || UNBOUND.has(k)) return null;
+    out.push(k);
+  }
+  return out.length ? out : null;
 }
 
 // --- Keys from the terminal's input (§10.4) ----------------------------------
@@ -358,26 +429,38 @@ export function decodeKeys(s: string): (string | null)[] {
 
 const UNBOUND = new Set(["Tab", "Shift+Tab", "Escape"]);
 
-/** Bindings of keys to actions. `resolve` makes the one a field uses. */
+/** Bindings of keys to actions, read on a platform: `Mod` is its. `resolve`
+ * makes the one a field uses. */
 export class Keymap {
+  /** By key, canonical with `Mod` read. */
   readonly bindings = new Map<string, string>();
+  /** Each key's last binding as written, `Mod` kept. */
+  readonly written = new Map<string, string>();
   readonly multiline: boolean;
-  constructor(multiline = false) {
+  readonly mod: "Control" | "Meta";
+  constructor(multiline = false, mod: "Control" | "Meta" = "Control") {
     this.multiline = multiline;
+    this.mod = mod;
   }
 
+  /** Binds a key, which may name `Mod`, to an action. */
   bind(key: string, action: string) {
-    this.bindings.set(key, action);
+    const k = readKey({ mod: this.mod }, key);
+    if (k === null) return;
+    this.bindings.set(k, action);
+    this.written.set(k, parseKey(key)!);
   }
 
+  /** Each key once, where it was first bound, as its last binding wrote
+   * it, with its last action. */
   format(): string {
-    return Array.from(this.bindings, ([k, a]) => `${k}=${a}`).join(" ");
+    return Array.from(this.bindings, ([k, a]) => `${this.written.get(k) ?? k}=${a}`).join(" ");
   }
 
   /** The action a key is bound to: its own binding, or for a key with
    * Shift that has none, the binding of the key without it (SPEC §10.2). */
   action(name: string): string | undefined {
-    const k = parseKey(name);
+    const k = readKey({ mod: this.mod }, name);
     if (k === null || UNBOUND.has(k)) return undefined;
     const [mods, value] = splitKey(k)!;
     const a = this.bindings.get(k);
@@ -408,7 +491,7 @@ export class Keymap {
   /** What the field does with a key: an action, `INSERT` for a character it
    * types, or null when the key is not the field's. */
   lookup(name: string): string | null {
-    const k = parseKey(name);
+    const k = readKey({ mod: this.mod }, name);
     if (k === null || UNBOUND.has(k)) return null;
     const a = this.action(k);
     if (a !== undefined) return a === "program" || (MULTILINE_ACTIONS.has(a) && !this.multiline) ? null : a;
@@ -441,9 +524,11 @@ function* bindingsOf(value: string): Generator<[string, string]> {
   }
 }
 
-/** A `data-keys` value's bindings, without those a host ignores. */
-export function parseKeymap(value: string, multiline = false): Keymap {
-  const m = new Keymap(multiline);
+/** A `data-keys` value's bindings, without those a host ignores. `Mod`
+ * reads as the platform's: where it is Control, `Mod+a` and `Control+a`
+ * are one key. */
+export function parseKeymap(p: Platform, value: string, multiline = false): Keymap {
+  const m = new Keymap(multiline, p.mod);
   for (const [k, a] of bindingsOf(value)) m.bind(k, a);
   return m;
 }
@@ -453,59 +538,70 @@ export function parseKeymap(value: string, multiline = false): Keymap {
  * Only its `program` bindings (`Keymap.program`) and its scroll actions
  * (`Keymap.scroll`) count there: a nearer binding of a key to another
  * action cancels a farther one. */
-export function elementKeymap(...values: string[]): Keymap {
-  const m = new Keymap();
-  for (const v of values) for (const [k, a] of parseKeymap(v).bindings) m.bind(k, a);
+export function elementKeymap(p: Platform, ...values: string[]): Keymap {
+  const m = new Keymap(false, p.mod);
+  for (const v of values) for (const [k, a] of bindingsOf(v)) m.bind(k, a);
   return m;
 }
 
-/** A field's keymap: SPEC §10.2's default, then each `data-keys` value, the
- * root's first. A binding to a scroll action is left out where it stands,
- * in its own value too: it neither acts nor overrides an earlier binding. */
-export function resolve(multiline: boolean, ...values: string[]): Keymap {
-  const m = new Keymap(multiline);
-  for (const [k, a] of [
-    ["ArrowLeft", "char-backward"],
-    ["ArrowRight", "char-forward"],
-    ["Control+ArrowLeft", "word-backward"],
-    ["Control+ArrowRight", "word-forward"],
-    ["Alt+ArrowLeft", "word-backward"],
-    ["Alt+ArrowRight", "word-forward"],
-    ["Home", "line-start"],
-    ["End", "line-end"],
-    ["Control+Home", "input-start"],
-    ["Control+End", "input-end"],
-    ["Backspace", "delete-char-backward"],
-    ["Delete", "delete-char-forward"],
-    ["Control+Backspace", "delete-word-backward"],
-    ["Control+Delete", "delete-word-forward"],
-    ["Alt+Backspace", "delete-word-backward"],
-    ["Alt+Delete", "delete-word-forward"],
-    ["ArrowUp", "line-previous"],
-    ["ArrowDown", "line-next"],
-    ["PageUp", "page-up"],
-    ["PageDown", "page-down"],
-    ["Control+a", "select-all"],
-    ["Meta+ArrowLeft", "line-start"],
-    ["Meta+ArrowRight", "line-end"],
-    ["Meta+ArrowUp", "input-start"],
-    ["Meta+ArrowDown", "input-end"],
-    ["Meta+Backspace", "delete-to-line-start"],
-    ["Meta+a", "select-all"],
-    ["Control+c", "copy"],
-    ["Meta+c", "copy"],
-    ["Control+x", "cut"],
-    ["Meta+x", "cut"],
-    ["Control+v", "paste"],
-    ["Meta+v", "paste"],
-    ["Control+z", "undo"],
-    ["Meta+z", "undo"],
-    ["Control+Z", "redo"],
-    ["Control+y", "redo"],
-    ["Meta+Z", "redo"],
-    ["Enter", multiline ? "newline" : "submit"],
-  ] as const)
-    m.bind(k, a);
+/** The default keymap's keys on every host (SPEC §10.2); Enter, those of
+ * the platform's `Mod` and its edit shortcuts follow. */
+const DEFAULT_KEYS = [
+  ["ArrowLeft", "char-backward"],
+  ["ArrowRight", "char-forward"],
+  ["Alt+ArrowLeft", "word-backward"],
+  ["Alt+ArrowRight", "word-forward"],
+  ["Home", "line-start"],
+  ["End", "line-end"],
+  ["Backspace", "delete-char-backward"],
+  ["Delete", "delete-char-forward"],
+  ["Alt+Backspace", "delete-word-backward"],
+  ["Alt+Delete", "delete-word-forward"],
+  ["ArrowUp", "line-previous"],
+  ["ArrowDown", "line-next"],
+  ["PageUp", "page-up"],
+  ["PageDown", "page-down"],
+] as const;
+
+/** Where `Mod` is Control. */
+const CONTROL_KEYS = [
+  ["Control+ArrowLeft", "word-backward"],
+  ["Control+ArrowRight", "word-forward"],
+  ["Control+Home", "input-start"],
+  ["Control+End", "input-end"],
+  ["Control+Backspace", "delete-word-backward"],
+  ["Control+Delete", "delete-word-forward"],
+] as const;
+
+/** Where `Mod` is Meta: macOS's, with Emacs's Control keys. */
+const META_KEYS = [
+  ["Meta+ArrowLeft", "line-start"],
+  ["Meta+ArrowRight", "line-end"],
+  ["Meta+ArrowUp", "input-start"],
+  ["Meta+ArrowDown", "input-end"],
+  ["Meta+Backspace", "delete-to-line-start"],
+  ["Control+a", "line-start"],
+  ["Control+e", "line-end"],
+  ["Control+b", "char-backward"],
+  ["Control+f", "char-forward"],
+  ["Control+p", "line-previous"],
+  ["Control+n", "line-next"],
+  ["Control+h", "delete-char-backward"],
+  ["Control+d", "delete-char-forward"],
+  ["Control+k", "delete-to-line-end"],
+] as const;
+
+/** A field's keymap: SPEC §10.2's default for the platform's `Mod`, with
+ * its edit shortcuts, then each `data-keys` value, the root's first. A
+ * binding to a scroll action is left out where it stands, in its own value
+ * too: it neither acts nor overrides an earlier binding. */
+export function resolve(p: Platform, multiline: boolean, ...values: string[]): Keymap {
+  const m = new Keymap(multiline, p.mod);
+  for (const [k, a] of DEFAULT_KEYS) m.bind(k, a);
+  m.bind("Enter", multiline ? "newline" : "submit");
+  for (const [k, a] of p.mod === "Meta" ? META_KEYS : CONTROL_KEYS) m.bind(k, a);
+  const edit = editOf(p);
+  for (const a of EDIT_ACTIONS) for (const k of edit[a] ?? []) m.bind(k, a);
   for (const v of values) for (const [k, a] of bindingsOf(v)) if (!SCROLL_ACTIONS.has(a)) m.bind(k, a);
   return m;
 }

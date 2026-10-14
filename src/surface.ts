@@ -21,7 +21,8 @@ import type { Body, Value } from "./msgpack.ts";
 import { cspSources, intersect, parse, type Policy } from "./network.ts";
 import { NO_BASE, type Store } from "./resources.ts";
 import { edited, type FieldState, History, type Run, runOf, stateOf, step } from "./history.ts";
-import { chars, elementKeymap, INSERT, inputKeys, isBreak, isSpace, type InputKey, MULTILINE_ACTIONS, plan, resolve, ROW_ACTIONS, type Rows, type Text } from "./keys.ts";
+import { chars, elementKeymap, INSERT, inputKeys, isBreak, isSpace, type InputKey, MULTILINE_ACTIONS, type Platform, plan, resolve, ROW_ACTIONS, type Rows, type Text } from "./keys.ts";
+import * as seq from "./seq.ts";
 
 /** A surface's CSP: nothing from the network but what the host grants. The
  * `<base>` is the addon's own (a document's is read, then dropped), so any
@@ -75,6 +76,16 @@ export interface SurfaceHost {
   encodeKey(e: KeyboardEvent): string | null;
   /** Sends the program what `encodeKey` gave, as typed. */
   sendKey(data: string): void;
+  /** How keys are read (SPEC §10.4, §10.5): the platform, the user's
+   *  leader and how long a sequence waits, in milliseconds. */
+  keys: KeySettings;
+  /** A key that reaches the program while it takes the edit command the
+   *  key is a shortcut of (SPEC §10.6): the host sent the command, and the
+   *  key goes no further. */
+  command(e: KeyboardEvent): boolean;
+  /** Shows the which-key menu of a sequence waiting (SPEC §10.5), or hides
+   *  it (null). */
+  menu(m: seq.Menu | null): void;
   /** A key the browser keeps (the `browserKeys` option): the surface
    *  leaves it to the browser rather than hand it to the terminal. */
   browserKey(e: KeyboardEvent): boolean;
@@ -120,6 +131,23 @@ export interface SurfaceHost {
    *  (SPEC §9.2): the program's, as on the cells beneath, at a point in the
    *  page. */
   cells(kind: "down" | "move" | "up", e: MouseEvent, pageX: number, pageY: number): void;
+}
+
+export interface KeySettings {
+  platform: Platform;
+  leader: string;
+  timeout: number;
+}
+
+/** How long a sequence waits before its menu shows (SPEC §10.5), in
+ * milliseconds: one typed quickly shows none. */
+const MENU_DELAY = 300;
+
+/** A key a sequence waiting took (SPEC §10.5): the event, and its name as
+ * the program would read it (null for no one key). */
+interface Typed {
+  e: KeyboardEvent;
+  name: string | null;
 }
 
 type Control = "none" | "text" | "textarea" | "date" | "select" | "activatable";
@@ -356,6 +384,12 @@ export class Surface {
   private masked: HTMLInputElement | null = null;
   /** Tab is moving focus: the field it reaches selects its text. */
   private tabbing = false;
+  /** A key sequence waiting for its next key (SPEC §10.5): the keys typed,
+   * when it times out, and its menu, which shows a moment after it began. */
+  private waiting: { typed: Typed[]; timer: ReturnType<typeof setTimeout>; menuTimer: ReturnType<typeof setTimeout> | null; shown: boolean } | null = null;
+  /** The keys a wait typed go on (`replay`): nothing does for them what the
+   * browser would, as they came before. */
+  private replaying = false;
   /** The rows the program heard last, while the placement asked for `fit`
    * (`f=1`, SPEC §5.2); null when it did not. */
   private fitRows: number | null = null;
@@ -538,6 +572,7 @@ export class Surface {
       this.detachedState = true; // from here on, emit() sends nothing
       this.dropDrag(); // it ends with nothing more reported (SPEC §9.1)
       const had = this.keyboard || this.frameFocused();
+      this.endWait();
       this.keyboard = false;
       this.told = null;
       this.focusedControl()?.blur();
@@ -915,6 +950,7 @@ export class Surface {
     this.dropDrag();
     this.dropAlt();
     if (this.settling) clearTimeout(this.settling);
+    this.endWait();
     if (this.keyboard || this.frameFocused()) this.host.focusTerminal();
     this.box.remove();
   }
@@ -960,7 +996,7 @@ export class Surface {
     const start = sel.getRangeAt(0).startContainer;
     const el = start.nodeType === 1 ? (start as Element) : start.parentElement;
     if (!el) return null;
-    return resolve(false, ...keysValues(el)).lookup(domKeyName(e)) === "copy" ? text : false;
+    return resolve(this.host.keys.platform, false, ...keysValues(el)).lookup(domKeyName(e)) === "copy" ? text : false;
   }
 
   /** Drops the document's selection: the user pressed elsewhere (SPEC §11). */
@@ -996,6 +1032,7 @@ export class Surface {
     // A press still settling must not focus its element again: the
     // keyboard left after it (Tab past the last element, or `a=blur`).
     this.pressed = null;
+    this.endWait();
     this.commit();
     if (this.keyboard) this.giveBack();
   }
@@ -1054,6 +1091,7 @@ export class Surface {
     }
     this.pressNothing = true;
     if (this.keyboard) {
+      this.endWait();
       this.commit();
       this.keyboard = false;
       this.told = null;
@@ -1167,6 +1205,23 @@ export class Surface {
     // the program included (SPEC §10.2). Chromium's list keeps them from
     // the document anyway; where one reaches it, it is the list's.
     if (listOpen(this.focusedControl())) return;
+    // A sequence waiting has the next key (SPEC §10.5); the browser's own
+    // and a modifier on its own are no key it reads.
+    if (this.waiting && !this.host.browserKey(e) && !NOT_KEYS.has(e.key)) {
+      this.waitKey(e);
+      return;
+    }
+    this.plainKey(e, true);
+  }
+
+  /**
+   * A key for the focused element as if no element had a `data-key`, but
+   * where `start` lets one start a sequence (SPEC §10.2, §10.5): Tab, a text
+   * field's keys, what the element uses, then a sequence, the scroll
+   * actions and the keys the document scrolls with; the rest is the
+   * program's.
+   */
+  private plainKey(e: KeyboardEvent, start: boolean) {
     if (e.key === "Tab" && !e.ctrlKey && !e.altKey && !e.metaKey) {
       // Tab moves between controls; past the last one it leaves the surface.
       const order = this.tabbable();
@@ -1178,21 +1233,177 @@ export class Surface {
       } else {
         this.tabbing = true;
         setTimeout(() => (this.tabbing = false), 0);
+        // A Tab a wait typed: the browser moved no focus for it.
+        if (this.replaying) order[at + (e.shiftKey ? -1 : 1)]?.focus();
       }
       return;
     }
     const active = this.focusedControl();
     const kind = this.controlKind(active);
     if (kind === "text" || kind === "textarea") {
-      this.fieldKey(e, active!, kind === "textarea");
+      this.fieldKey(e, active!, kind === "textarea", start);
       return;
     }
     if (this.host.browserKey(e)) return; // the browser's: reload, zoom, …
     if (active && this.programKey(e, active)) return;
-    if (this.consumes(e, kind)) return;
+    if (this.consumes(e, kind)) {
+      if (this.replaying) this.use(e, active!, kind);
+      return;
+    }
+    if (start && this.startSequence(e, null)) return;
     if (active && this.scrollActionKey(e, active)) return;
     if (this.axes && this.scrollKey(e)) return;
     this.forward(e);
+  }
+
+  /** What the browser does with a key an element uses (`consumes`), for a
+   * key a wait typed, which came before: a button's Space or Enter clicks
+   * it, and a select's arrows pick the option before or after. A date
+   * field's keys are lost. */
+  private use(e: KeyboardEvent, el: HTMLElement, kind: Control) {
+    if (kind === "activatable") {
+      el.click();
+      return;
+    }
+    if (kind !== "select") return;
+    const sel = el as HTMLSelectElement;
+    const options = Array.from(sel.options).filter((o) => !o.disabled);
+    const at = options.indexOf(sel.options[sel.selectedIndex]!);
+    const to = { ArrowUp: at - 1, ArrowDown: at + 1, Home: 0, End: options.length - 1 }[e.key];
+    const o = to === undefined ? undefined : options[Math.max(0, Math.min(options.length - 1, to))];
+    if (!o || o.selected) return;
+    o.selected = true;
+    sel.dispatchEvent(new Event("input", { bubbles: true }));
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  // --- Key sequences (SPEC §10.5) -------------------------------------------
+
+  /** A key's name as the program would read it (SPEC §10.4), for a
+   * sequence: null for no key, or for more than one. */
+  private typedName(e: KeyboardEvent, keys: InputKey[] | null): string | null {
+    if (!keys) {
+      const data = this.host.encodeKey(e);
+      keys = typedKeys(e, data);
+    }
+    return keys.length === 1 ? keys[0]!.key : null;
+  }
+
+  /** The document's sequences, and how near the focus each element is. */
+  private sequences(): [seq.Seq[], seq.Nearness] {
+    const k = this.host.keys;
+    return [seq.sequences(this.doc, k.platform, k.leader), new seq.Nearness(this.focusedControl())];
+  }
+
+  /**
+   * A key the focused element does not use, nor its keymap gives the
+   * program, may start a sequence (SPEC §10.5), named as the program would
+   * read it (`keys`, when the caller has them): where it finishes one that
+   * no longer one goes on from, it runs; where one goes on from it, it
+   * waits for the next key.
+   */
+  private startSequence(e: KeyboardEvent, keys: InputKey[] | null): boolean {
+    if (!this.doc.querySelector("[data-key]")) return false;
+    const name = this.typedName(e, keys);
+    if (name === null) return false;
+    const [seqs, near] = this.sequences();
+    const r = seq.step(seqs, near, [name]);
+    if (r === "dead") return false;
+    e.preventDefault();
+    e.stopPropagation();
+    if (r === "wait") {
+      this.waiting = { typed: [{ e, name }], timer: this.waitTimer(), menuTimer: setTimeout(() => this.showMenu(), MENU_DELAY), shown: false };
+    } else this.runSequence(r.run);
+    return true;
+  }
+
+  /** The next key while a sequence waits (SPEC §10.5): Escape ends the
+   * wait; a key that finishes a sequence runs it, unless a longer one at
+   * least as near the focus goes on from it, and then it waits again; any
+   * other key ends the wait, and the keys typed go on in order. */
+  private waitKey(e: KeyboardEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const w = this.waiting!;
+    const name = this.typedName(e, null);
+    if (name === "Escape") {
+      this.endWait();
+      return;
+    }
+    w.typed.push({ e, name });
+    const names = w.typed.map((t) => t.name);
+    const [seqs, near] = this.sequences();
+    const r = names.includes(null) ? "dead" : seq.step(seqs, near, names as string[]);
+    if (r === "wait") {
+      clearTimeout(w.timer);
+      w.timer = this.waitTimer();
+      if (w.shown) this.showMenu();
+      return;
+    }
+    this.endWait();
+    if (r === "dead") this.replay(w.typed);
+    else this.runSequence(r.run);
+  }
+
+  private waitTimer() {
+    return setTimeout(() => this.expire(), this.host.keys.timeout);
+  }
+
+  /** A wait times out (SPEC §10.5): the sequence typed runs if it finishes
+   * one, and its keys go on otherwise. */
+  private expire() {
+    const w = this.waiting;
+    if (!w) return;
+    this.endWait();
+    const [seqs, near] = this.sequences();
+    const el = seq.finished(seqs, near, w.typed.map((t) => t.name ?? ""));
+    if (el) this.runSequence(el);
+    else this.replay(w.typed);
+  }
+
+  /** The keys a wait typed go on in order as if no element had a
+   * `data-key` (SPEC §10.5): to the element, the scroll actions and the
+   * program. */
+  private replay(typed: Typed[]) {
+    this.replaying = true;
+    try {
+      for (const t of typed) if (this.keyboard) this.plainKey(t.e, false);
+    } finally {
+      this.replaying = false;
+    }
+  }
+
+  /** The menu of the sequence waiting (SPEC §10.5). */
+  private showMenu() {
+    const w = this.waiting;
+    if (!w) return;
+    w.menuTimer = null;
+    w.shown = true;
+    const [seqs, near] = this.sequences();
+    this.host.menu(seq.menu(seqs, near, w.typed.map((t) => t.name ?? "")));
+  }
+
+  /** Ends a wait, if one is under way, and its menu. */
+  private endWait() {
+    const w = this.waiting;
+    if (!w) return;
+    this.waiting = null;
+    clearTimeout(w.timer);
+    if (w.menuTimer) clearTimeout(w.menuTimer);
+    if (w.shown) this.host.menu(null);
+  }
+
+  /**
+   * Runs an element's sequence (SPEC §10.5), as a browser does an access
+   * key: it clicks an element a click activates, as a click from the
+   * keyboard does, without moving the focus, and focuses any other that
+   * takes focus. A disabled element's does nothing; a hidden one's click
+   * has no cells, so its `area` is all zeros.
+   */
+  private runSequence(el: Element) {
+    if (seq.disabled(el) || !el.isConnected) return;
+    if (seq.clickActivated(el)) (el as HTMLElement).click();
+    else if (takesFocus(el, this.hyper)) (el as HTMLElement).focus();
   }
 
   /**
@@ -1206,9 +1417,9 @@ export class Surface {
   private programKey(e: KeyboardEvent, el: Element): boolean {
     const values = keysValues(el);
     if (!values.some((v) => v.includes("program"))) return false;
-    const keymap = elementKeymap(...values);
+    const keymap = elementKeymap(this.host.keys.platform, ...values);
     const data = this.host.encodeKey(e);
-    const keys: InputKey[] = data === null ? [{ key: domKeyName(e), data: "" }] : inputKeys(data);
+    const keys: InputKey[] = typedKeys(e, data);
     if (!keys.some((k) => k.key !== null && keymap.program(k.key))) return false;
     this.toProgram(e, data);
     return true;
@@ -1227,9 +1438,9 @@ export class Surface {
   private scrollActionKey(e: KeyboardEvent, el: Element): boolean {
     const values = keysValues(el);
     if (!values.some((v) => v.includes("scroll-"))) return false;
-    const keymap = elementKeymap(...values);
+    const keymap = elementKeymap(this.host.keys.platform, ...values);
     const data = this.host.encodeKey(e);
-    const keys: InputKey[] = data === null ? [{ key: domKeyName(e), data: "" }] : inputKeys(data);
+    const keys: InputKey[] = typedKeys(e, data);
     const action = keys.map((k) => (k.key === null ? null : keymap.scroll(k.key))).find((a) => a !== null);
     const k = action ? SCROLL_ACTIONS[action] : undefined;
     if (!k || !(this.axes & (k.axis === "y" ? 1 : 2))) return false;
@@ -1253,7 +1464,10 @@ export class Surface {
   private toProgram(e: KeyboardEvent, data: string | null) {
     e.preventDefault();
     e.stopPropagation();
-    this.forwarded.add(e.code);
+    // The key of an edit command the program takes is the command (§10.6).
+    if (e.type === "keydown" && this.host.command(e)) return;
+    // A key a wait typed was released already.
+    if (!this.replaying) this.forwarded.add(e.code);
     if (data === null) this.host.key(e);
     else if (data) this.host.sendKey(data);
   }
@@ -1284,7 +1498,7 @@ export class Surface {
    * the field does with each key; what it does not use is the program's,
    * sent as xterm.js encoded it.
    */
-  private fieldKey(e: KeyboardEvent, el: HTMLElement, multiline: boolean) {
+  private fieldKey(e: KeyboardEvent, el: HTMLElement, multiline: boolean, start: boolean) {
     if (this.host.browserKey(e)) return; // the browser's: reload, zoom, …
     const keymap = this.keymapOf(el, multiline);
     // No copy or cut with nothing selected, nor in a password field: the
@@ -1297,7 +1511,7 @@ export class Surface {
     const pressed = typesNoText(e) ? domKeyName(e) : null;
     const first = pressed !== null && lookup(pressed) !== null;
     const data = first ? "" : this.host.encodeKey(e);
-    const keys: InputKey[] = first ? [{ key: pressed, data: "" }] : data === null ? [{ key: domKeyName(e), data: "" }] : inputKeys(data);
+    const keys: InputKey[] = first ? [{ key: pressed, data: "" }] : typedKeys(e, data);
     const uses = keys.map((k) => (k.key === null ? null : lookup(k.key)));
     // A move with Shift selects (§10.2).
     const extend = keys.map((k) => k.key !== null && keymap.selects(k.key));
@@ -1305,6 +1519,8 @@ export class Surface {
       // The program's, unless the document scrolls with it (SPEC §5.3); a
       // key bound to `program` is the program's first (§10.2).
       const program = keys.some((k) => k.key !== null && keymap.program(k.key));
+      // Not the program's: it may start a sequence (§10.5).
+      if (!program && start && this.startSequence(e, keys)) return;
       if (!program && this.axes && this.scrollKey(e)) return;
       this.toProgram(e, data);
       return;
@@ -1319,7 +1535,8 @@ export class Surface {
       const enter = use === "submit" && e.key === "Enter" && el.localName === "input";
       // The browser's own paste, where its key is the one pressed.
       const paste = use === "paste" && first && (mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.altKey;
-      if (typed || enter || paste) {
+      // A key a wait typed came before: the browser does nothing for it.
+      if ((typed || enter || paste) && !this.replaying) {
         this.goal = null;
         return;
       }
@@ -1347,7 +1564,7 @@ export class Surface {
   /** A field's keymap (SPEC §10.2): the default, then the `data-keys` of
    * each element from the root down to the field. */
   private keymapOf(el: Element, multiline: boolean) {
-    return resolve(multiline, ...keysValues(el));
+    return resolve(this.host.keys.platform, multiline, ...keysValues(el));
   }
 
   /** Does an action in a field, or types text in it. */
@@ -1623,7 +1840,8 @@ export class Surface {
   private forward(e: KeyboardEvent) {
     e.preventDefault();
     e.stopPropagation();
-    this.forwarded.add(e.code);
+    if (e.type === "keydown" && this.host.command(e)) return;
+    if (!this.replaying) this.forwarded.add(e.code);
     this.host.key(e);
   }
 
@@ -2154,6 +2372,8 @@ export class Surface {
       if (!this.programFocus && !this.auxPress && !this.keyboard) this.settle();
     });
     win.addEventListener("blur", () => {
+      // A wait ends with the keyboard, and its keys do nothing (SPEC §10.5).
+      this.endWait();
       this.commit();
       if (this.keyboard) {
         this.keyboard = false;
@@ -2740,6 +2960,22 @@ function typesNoText(e: KeyboardEvent): boolean {
 /** Key values that are no key a field is offered: modifiers, dead keys, an
  * input method's. */
 const NOT_KEYS = new Set(["Unidentified", "Dead", "Process", "Compose", "Shift", "Control", "Alt", "AltGraph", "Meta", "OS", "Super", "Hyper", "Fn", "FnLock", "CapsLock", "NumLock", "ScrollLock", "Symbol", "SymbolLock"]);
+
+/** A pressed key's name (SPEC §10.4), or null for a modifier on its own,
+ * a dead key or an input method's: no key. */
+export function pressedName(e: KeyboardEvent): string | null {
+  return NOT_KEYS.has(e.key) ? null : domKeyName(e);
+}
+
+/** A key as the program would read it (SPEC §10.4), from what xterm.js
+ * sends for it (`data`; null when it cannot say, and the key is named from
+ * the event). xterm.js drops a Meta it has no encoding for, so Meta+Backspace
+ * is DEL: such a key is none the surface reads, and goes on as it came. */
+function typedKeys(e: KeyboardEvent, data: string | null): InputKey[] {
+  if (data === null) return [{ key: domKeyName(e), data: "" }];
+  const keys = inputKeys(data);
+  return e.metaKey ? keys.map((k) => (k.key !== null && !/(^|\+)Meta\+/.test(k.key) ? { ...k, key: null } : k)) : keys;
+}
 
 /** A key's name from the DOM's event (SPEC §10.4): the modifiers, then the
  * key's value, Shift left out before a character. */

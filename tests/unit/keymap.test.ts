@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { elementKeymap, resolve } from "../../src/keys.ts";
 
 test("a key with Shift that is not bound is looked up again without it; a binding with Shift wins", () => {
-  const m = elementKeymap("ArrowDown=program a=program", "Shift+ArrowUp=program ArrowUp=line-start");
+  const m = elementKeymap({}, "ArrowDown=program a=program", "Shift+ArrowUp=program ArrowUp=line-start");
   assert.equal(m.program("Shift+ArrowDown"), true);
   assert.equal(m.program("Shift+ArrowUp"), true);
   assert.equal(m.program("ArrowUp"), false);
@@ -20,7 +20,7 @@ test("a key with Shift that is not bound is looked up again without it; a bindin
 });
 
 test("a binding with an unknown action does not cancel program, and Escape and Tab cannot be given to it", () => {
-  const m = elementKeymap("ArrowDown=program Escape=program Tab=program", "ArrowDown=frobnicate");
+  const m = elementKeymap({}, "ArrowDown=program Escape=program Tab=program", "ArrowDown=frobnicate");
   assert.equal(m.program("ArrowDown"), true);
   assert.equal(m.program("Escape"), false);
   assert.equal(m.program("Tab"), false);
@@ -28,7 +28,7 @@ test("a binding with an unknown action does not cancel program, and Escape and T
 });
 
 test("in a text field a key bound to program is not the field's, and is the program's", () => {
-  const m = resolve(false, "ArrowLeft=program", "Shift+ArrowRight=program");
+  const m = resolve({}, false, "ArrowLeft=program", "Shift+ArrowRight=program");
   assert.equal(m.lookup("ArrowLeft"), null);
   assert.equal(m.program("ArrowLeft"), true);
   assert.equal(m.program("Shift+ArrowLeft"), true);
@@ -44,7 +44,7 @@ test("in a text field a key bound to program is not the field's, and is the prog
 // scroll action; a field's keymap leaves them out where they stand.
 
 test("outside a text field, scroll gives the scroll action a key is bound to, with the fallback without Shift", () => {
-  const m = elementKeymap("j=program Space=scroll-page-down G=scroll-end", "j=scroll-down");
+  const m = elementKeymap({}, "j=program Space=scroll-page-down G=scroll-end", "j=scroll-down");
   assert.equal(m.scroll("j"), "scroll-down");
   assert.equal(m.program("j"), false);
   assert.equal(m.scroll("Space"), "scroll-page-down");
@@ -52,11 +52,11 @@ test("outside a text field, scroll gives the scroll action a key is bound to, wi
   assert.equal(m.scroll("G"), "scroll-end");
   // g is a key of its own, and program is not a scroll action.
   assert.equal(m.scroll("g"), null);
-  assert.equal(elementKeymap("k=program").scroll("k"), null);
+  assert.equal(elementKeymap({}, "k=program").scroll("k"), null);
 });
 
 test("a text field's keymap leaves scroll actions out, in the same value too", () => {
-  const m = resolve(true, "k=program", "j=scroll-down k=scroll-up PageDown=scroll-page-down Control+d=delete-char-forward Control+d=scroll-half-page-down");
+  const m = resolve({}, true, "k=program", "j=scroll-down k=scroll-up PageDown=scroll-page-down Control+d=delete-char-forward Control+d=scroll-half-page-down");
   assert.equal(m.lookup("j"), "insert");
   assert.equal(m.lookup("k"), null);
   assert.equal(m.program("k"), true);
