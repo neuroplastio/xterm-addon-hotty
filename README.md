@@ -264,17 +264,19 @@ runs programs for whoever connects.
 
   new HottyAddon({ browserKeys: (e) => browserKeys(e) || (e.ctrlKey && e.key === "k") });
   ```
-- **Copying** (SPEC §11, the `copyKeys` option): while something is
-  selected, on the cells or in a surface, Ctrl+C and Cmd+C copy it to the
-  clipboard and keep it selected, and neither a surface nor the program
-  hears the key. A focused field's selection is the one copied, and a
-  password field's never is. With nothing selected, the key goes where it
-  would: Ctrl+C interrupts. There is one selection: a press on the cells,
-  or a selection made there, drops a surface's, and a press in a surface
-  drops the others'. `copyKeys: () => false` turns this off; the exported
-  `copyKeys` is the default.
+- **Copying** (SPEC §10.2, §11): a surface's selection is copied by its
+  keymap, Ctrl+C and Cmd+C by default, and neither the surface nor the
+  program hears the key; a document that binds one to `program` gives it
+  to the program while its text is selected. A focused field copies its
+  selection, never a password field's. With nothing selected the key goes
+  where it would: Ctrl+C interrupts. The cells' selection is copied by the
+  `copyKeys` option (default: the exported `copyKeys`, Ctrl+C and Cmd+C;
+  `() => false` turns it off). There is one selection: a press on the
+  cells, or a selection made there, drops a surface's, and a press in a
+  surface drops the others'. The browser's own Copy menu copies what is
+  selected whatever the keymaps say.
 - **Cutting, pasting and undo** (SPEC §10.2): in a surface's focused text
-  field, Ctrl+X cuts (to `navigator.clipboard`), Ctrl+V is the browser's
+  field, by its keymap, Ctrl+X cuts (to `navigator.clipboard`), Ctrl+V is the browser's
   own paste (an `input` drops line breaks, as HTML's does), and Ctrl+Z,
   Ctrl+Shift+Z and Ctrl+Y undo and redo, each field with its own history,
   kept by the addon so that every browser groups edits as the spec does.

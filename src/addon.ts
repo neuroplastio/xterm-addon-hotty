@@ -68,11 +68,13 @@ export interface HottyOptions {
    */
   browserKeys?: (e: KeyboardEvent) => boolean;
   /**
-   * Keys that copy what is selected (SPEC §11), on the cells or in a
-   * surface, to the clipboard. While something is selected they reach
-   * neither the surface nor the program; with nothing selected they go
-   * where they would, so Ctrl+C still interrupts. Default: `copyKeys`,
-   * Ctrl+C and Cmd+C. `() => false` leaves copying to the browser alone.
+   * Keys that copy what is selected on the cells to the clipboard. While
+   * something is selected there they reach neither a surface nor the
+   * program; with nothing selected they go where they would, so Ctrl+C
+   * still interrupts. Default: `copyKeys`, Ctrl+C and Cmd+C. `() => false`
+   * leaves copying the cells to the browser alone. A surface's selection
+   * is copied by its keymap (SPEC §10.2, §11), Ctrl+C and Cmd+C by
+   * default, whatever this says.
    */
   copyKeys?: (e: KeyboardEvent) => boolean;
 }
@@ -918,29 +920,27 @@ export class HottyAddon implements ITerminalAddon {
   }
 
   /** A copy key while something is selected (SPEC §11): the selection goes
-   * to the clipboard, and the key no further, the browser's copy included. */
+   * to the clipboard, and the key no further, the browser's copy included.
+   * A selection in a surface's document is copied by its keymap, which may
+   * leave the key to the program; one on the cells by `copyKeys`. A focused
+   * text field's selection is the field's keymap's (Surface.fieldKey). */
   private copyKey(e: KeyboardEvent): boolean {
-    if (!(this.opts.copyKeys ?? copyKeys)(e)) return false;
-    const text = this.selectedText();
-    if (text === "") return false;
+    const surfaces = [...this.surfaces.values()].sort((a, b) => Number(b.hasKeyboard()) - Number(a.hasKeyboard()));
+    for (const s of surfaces) {
+      const got = s.selectionCopy(e);
+      if (got === null) continue;
+      if (got === false) return false;
+      return this.copied(e, got);
+    }
+    if (!(this.opts.copyKeys ?? copyKeys)(e) || !this.term.hasSelection()) return false;
+    return this.copied(e, this.term.getSelection());
+  }
+
+  /** `text` goes to the clipboard, and the key `e` no further. */
+  private copied(e: KeyboardEvent, text: string): true {
     e.preventDefault();
     if (e.type === "keydown") navigator.clipboard?.writeText(text).catch(() => {});
     return true;
-  }
-
-  /** What the copy keys copy: the selection of the surface holding the
-   * keyboard, else the terminal's, else another surface's. A press leaves
-   * one of them at most (SPEC §11). */
-  private selectedText(): string {
-    const surfaces = [...this.surfaces.values()];
-    const focused = surfaces.find((s) => s.hasKeyboard())?.selectedText() ?? "";
-    if (focused !== "") return focused;
-    if (this.term.hasSelection()) return this.term.getSelection();
-    for (const s of surfaces) {
-      const t = s.selectedText();
-      if (t !== "") return t;
-    }
-    return "";
   }
 
   /** A box in the page as the buffer cells it covers (1-based, as xterm.js

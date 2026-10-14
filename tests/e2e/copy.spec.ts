@@ -1,6 +1,7 @@
-// Copying (SPEC §11): while something is selected, on the cells or in a
-// surface, Ctrl+C copies it and nothing hears the key; with nothing
-// selected, the program hears it. There is one selection.
+// Copying (SPEC §10.2, §11): while something is selected, on the cells or
+// in a surface, Ctrl+C copies it and nothing hears the key; with nothing
+// selected, the program hears it. A surface's keymap may give the key to
+// the program. There is one selection.
 import { expect, type Page, test } from "@playwright/test";
 import { open, send, surface, take, write } from "./helpers.ts";
 
@@ -99,12 +100,29 @@ test("the terminal's selection is copied, and there is one selection", async ({ 
   expect(await surfaceSelection(page)).toBe("");
 });
 
-test("copyKeys turns copying off", async ({ page }) => {
-  await open(page, "?pty=0&copy=0");
-  await send(page, { a: "doc", s: "k", q: "2" }, DOC);
-  await send(page, { a: "place", s: "k", c: "30", r: "4", q: "2" });
+test("a document's keymap may give Control+c to the program while its text is selected", async ({ page }) => {
+  await setup(page);
+  await send(page, { a: "doc", s: "k", q: "2" }, `<p id=p data-keys="Control+c=program Control+k=copy">Some words to copy</p>`);
   await selectParagraph(page);
   await page.evaluate(() => window.hotty.term.focus());
+  await take(page);
+  await page.keyboard.press("Control+c");
+  expect(await copied(page)).toEqual([]);
+  expect((await take(page)).raw).toBe("\x03");
+  await page.keyboard.press("Control+k");
+  expect(await copied(page)).toEqual(["Some words to copy"]);
+  expect((await take(page)).raw).toBe("");
+});
+
+test("copyKeys turns copying the cells off", async ({ page }) => {
+  await open(page, "?pty=0&copy=0");
+  await write(page, "cells\r\n");
+  await page.evaluate(() => {
+    const t = window.hotty.term as unknown as { select(c: number, r: number, n: number): void; focus(): void; buffer: { active: { cursorY: number; baseY: number } } };
+    t.focus();
+    const b = t.buffer.active;
+    t.select(0, b.baseY + b.cursorY - 1, 3);
+  });
   await take(page);
   await page.keyboard.press("Control+c");
   expect((await take(page)).raw).toBe("\x03");

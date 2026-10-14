@@ -943,6 +943,26 @@ export class Surface {
     return this.doc.getSelection()?.toString() ?? "";
   }
 
+  /**
+   * A key for the selection in the document outside a text field (SPEC
+   * §11): null when there is none, or a focused text field holds the
+   * selection; else its text when the keymap of the element whose text it
+   * starts in, read as a text field's, binds the key to `copy`, and false
+   * when it does not, the key going on as if nothing were selected.
+   */
+  selectionCopy(e: KeyboardEvent): string | false | null {
+    const active = this.doc.activeElement;
+    if (isValueField(active) || (active as HTMLElement | null)?.isContentEditable) return null;
+    const sel = this.doc.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
+    const text = sel.toString();
+    if (text === "") return null;
+    const start = sel.getRangeAt(0).startContainer;
+    const el = start.nodeType === 1 ? (start as Element) : start.parentElement;
+    if (!el) return null;
+    return resolve(false, ...keysValues(el)).lookup(domKeyName(e)) === "copy" ? text : false;
+  }
+
   /** Drops the document's selection: the user pressed elsewhere (SPEC §11). */
   clearSelection() {
     const sel = this.doc.getSelection();
@@ -1267,12 +1287,12 @@ export class Surface {
   private fieldKey(e: KeyboardEvent, el: HTMLElement, multiline: boolean) {
     if (this.host.browserKey(e)) return; // the browser's: reload, zoom, …
     const keymap = this.keymapOf(el, multiline);
-    // No cut with nothing selected, nor in a password field: the key is
-    // the program's (SPEC §10.2).
+    // No copy or cut with nothing selected, nor in a password field: the
+    // key is the program's (SPEC §10.2).
     const cuts = this.selects(el) && !(el.localName === "input" && this.inputType(el as HTMLInputElement) === "password");
     const lookup = (key: string) => {
       const use = keymap.lookup(key);
-      return use === "cut" && !cuts ? null : use;
+      return (use === "copy" || use === "cut") && !cuts ? null : use;
     };
     const pressed = typesNoText(e) ? domKeyName(e) : null;
     const first = pressed !== null && lookup(pressed) !== null;
@@ -1317,6 +1337,7 @@ export class Surface {
         this.goal = null;
         submitFrom(el);
       } else if (use === "undo" || use === "redo") this.undo(el, use === "redo");
+      else if (use === "copy") this.host.writeClipboard(this.selectedText());
       else if (use === "cut") this.cut(el);
       else if (use === "paste") this.pasteFrom(el, multiline);
       else this.edit(el, multiline, { kind: "action", action: use, extend: extend[i] });
