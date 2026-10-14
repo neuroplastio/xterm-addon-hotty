@@ -624,6 +624,8 @@ export class HottyAddon implements ITerminalAddon {
       },
       browserKey: (e) => this.browserKey(e),
       copyKey: (e) => this.copyKey(e),
+      writeClipboard: (text) => void navigator.clipboard?.writeText(text).catch(() => {}),
+      readClipboard: () => navigator.clipboard?.readText().catch(() => null) ?? Promise.resolve(null),
       pressed: (keep) => {
         if (keep !== null) this.term.clearSelection();
         for (const [name, s] of this.surfaces) if (name !== keep) s.clearSelection();

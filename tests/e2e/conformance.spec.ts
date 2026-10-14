@@ -254,7 +254,7 @@ async function point(page: Page, s: string, at: string | [number, number]): Prom
 // CDP: Playwright gives Firefox no touch moves. It does not let the pointer
 // through surfaces yet (§9.3, `passthrough`), and does not send `hover` yet
 // (§9.4: not in `EVENTS`).
-const reported = (browser: string) => new Set<string>(["scroll", "steps", "drop", "view", "count", ...(browser === "chromium" ? ["touch"] : [])]);
+const reported = (browser: string) => new Set<string>(["scroll", "steps", "drop", "view", "count", "undo", ...(browser === "chromium" ? ["touch"] : [])]);
 
 const needs = (v: { requires?: string | string[] }) => (v.requires === undefined ? [] : [v.requires].flat());
 

@@ -20,6 +20,7 @@ import { Resolver } from "./resolver.ts";
 import type { Body, Value } from "./msgpack.ts";
 import { cspSources, intersect, parse, type Policy } from "./network.ts";
 import { NO_BASE, type Store } from "./resources.ts";
+import { edited, type FieldState, History, type Run, runOf, stateOf, step } from "./history.ts";
 import { chars, elementKeymap, INSERT, inputKeys, isBreak, isSpace, type InputKey, MULTILINE_ACTIONS, plan, resolve, ROW_ACTIONS, type Rows, type Text } from "./keys.ts";
 
 /** A surface's CSP: nothing from the network but what the host grants. The
@@ -80,6 +81,11 @@ export interface SurfaceHost {
   /** A copy key while something is selected (SPEC §11): the host copied
    *  it, and the key goes no further. */
   copyKey(e: KeyboardEvent): boolean;
+  /** Puts text on the clipboard: a text field's `cut` (SPEC §10.2). */
+  writeClipboard(text: string): void;
+  /** The clipboard's text, for a text field's `paste` where the browser
+   *  does not paste with the key itself; null when it cannot be read. */
+  readClipboard(): Promise<string | null>;
   /** A press of the primary button on surface `keep`, or with Alt (null,
    *  the cells'): there is one selection (SPEC §11), so every other one is
    *  dropped. */
@@ -228,6 +234,9 @@ const NO_CARET = new Set(["email", "number"]);
 /** The characters a number field types; others it takes and drops. */
 const NUMBER_CHARS = /^[0-9.,+\-eE]$/;
 
+/** On a Mac, Command pastes; elsewhere, Control (SPEC §10.4's Meta). */
+const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+
 /** The styles a textarea's rows depend on, copied to the copy that measures
  * them (`textareaRows`). */
 const LAYOUT_STYLES = [
@@ -336,6 +345,13 @@ export class Surface {
    * place along the row it keeps. Anything else that moves the caret ends
    * it. */
   private goal: { el: Element; caret: number; x: number } | null = null;
+  /** Each text field's history of edits (SPEC §10.2, undo). */
+  private histories = new WeakMap<Element, History>();
+  /** The edit under way, from its `beforeinput` or from `replace`, which
+   *  its `input` puts in the field's history. */
+  private pending: { el: Element; before: FieldState; run: Run } | null = null;
+  /** `replace` is editing: the edit is pending already. */
+  private editing = false;
   /** The field shown as `text` while focused (`NO_CARET`). */
   private masked: HTMLInputElement | null = null;
   /** Tab is moving focus: the field it reaches selects its text. */
@@ -1230,6 +1246,13 @@ export class Surface {
     return el === this.masked ? (this.resolver.get(el, "type") ?? "").toLowerCase() : el.type;
   }
 
+  /** Whether a text field has text selected. */
+  private selects(el: HTMLElement): boolean {
+    if (isValueField(el)) return el.selectionStart !== el.selectionEnd;
+    const sel = this.doc.getSelection();
+    return !!sel && !sel.isCollapsed && el.contains(sel.anchorNode);
+  }
+
   /**
    * A key in a text field, offered at most twice (SPEC §10.4). A key that
    * types no text is offered first as pressed, named from the DOM's event,
@@ -1244,11 +1267,18 @@ export class Surface {
   private fieldKey(e: KeyboardEvent, el: HTMLElement, multiline: boolean) {
     if (this.host.browserKey(e)) return; // the browser's: reload, zoom, …
     const keymap = this.keymapOf(el, multiline);
+    // No cut with nothing selected, nor in a password field: the key is
+    // the program's (SPEC §10.2).
+    const cuts = this.selects(el) && !(el.localName === "input" && this.inputType(el as HTMLInputElement) === "password");
+    const lookup = (key: string) => {
+      const use = keymap.lookup(key);
+      return use === "cut" && !cuts ? null : use;
+    };
     const pressed = typesNoText(e) ? domKeyName(e) : null;
-    const first = pressed !== null && keymap.lookup(pressed) !== null;
+    const first = pressed !== null && lookup(pressed) !== null;
     const data = first ? "" : this.host.encodeKey(e);
     const keys: InputKey[] = first ? [{ key: pressed, data: "" }] : data === null ? [{ key: domKeyName(e), data: "" }] : inputKeys(data);
-    const uses = keys.map((k) => (k.key === null ? null : keymap.lookup(k.key)));
+    const uses = keys.map((k) => (k.key === null ? null : lookup(k.key)));
     // A move with Shift selects (§10.2).
     const extend = keys.map((k) => k.key !== null && keymap.selects(k.key));
     if (uses.every((u) => u === null)) {
@@ -1267,7 +1297,9 @@ export class Surface {
       // with it (the default button's click, and `change` first).
       const typed = use === INSERT && !(number && !NUMBER_CHARS.test(keyText(key)));
       const enter = use === "submit" && e.key === "Enter" && el.localName === "input";
-      if (typed || enter) {
+      // The browser's own paste, where its key is the one pressed.
+      const paste = use === "paste" && first && (mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.altKey;
+      if (typed || enter || paste) {
         this.goal = null;
         return;
       }
@@ -1284,7 +1316,10 @@ export class Surface {
       } else if (use === "submit") {
         this.goal = null;
         submitFrom(el);
-      } else this.edit(el, multiline, { kind: "action", action: use, extend: extend[i] });
+      } else if (use === "undo" || use === "redo") this.undo(el, use === "redo");
+      else if (use === "cut") this.cut(el);
+      else if (use === "paste") this.pasteFrom(el, multiline);
+      else this.edit(el, multiline, { kind: "action", action: use, extend: extend[i] });
     });
   }
 
@@ -1320,10 +1355,16 @@ export class Surface {
     const caret = el.selectionDirection === "backward" ? start : end;
     if (what.kind === "type") {
       this.goal = null;
-      this.replace(el, at[start]!, at[end]!, what.text);
+      this.replace(el, at[start]!, at[end]!, what.text, "typing");
       return;
     }
     const action = what.action;
+    const run: Run = action === "newline" ? "typing" : action === "delete-char-backward" || action === "delete-char-forward" ? "deleting" : null;
+    // Any other action ends a run of typing or deleting.
+    if (run === null) {
+      const h = this.histories.get(el);
+      if (h) h.run = null;
+    }
     const password = el.localName === "input" && this.inputType(el as HTMLInputElement) === "password";
     const text: Text = { chars: cl, start, end, caret, multiline, password };
     const g = this.goal;
@@ -1335,19 +1376,28 @@ export class Surface {
       const a = p.anchor ?? p.to;
       el.setSelectionRange(at[Math.min(a, p.to)]!, at[Math.max(a, p.to)]!, a > p.to ? "backward" : "forward");
     }
-    else if (p.kind === "replace") this.replace(el, at[p.from]!, at[p.to]!, p.text);
+    else if (p.kind === "replace") this.replace(el, at[p.from]!, at[p.to]!, p.text, run);
   }
 
   /** Replaces code units `from` to `to` of a field's value with `text`, the
-   * caret after it, as typing does. */
-  private replace(el: HTMLInputElement | HTMLTextAreaElement, from: number, to: number, text: string) {
+   * caret after it, as typing does: an edit in the `run` for the field's
+   * history (SPEC §10.2, undo). */
+  private replace(el: HTMLInputElement | HTMLTextAreaElement, from: number, to: number, text: string, run: Run) {
+    const before = stateOf(el);
     el.setSelectionRange(from, to);
     if (from === to && !text) return;
-    const done = text ? this.doc.execCommand("insertText", false, text) : this.doc.execCommand("delete", false);
-    if (done) return;
-    el.setRangeText(text, from, to, "end");
-    const win = this.frame.contentWindow as unknown as typeof globalThis;
-    el.dispatchEvent(new win.InputEvent("input", { bubbles: true, inputType: text ? "insertText" : "deleteContent", data: text || null }));
+    this.pending = { el, before, run };
+    this.editing = true;
+    try {
+      const done = text ? this.doc.execCommand("insertText", false, text) : this.doc.execCommand("delete", false);
+      if (done) return;
+      el.setRangeText(text, from, to, "end");
+      const win = this.frame.contentWindow as unknown as typeof globalThis;
+      el.dispatchEvent(new win.InputEvent("input", { bubbles: true, inputType: text ? "insertText" : "deleteContent", data: text || null }));
+    } finally {
+      this.editing = false;
+      this.pending = null;
+    }
   }
 
   /**
@@ -2021,6 +2071,7 @@ export class Surface {
     d.addEventListener("mouseout", (e) => this.onOut(e), true);
     d.addEventListener("submit", (e) => this.onSubmit(e as SubmitEvent), true);
     d.addEventListener("change", (e) => this.onChange(e), true);
+    d.addEventListener("beforeinput", (e) => this.onBeforeInput(e as InputEvent), true);
     d.addEventListener("input", (e) => this.onInput(e), true);
     d.addEventListener("keydown", (e) => this.onKey(e), true);
     d.addEventListener("keyup", (e) => this.onKeyUp(e), true);
@@ -2413,7 +2464,77 @@ export class Surface {
     }
   }
 
+  /** An edit the browser makes (typing, a paste): what the field was, for
+   *  its history (SPEC §10.2, undo). */
+  private onBeforeInput(e: InputEvent) {
+    const el = e.target as HTMLInputElement;
+    if (this.editing || !isValueField(el) || e.inputType.startsWith("history")) return;
+    this.pending = { el, before: stateOf(el), run: runOf(e.inputType) };
+  }
+
+  /** Puts an edit in its field's history: the one pending, else one from
+   *  where the field last was. Undo's and redo's own are not edits. */
+  private record(e: Event) {
+    const el = e.target as HTMLInputElement;
+    const p = this.pending;
+    this.pending = null;
+    if (!isValueField(el) || (e as InputEvent).inputType?.startsWith("history")) return;
+    let h = this.histories.get(el);
+    if (!h) this.histories.set(el, (h = new History()));
+    const before = p?.el === el ? p.before : h.after;
+    if (before) edited(h, before, stateOf(el), p?.el === el ? p.run : null);
+  }
+
+  /** Undoes a field's last edit, or with `redo` redoes the one last undone
+   *  (SPEC §10.2), sending `input` as for an edit. An editing host has the
+   *  browser's own history. */
+  private undo(el: HTMLElement, redo: boolean) {
+    this.goal = null;
+    if (!isValueField(el)) {
+      this.doc.execCommand(redo ? "redo" : "undo", false);
+      return;
+    }
+    const h = this.histories.get(el);
+    const s = h ? step(h, stateOf(el), redo) : null;
+    if (!s) return;
+    el.value = s.value;
+    el.setSelectionRange(s.start, s.end, s.backward ? "backward" : "forward");
+    const win = this.frame.contentWindow as unknown as typeof globalThis;
+    el.dispatchEvent(new win.InputEvent("input", { bubbles: true, inputType: redo ? "historyRedo" : "historyUndo" }));
+  }
+
+  /** Cuts a field's selection to the clipboard (SPEC §10.2). */
+  private cut(el: HTMLElement) {
+    this.goal = null;
+    if (!isValueField(el)) {
+      const sel = this.doc.getSelection();
+      if (!sel || sel.isCollapsed) return;
+      this.host.writeClipboard(sel.toString());
+      this.doc.execCommand("delete", false);
+      return;
+    }
+    const [from, to] = [el.selectionStart ?? 0, el.selectionEnd ?? 0];
+    this.host.writeClipboard(el.value.slice(from, to));
+    this.replace(el, from, to, "", null);
+  }
+
+  /** Types the clipboard's text in place of a field's selection, as
+   *  `paste` does where the browser does not (SPEC §10.2): an `input`
+   *  drops line breaks. */
+  private pasteFrom(el: HTMLElement, multiline: boolean) {
+    void this.host.readClipboard().then((t) => {
+      if (t === null || t === "" || this.doc.activeElement !== el) return;
+      const text = multiline ? t.replace(/\r\n?/g, "\n") : t.replace(/[\r\n]/g, "");
+      if (!isValueField(el)) {
+        this.doc.execCommand("insertText", false, text);
+        return;
+      }
+      this.replace(el, el.selectionStart ?? 0, el.selectionEnd ?? 0, text, null);
+    });
+  }
+
   private onInput(e: Event) {
+    this.record(e);
     const el = e.target as HTMLInputElement;
     const id = el.getAttribute?.("id");
     if (!id) return;
@@ -2423,6 +2544,12 @@ export class Surface {
       this.emit("input", id, { value: el.value });
     }
   }
+}
+
+/** An `input` or a `textarea`, whose value a history keeps. */
+function isValueField(el: EventTarget | null): el is HTMLInputElement | HTMLTextAreaElement {
+  const n = (el as Element | null)?.localName;
+  return n === "input" || n === "textarea";
 }
 
 /** Elements from the iframe's realm fail `instanceof Element` here. */

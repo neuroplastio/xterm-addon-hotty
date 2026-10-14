@@ -273,6 +273,15 @@ runs programs for whoever connects.
   or a selection made there, drops a surface's, and a press in a surface
   drops the others'. `copyKeys: () => false` turns this off; the exported
   `copyKeys` is the default.
+- **Cutting, pasting and undo** (SPEC §10.2): in a surface's focused text
+  field, Ctrl+X cuts (to `navigator.clipboard`), Ctrl+V is the browser's
+  own paste (an `input` drops line breaks, as HTML's does), and Ctrl+Z,
+  Ctrl+Shift+Z and Ctrl+Y undo and redo, each field with its own history,
+  kept by the addon so that every browser groups edits as the spec does.
+  Meta+V, where the browser does not paste with it, reads
+  `navigator.clipboard`. A cut with nothing selected, or in a password
+  field, reaches the program. On a Mac, Cmd keys stay the browser's
+  (`browserKeys`), its own cut, paste and undo.
 - **Nothing in a surface scrolls unless its document asks** (SPEC §5.3, §9):
   - It shows no scrollbars, and pans nothing on a touch
     (`touch-action: none`). Any scroll offset the browser sets goes back to
