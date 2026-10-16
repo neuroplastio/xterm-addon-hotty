@@ -14,7 +14,7 @@
 // xterm.js's own image addon notes), it sits on fixed cells.
 
 import type { IBufferRange, IDisposable, IMarker, ITerminalAddon, Terminal } from "@xterm/xterm";
-import { hostCss, palette } from "./hostcss.ts";
+import { boxBackground, hostCss, palette } from "./hostcss.ts";
 import { DeltaError, readDelta } from "./delta.ts";
 import { Float, float, Writer, type Body, type Value } from "./msgpack.ts";
 import { clean, type Policy } from "./network.ts";
@@ -1215,7 +1215,7 @@ export class HottyAddon implements ITerminalAddon {
       height: "",
       boxSizing: "border-box",
       padding: `0 ${cellW}px`,
-      background: `color-mix(in srgb, ${p.fg} 10%, ${p.bg})`,
+      background: boxBackground(p),
       color: p.fg,
       fontFamily: o.fontFamily ?? "monospace",
       fontSize: `${o.fontSize ?? 15}px`,
@@ -1396,7 +1396,7 @@ export class HottyAddon implements ITerminalAddon {
       top: "0",
       width: `${cols * cellW}px`,
       boxSizing: "border-box",
-      background: `color-mix(in srgb, ${p.fg} 10%, ${p.bg})`,
+      background: boxBackground(p),
       color: p.fg,
       fontFamily: o.fontFamily ?? "monospace",
       fontSize: `${o.fontSize ?? 15}px`,

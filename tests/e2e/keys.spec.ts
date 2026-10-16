@@ -194,6 +194,15 @@ const tree = {
   ],
 };
 
+/** The alpha of an element's background: below 1, so that Chromium does not
+ * cull the cells under it, and at the wrong place (boxBackground). */
+const alpha = (page: Page, selector: string) =>
+  page.evaluate((s) => {
+    const c = getComputedStyle(document.querySelector(s)!).backgroundColor;
+    const m = /[/,]\s*([\d.]+)\)$/.exec(c);
+    return m ? Number(m[1]) : 1;
+  }, selector);
+
 /** The program's menu, and the level of it its keys reach shown. */
 const showMenu = async (page: Page, seq = ["Control+x"]) => {
   await write(page, encode(new Control([["a", "menu"]]), new Writer().body(tree).slice()));
@@ -207,6 +216,9 @@ test("the program's menu shows until it sends none, or a key it does not list, i
   await expect.poll(() => menu(page)).toEqual(["Control+x Leader", "b Switch", "f +files"]);
   // A disabled item is dimmed.
   expect(await page.evaluate(() => (document.querySelector(".hotty-menu > div:last-child > div > div:last-child") as HTMLElement).style.opacity)).toBe("0.5");
+  // A hair short of opaque.
+  expect(await alpha(page, ".hotty-menu")).toBeGreaterThan(0.99);
+  expect(await alpha(page, ".hotty-menu")).toBeLessThan(1);
   await page.keyboard.press("b");
   expect(await menu(page)).not.toBeNull();
   await page.keyboard.press("q");
@@ -346,6 +358,8 @@ test("the palette filters rows, moves with the arrows, picks with Enter and clos
   await page.keyboard.press("Control+Shift+M");
   await expect(page.locator(".hotty-palette")).toBeVisible();
   await expect(page.locator(".hotty-palette > div:first-child")).toHaveText("Files");
+  expect(await alpha(page, ".hotty-palette")).toBeGreaterThan(0.99);
+  expect(await alpha(page, ".hotty-palette")).toBeLessThan(1);
   expect(await rowsOf(page)).toEqual([
     ["Leader › File › New file", "Control+x f n", true, false],
     ["Leader › File › Rename", "Control+x f r", false, true],

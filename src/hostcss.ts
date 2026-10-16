@@ -28,6 +28,16 @@ export function palette(theme: ITheme | undefined) {
   return { fg, bg, ansi, dark: luminance(bg) < 0.5 };
 }
 
+/** The background of a box drawn over the cells, the menu's and the
+ * palette's: the theme's, a tenth of the way to its foreground, a hair short
+ * of opaque. Chromium skips drawing what an opaque box covers, and over
+ * xterm.js's canvas, with surfaces placed, it has skipped the wrong place:
+ * the cells went missing in a box's size at the top of the screen, and the
+ * terminal's own background showed through. */
+export function boxBackground(p: ReturnType<typeof palette>): string {
+  return `color-mix(in srgb, color-mix(in srgb, ${p.fg} 10%, ${p.bg}) 99.5%, transparent)`;
+}
+
 /** The host stylesheet, the same for every surface. What scrolls is each
  * document's own (`scrollCss`). */
 export function hostCss(theme: ITheme | undefined, m: Metrics): string {
