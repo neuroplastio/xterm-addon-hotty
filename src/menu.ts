@@ -1,6 +1,7 @@
 // A program's menu (SPEC §10.7): the tree of its actions it sends with
 // `a=menu`, read from its msgpack body, the level of it to show, and the
-// rows of the palette. The addon draws them (addon.ts).
+// entries a page's own command palette lists. The addon draws the level
+// (addon.ts).
 
 import { read } from "./msgpack.ts";
 
@@ -112,45 +113,37 @@ export function find(menu: Menu, name: string): MenuItem | null {
   return walk(menu.items);
 }
 
-/** A row of the palette: an item that has a name. */
-export interface Row {
-  item: MenuItem;
-  /** The labels of its groups, then its own (its name where it has none). */
-  path: string[];
+/** An item that has a name, as a page's own command palette lists it
+ * (SPEC §10.7). */
+export interface MenuEntry {
+  /** The command a pick sends. */
+  name: string;
+  /** The labels of its groups, then its own (its name where it has none),
+   * joined with " › ". */
+  label: string;
   /** The keys that reach it, space-separated and read; empty where an item
    * on its path has none. */
   keys: string;
+  /** Whether it does anything now: a pick of one that does not sends
+   * nothing. */
+  enabled: boolean;
 }
 
-/** The palette's rows (SPEC §10.7): every item that has a name, depth-first,
+/** The menu's entries (SPEC §10.7): every item that has a name, depth-first,
  * under its groups' labels, with the keys that reach it if each item on its
  * path has one, as `shown` writes a key. */
-export function rows(menu: Menu, shown: (key: string) => string): Row[] {
-  const out: Row[] = [];
+export function entries(menu: Menu, shown: (key: string) => string): MenuEntry[] {
+  const out: MenuEntry[] = [];
   const walk = (level: MenuItem[], path: string[], keys: string[] | null) => {
     for (const i of level) {
       const here = [...path, i.label || i.name || i.key];
       const reached = keys && i.key !== "" ? [...keys, shown(i.key)] : null;
-      if (i.name !== "") out.push({ item: i, path: here, keys: reached ? reached.join(" ") : "" });
+      if (i.name !== "") out.push({ name: i.name, label: here.join(" › "), keys: reached ? reached.join(" ") : "", enabled: i.enabled });
       if (i.items) walk(i.items, here, reached);
     }
   };
   walk(menu.items, [], []);
   return out;
-}
-
-/** A row's label as the palette shows it. */
-export const rowLabel = (r: Row) => r.path.join(" › ");
-
-/** The rows that match `text`: each space-separated word is a
- * case-insensitive substring of the row's label path or its name. */
-export function filter(all: Row[], text: string): Row[] {
-  const words = text.toLowerCase().split(/\s+/).filter(Boolean);
-  return all.filter((r) => {
-    const label = rowLabel(r).toLowerCase();
-    const name = r.item.name.toLowerCase();
-    return words.every((w) => label.includes(w) || name.includes(w));
-  });
 }
 
 /** The menus a host keeps (SPEC §10.7): one for each screen. Leaving the

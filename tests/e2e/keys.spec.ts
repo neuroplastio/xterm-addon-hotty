@@ -7,6 +7,7 @@
 import { expect, type Page, test } from "@playwright/test";
 import { Writer } from "../../src/msgpack.ts";
 import { Control, encode } from "../../src/wire.ts";
+import type { MenuEntry } from "../../src/menu.ts";
 import { cmd, open, send, surface, take, write } from "./helpers.ts";
 
 type Init = { key: string; code: string; keyCode: number; ctrlKey?: boolean };
@@ -168,7 +169,8 @@ test("a prefix scrolls nothing and ends with the keyboard: a=blur, the surface h
   expect(evs((await take(page)).msgs)).toEqual([["blur", "x", undefined]]);
 });
 
-// The program's menu (SPEC §10.7): a level of it shown, and its palette.
+// The program's menu (SPEC §10.7): a level of it shown, and its items for
+// the page.
 
 /** The menu's text, row by row; null when none shows. */
 const menu = (page: Page) =>
@@ -208,6 +210,10 @@ const showMenu = async (page: Page, seq = ["Control+x"]) => {
   await write(page, encode(new Control([["a", "menu"]]), new Writer().body(tree).slice()));
   await write(page, encode(new Control([["a", "menu"], ["show", "1"]]), new Writer().body({ seq }).slice()));
 };
+
+/** What the addon gives the page for the menu, called in the page. */
+type Addon = { menuItems(): MenuEntry[]; pick(n: string): boolean };
+const addon = <T>(page: Page, f: (a: Addon) => T) => page.evaluate(`(${f})(window.hotty.addon)`) as Promise<T>;
 
 test("the program's menu shows until it sends none, or a key it does not list, in the cells", async ({ page }) => {
   await open(page, "?pty=0");
@@ -308,42 +314,40 @@ test("the capabilities report the key settings and the menu", async ({ page }) =
   expect(caps).not.toHaveProperty("menu");
 });
 
-test("a menu is kept for each screen; a level shown and the palette go with a change of screen", async ({ page }) => {
+test("a menu is kept for each screen; a level shown goes with a change of screen, and menuItems() and pick() follow it", async ({ page }) => {
   await open(page, "?pty=0");
-  type Addon = { openPalette(): void; paletteOpen: boolean; pick(n: string): boolean };
-  const addon = (f: (a: Addon) => unknown) => page.evaluate(`(${f})(window.hotty.addon)`);
   await showMenu(page);
   await expect.poll(() => menu(page)).not.toBeNull();
-  await addon((a) => a.openPalette());
-  expect(await addon((a) => a.paletteOpen)).toBe(true);
+  expect((await addon(page, (a) => a.menuItems())).map((e) => e.name)).toEqual(["switch", "open"]);
   await write(page, "\x1b[?1049h");
   expect(await menu(page)).toBeNull();
-  expect(await addon((a) => a.paletteOpen)).toBe(false);
-  // The alternate screen has no menu of its own yet: nothing to pick.
-  expect(await addon((a) => a.pick("switch"))).toBe(false);
+  // The alternate screen has no menu of its own yet: nothing to list or pick.
+  expect(await addon(page, (a) => a.menuItems())).toEqual([]);
+  expect(await addon(page, (a) => a.pick("switch"))).toBe(false);
   await send(page, { a: "menu", q: "2" }, new Writer().body({ items: [{ label: "Alt", name: "alt", enabled: true }] }));
-  expect(await addon((a) => a.pick("alt"))).toBe(true);
+  expect(await addon(page, (a) => a.menuItems())).toEqual([{ name: "alt", label: "Alt", keys: "", enabled: true }]);
+  expect(await addon(page, (a) => a.pick("alt"))).toBe(true);
   // Leaving the alternate screen drops its menu; the main screen's stays.
   await write(page, "\x1b[?1049l");
-  expect(await addon((a) => a.pick("alt"))).toBe(false);
-  expect(await addon((a) => a.pick("switch"))).toBe(true);
+  expect((await addon(page, (a) => a.menuItems())).map((e) => e.name)).toEqual(["switch", "open"]);
+  expect(await addon(page, (a) => a.pick("alt"))).toBe(false);
+  expect(await addon(page, (a) => a.pick("switch"))).toBe(true);
   expect((await take(page)).msgs.map((m) => [m.get("e"), m.body])).toEqual([["command", { name: "alt" }], ["command", { name: "switch" }]]);
 });
 
-// The palette (SPEC §10.7).
+// What a page's own command palette lists and picks (SPEC §10.7): the addon
+// draws none.
 
-const rowsOf = (page: Page) =>
-  page.evaluate(() =>
-    Array.from(document.querySelectorAll<HTMLElement>(".hotty-palette-row"), (r) => [r.firstElementChild!.textContent, r.lastElementChild!.textContent, r.classList.contains("selected"), r.style.opacity === "0.5"]),
-  );
-
-test("the palette filters rows, moves with the arrows, picks with Enter and closes on Escape; nothing typed reaches the program", async ({ page }) => {
-  await open(page, "?pty=0&palette-key=Mod%2BShift%2Bm");
+test("menuItems() lists the named items under their groups' labels with their keys; pick() sends command with the name, and nothing for a disabled item, an unknown name or no menu", async ({ page }) => {
+  await open(page, "?pty=0");
   await page.evaluate(() => window.hotty.term.focus());
+  // No menu: nothing to list or pick.
+  expect(await addon(page, (a) => a.menuItems())).toEqual([]);
+  expect(await addon(page, (a) => a.pick("quit"))).toBe(false);
   await write(page, encode(new Control([["a", "menu"]]), new Writer().body({
     label: "Files",
     items: [
-      { key: "Control+x", label: "Leader", enabled: true, items: [
+      { key: "Mod+x", label: "Leader", enabled: true, items: [
         { key: "f", label: "File", enabled: true, items: [
           { key: "n", label: "New file", name: "file-new", enabled: true },
           { key: "r", label: "Rename", name: "file-rename", enabled: false },
@@ -351,63 +355,40 @@ test("the palette filters rows, moves with the arrows, picks with Enter and clos
         { key: "q", label: "Quit", name: "quit", enabled: true },
       ] },
       { label: "Reload", name: "reload", enabled: true },
+      { key: "g", name: "go", enabled: true },
     ],
   }).slice()));
   await take(page);
-  // The palette key opens it; the title is the menu's label.
-  await page.keyboard.press("Control+Shift+M");
-  await expect(page.locator(".hotty-palette")).toBeVisible();
-  await expect(page.locator(".hotty-palette > div:first-child")).toHaveText("Files");
-  expect(await alpha(page, ".hotty-palette")).toBeGreaterThan(0.99);
-  expect(await alpha(page, ".hotty-palette")).toBeLessThan(1);
-  expect(await rowsOf(page)).toEqual([
-    ["Leader › File › New file", "Control+x f n", true, false],
-    ["Leader › File › Rename", "Control+x f r", false, true],
-    ["Leader › Quit", "Control+x q", false, false],
-    ["Reload", "", false, false],
+  // Mod as the platform reads it; a group's items under its label; no keys
+  // for an item no key reaches, and the name for one with no label.
+  expect(await addon(page, (a) => a.menuItems())).toEqual([
+    { name: "file-new", label: "Leader › File › New file", keys: "Control+x f n", enabled: true },
+    { name: "file-rename", label: "Leader › File › Rename", keys: "Control+x f r", enabled: false },
+    { name: "quit", label: "Leader › Quit", keys: "Control+x q", enabled: true },
+    { name: "reload", label: "Reload", keys: "", enabled: true },
+    { name: "go", label: "go", keys: "g", enabled: true },
   ]);
-  // Typing filters; the selection moves to the first row that is enabled.
-  await page.keyboard.type("file REN");
-  expect(await rowsOf(page)).toEqual([["Leader › File › Rename", "Control+x f r", false, true]]);
-  for (let i = 0; i < 8; i++) await page.keyboard.press("Backspace");
-  await page.keyboard.type("le ");
-  expect((await rowsOf(page)).map((r) => r[0])).toEqual(["Leader › File › New file", "Leader › File › Rename", "Leader › Quit"]);
-  // Arrows skip the disabled row; Control+n and Control+p move too.
-  await page.keyboard.press("ArrowDown");
-  expect((await rowsOf(page)).map((r) => r[2])).toEqual([false, false, true]);
-  await page.keyboard.press("Control+p");
-  expect((await rowsOf(page)).map((r) => r[2])).toEqual([true, false, false]);
-  // The selection stops at the ends.
-  await page.keyboard.press("ArrowUp");
-  expect((await rowsOf(page)).map((r) => r[2])).toEqual([true, false, false]);
-  await page.keyboard.press("Control+n");
-  await page.keyboard.press("Control+n");
-  expect((await rowsOf(page)).map((r) => r[2])).toEqual([false, false, true]);
-  await page.keyboard.press("Enter");
-  await expect(page.locator(".hotty-palette")).toHaveCount(0);
+  // A pick sends command with the name and no key, and types nothing; a
+  // disabled item, a name no item has, and no name pick nothing.
+  expect(await addon(page, (a) => a.pick("quit"))).toBe(true);
+  expect(await addon(page, (a) => a.pick("reload"))).toBe(true);
+  expect(await addon(page, (a) => a.pick("file-rename"))).toBe(false);
+  expect(await addon(page, (a) => a.pick("nothing"))).toBe(false);
+  expect(await addon(page, (a) => a.pick(""))).toBe(false);
   const { msgs, raw } = await take(page);
-  expect(msgs.map((m) => [m.get("e"), m.body])).toEqual([["command", { name: "quit" }]]);
+  expect(msgs.map((m) => [m.get("e"), m.body])).toEqual([["command", { name: "quit" }], ["command", { name: "reload" }]]);
   expect(raw).toBe("");
-  // Nothing to pick; Escape closes, and the terminal has the keyboard again.
-  await page.keyboard.press("Control+Shift+M");
-  await page.keyboard.type("zzz");
-  await expect(page.locator(".hotty-palette")).toContainText("Nothing to pick");
-  await page.keyboard.press("Enter");
-  await page.keyboard.press("Escape");
-  await expect(page.locator(".hotty-palette")).toHaveCount(0);
-  await page.keyboard.press("a");
-  const after = await take(page);
-  expect(after.msgs).toHaveLength(0);
-  expect(after.raw).toBe("a");
-  // A click on an enabled row picks it; a menu sent while it is open
-  // refreshes the rows and keeps the filter.
-  await page.keyboard.press("Control+Shift+M");
-  await page.keyboard.type("reload");
-  await write(page, encode(new Control([["a", "menu"]]), new Writer().body({ items: [{ label: "Reload now", name: "reload", enabled: true }, { label: "Other", name: "other", enabled: true }] }).slice()));
-  expect(await rowsOf(page)).toEqual([["Reload now", "", true, false]]);
-  await page.locator(".hotty-palette-row").click();
-  await expect(page.locator(".hotty-palette")).toHaveCount(0);
-  expect((await take(page)).msgs.map((m) => [m.get("e"), m.body])).toEqual([["command", { name: "reload" }]]);
+  // A new menu is the items; a=menu with no body leaves none.
+  await write(page, encode(new Control([["a", "menu"]]), new Writer().body({ items: [{ label: "Reload now", name: "reload", enabled: true }, { label: "Other", name: "other" }] }).slice()));
+  expect(await addon(page, (a) => a.menuItems())).toEqual([
+    { name: "reload", label: "Reload now", keys: "", enabled: true },
+    { name: "other", label: "Other", keys: "", enabled: false },
+  ]);
+  expect(await addon(page, (a) => a.pick("other"))).toBe(false);
+  await send(page, { a: "menu", q: "2" });
+  expect(await addon(page, (a) => a.menuItems())).toEqual([]);
+  expect(await addon(page, (a) => a.pick("reload"))).toBe(false);
+  expect((await take(page)).msgs).toHaveLength(0);
 });
 
 test("a pick of paste sends the clipboard's text, and of copy with text selected copies it and sends nothing", async ({ page, browserName, context }) => {

@@ -1,10 +1,10 @@
 // The program's menu (SPEC §10.7): the tree, the level a sequence reaches,
-// the palette's rows and filter, and a menu kept for each screen.
+// the entries a page's own palette lists, and a menu kept for each screen.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Writer } from "../../src/msgpack.ts";
 import { readKey } from "../../src/keys.ts";
-import { filter, find, hides, isGroup, type Menu, Menus, MENU_DEPTH, reach, readMenu, readSeq, rowLabel, rows, shownLevel } from "../../src/menu.ts";
+import { entries, find, hides, isGroup, type Menu, Menus, MENU_DEPTH, reach, readMenu, readSeq, shownLevel } from "../../src/menu.ts";
 
 const w = (b: unknown) => new Writer().body(b as never);
 const platform = { mod: "Control" } as const;
@@ -84,20 +84,17 @@ test("readSeq: none is the top, anything but an array of str throws", () => {
   assert.throws(() => readSeq(w({ seq: [1] })));
 });
 
-test("rows: named items depth-first under their groups, with the keys that reach them", () => {
-  const r = rows(menu, show);
-  assert.deepEqual(r.map(rowLabel), ["Leader › File › New file", "Leader › File › Rename", "Leader › Quit", "Reload", "Again"]);
-  assert.deepEqual(r.map((x) => x.keys), ["Control+x f n", "Control+x f r", "Control+x q", "", "z"]);
-  assert.equal(rows(readMenu(w({ items: [{ name: "go" }] })), show)[0]!.path[0], "go", "the name stands in for a label");
-});
-
-test("filter: every word a case-insensitive substring of the path or the name, in menu order", () => {
-  const r = rows(menu, show);
-  assert.deepEqual(filter(r, "").length, 5);
-  assert.deepEqual(filter(r, "LEADER fi").map(rowLabel), ["Leader › File › New file", "Leader › File › Rename"]);
-  assert.deepEqual(filter(r, "file-new").map(rowLabel), ["Leader › File › New file"], "by name");
-  assert.deepEqual(filter(r, "new rename"), []);
-  assert.deepEqual(filter(r, "quit").map(rowLabel), ["Leader › Quit", "Again"]);
+test("entries: named items depth-first under their groups, with the keys that reach them", () => {
+  assert.deepEqual(entries(menu, show), [
+    { name: "file-new", label: "Leader › File › New file", keys: "Control+x f n", enabled: true },
+    { name: "file-rename", label: "Leader › File › Rename", keys: "Control+x f r", enabled: false },
+    { name: "quit", label: "Leader › Quit", keys: "Control+x q", enabled: true },
+    { name: "reload", label: "Reload", keys: "", enabled: true },
+    { name: "quit", label: "Again", keys: "z", enabled: true },
+  ]);
+  assert.equal(entries(readMenu(w({ items: [{ name: "go" }] })), show)[0]!.label, "go", "the name stands in for a label");
+  const unkeyed = readMenu(w({ items: [{ label: "G", items: [{ key: "a", label: "A", name: "a", enabled: true }] }] }));
+  assert.deepEqual(entries(unkeyed, show), [{ name: "a", label: "G › A", keys: "", enabled: true }], "no keys where a group on its path has none");
 });
 
 test("Menus: one for each screen; leaving the alternate drops its menu, the main one stays", () => {

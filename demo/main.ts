@@ -71,8 +71,6 @@ const hotty = new HottyAddon({
   browserKeys: pageKey ? (e) => browserKeys(e) || (e.ctrlKey && e.key === pageKey) : undefined,
   scroll: pageScrolls ? "page" : undefined,
   copyKeys: noCopy ? () => false : undefined,
-  // `?palette-key=Mod+Shift+m`: the key that opens the menu's palette.
-  paletteKey: params.get("palette-key") ?? undefined,
 });
 const fit = new FitAddon();
 term.loadAddon(fit);
