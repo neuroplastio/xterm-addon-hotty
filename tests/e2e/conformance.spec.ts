@@ -3,6 +3,7 @@
 
 import { expect, test, type CDPSession, type Page } from "@playwright/test";
 import { readVectors } from "../hotty.ts";
+import { Writer, type Body } from "../../src/msgpack.ts";
 import { mistyped, show, type Type } from "../msgpack.ts";
 import { cmd, open, take, write, type Msg } from "./helpers.ts";
 
@@ -10,6 +11,8 @@ type Expected = Record<string, unknown>;
 type Step = {
   send?: Record<string, string>;
   payload?: string;
+  /** A msgpack body, as JSON (conformance/README.md): a delta's ops, a menu. */
+  body?: unknown;
   reply?: Record<string, string | Type | Expected> | null;
   inspect?: [string, string];
   expect?: Record<string, unknown> | null;
@@ -40,7 +43,10 @@ function checkEvents(where: string, msgs: Msg[], want: Expected[] | undefined) {
   expect(got.length, `${where}: events [${all}]`).toBe(want.length);
   want.forEach((w, i) => {
     for (const [k, v] of Object.entries(w)) {
+      // `null`: the event has none of it (`t`: it names no element, SPEC §9;
+      // `detail`: no payload).
       if (k === "detail") expect(got[i]!.body, `${where}: event ${i + 1} detail`).toStrictEqual(v);
+      else if (v === null) expect(got[i]!.get(k), `${where}: event ${i + 1} ${k}`).toBeUndefined();
       else expect(got[i]!.get(k), `${where}: event ${i + 1} ${k}`).toBe(v);
     }
   });
@@ -248,14 +254,14 @@ async function point(page: Page, s: string, at: string | [number, number]): Prom
   );
 }
 
-// Capabilities this addon reports that vectors may require (SPEC §4):
-// `scroll` (§5.3), `steps` (§9.1), `view` in its `events` (§9.5), and
-// `touch` (§9.1, §16) where this runner can touch it, in Chromium, through
-// CDP: Playwright gives Firefox no touch moves. It does not let the pointer
-// through surfaces yet (§9.3, `passthrough`), and does not send `hover` yet
-// (§9.4: not in `EVENTS`). It reads key sequences (§10.5, `keys`) and
-// takes edit commands (§10.6).
-const reported = (browser: string) => new Set<string>(["scroll", "steps", "drop", "view", "count", "undo", "keys", "commands", ...(browser === "chromium" ? ["touch"] : [])]);
+// What the vectors may require (conformance/README.md) that this addon has:
+// the features `count` and `menu` (SPEC §4), all a 0.3 host does (`scroll`,
+// `steps`, `drop`, `view`), a history in its fields (`undo`), edit commands
+// (`commands`, §10.6), and `touch` (§9.1, §16) where this runner can touch
+// it, in Chromium, through CDP: Playwright gives Firefox no touch moves. It
+// does not let the pointer through surfaces (§9.3, `passthrough`), and
+// sends no `hover` (§9.4).
+const reported = (browser: string) => new Set<string>(["scroll", "steps", "drop", "view", "count", "menu", "undo", "commands", ...(browser === "chromium" ? ["touch"] : [])]);
 
 const needs = (v: { requires?: string | string[] }) => (v.requires === undefined ? [] : [v.requires].flat());
 
@@ -273,8 +279,7 @@ function define(vector: { name: string; requires?: string | string[]; steps: Ste
     const has = reported(browserName);
     const missing = requires.filter((r) => !has.has(r));
     test.skip(missing.length > 0, `needs ${missing.join(", ")}, which this runner can't give in ${browserName}`);
-    // A key sequence waits as long as a step takes (SPEC §10.5).
-    await open(page, "?pty=0&key-timeout=3600000");
+    await open(page);
     // The terminal has the keyboard, as in a page that gave it focus: a key
     // goes to the cells until a surface takes it.
     await page.evaluate(() => window.hotty.term.focus());
@@ -318,7 +323,7 @@ function define(vector: { name: string; requires?: string | string[]; steps: Ste
         if (step.terminal !== undefined && !(silent && step.terminal)) expect(raw !== "", `${where}: the program got ${JSON.stringify(step.key)} (${JSON.stringify(raw)})`).toBe(step.terminal);
       } else if (step.send) {
         await take(page);
-        await write(page, cmd(step.send, step.payload ?? ""));
+        await write(page, cmd(step.send, step.body !== undefined ? new Writer().body(step.body as Body) : (step.payload ?? "")));
         const msgs = await sent(page, step.events);
         checkEvents(where, msgs, step.events);
         const replies = msgs.filter((m) => m.get("a") !== "ev");
@@ -340,7 +345,8 @@ function define(vector: { name: string; requires?: string | string[]; steps: Ste
           else if (k === "body") {
             expect(got.get("a"), `${where}: a body is an a=ok's`).toBe("ok");
             for (const [f, want] of Object.entries(v as Expected)) expect(body[f], `${where}: body ${f}, in ${show(got.body)}`).toStrictEqual(want);
-          } else expect(k === "code" || k === "detail" ? body[k] : got.get(k), `${where}: ${k}`).toBe(v);
+          } else if (v === null) expect(k === "code" || k === "detail" ? body[k] : got.get(k), `${where}: ${k} is absent`).toBeUndefined();
+          else expect(k === "code" || k === "detail" ? body[k] : got.get(k), `${where}: ${k}`).toBe(v);
         }
       } else if (step.inspect) {
         const [s, id] = step.inspect;

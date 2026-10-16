@@ -53,9 +53,9 @@ export class Control {
     return this;
   }
 
-  /** A continuation chunk carries nothing but `m` and `q`. */
+  /** A continuation chunk carries nothing but `m` (SPEC §3.4). */
   onlyChunkKeys(): boolean {
-    return this.pairs.every(([k]) => k === "m" || k === "q");
+    return this.pairs.every(([k]) => k === "m");
   }
 
   encode(): string {
@@ -223,17 +223,10 @@ export function encode(control: Control, payload: Uint8Array | string = new Uint
   const osc = (ctl: string, chunk: string | null) =>
     `\x1b]${OSC};${ctl}${chunk === null ? "" : `;${chunk}`}\x1b\\`;
   if (b64.length <= CHUNK) return osc(control.encode(), b64 === "" ? null : b64);
-  const quiet = control.get("q");
   let out = "";
   for (let i = 0; i < b64.length; i += CHUNK) {
     const last = i + CHUNK >= b64.length;
-    let ctl: Control;
-    if (i === 0) {
-      ctl = new Control([...control.pairs]).set("m", "1");
-    } else {
-      ctl = new Control([["m", last ? "0" : "1"]]);
-      if (quiet !== undefined) ctl.set("q", quiet);
-    }
+    const ctl = i === 0 ? new Control([...control.pairs]).set("m", "1") : new Control([["m", last ? "0" : "1"]]);
     out += osc(ctl.encode(), b64.slice(i, i + CHUNK));
   }
   return out;

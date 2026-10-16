@@ -43,11 +43,12 @@ for (const v of vectors.keys) {
 
 for (const v of vectors.keymap) {
   test(`keymap: ${v.name}`, () => {
-    if ("program" in v || "scroll" in v) {
-      // An element's keymap outside a text field: no default; program and
-      // the scroll actions.
+    if ("program" in v || "prefix" in v || "scroll" in v) {
+      // An element's keymap outside a text field: no default; program,
+      // prefix and the scroll actions.
       const m = elementKeymap(v.platform ?? {}, ...v.keys);
       for (const [key, want] of Object.entries(v.program ?? {})) assert.equal(m.program(key), want, key);
+      for (const [key, want] of Object.entries(v.prefix ?? {})) assert.equal(m.prefix(key), want, key);
       for (const [key, want] of Object.entries(v.scroll ?? {})) assert.equal(m.scroll(key), want, key);
       return;
     }

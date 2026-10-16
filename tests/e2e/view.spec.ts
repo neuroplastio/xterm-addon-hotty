@@ -3,7 +3,7 @@
 // what they cannot: that reveal scrolls nothing outside the document, that
 // a scroll sends one view once it comes to rest, and when views go out.
 import { expect, test, type Page } from "@playwright/test";
-import { open, send, surface, take, write } from "./helpers.ts";
+import { delta, open, send, surface, take, write } from "./helpers.ts";
 
 /** Rows of four cells, `a` to `l`, each reporting whether it is in view. */
 const ROWS =
@@ -52,10 +52,10 @@ test("reveal scrolls only the document: not the box that shows its window, not x
   const before = await outside(page);
   const max = await root(page).evaluate((el) => el.scrollHeight - el.clientHeight);
   for (const where of ["start", "end", ""]) {
-    await send(page, { a: "delta", s: "s", op: "reveal", t: "l", q: "2" }, where);
+    await delta(page, { s: "s", q: "2" }, { op: "reveal", t: "l", v: where || undefined });
     await expect.poll(() => root(page).evaluate((el) => el.scrollTop)).toBe(max);
     expect(await outside(page)).toBe(before);
-    await send(page, { a: "delta", s: "s", op: "reveal", t: "a", q: "2" }, where);
+    await delta(page, { s: "s", q: "2" }, { op: "reveal", t: "a", v: where || undefined });
     await expect.poll(() => root(page).evaluate((el) => el.scrollTop)).toBe(0);
     expect(await outside(page)).toBe(before);
   }
@@ -72,8 +72,8 @@ test("reveal scrolls neither an overflow: hidden box nor along an axis the docum
   );
   await send(page, { a: "place", s: "s", c: "10", r: "4", q: "2" });
   await expect(surface(page, "s").locator("#deep")).toBeAttached();
-  await send(page, { a: "delta", s: "s", op: "reveal", t: "deep", q: "2" }, "start");
-  await send(page, { a: "delta", s: "s", op: "reveal", t: "x", q: "2" });
+  await delta(page, { s: "s", q: "2" }, { op: "reveal", t: "deep", v: "start" });
+  await delta(page, { s: "s", q: "2" }, { op: "reveal", t: "x" });
   // The scrolling box moves down to x, and not across: scroll=1.
   await expect.poll(() => surface(page, "s").locator("#box").evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
   expect(await surface(page, "s").locator("#box").evaluate((el) => el.scrollLeft)).toBe(0);
@@ -116,11 +116,11 @@ test("a smooth reveal sends one view, where the scroll comes to rest", async ({ 
   await send(page, { a: "doc", s: "s", scroll: "1", q: "2" }, `<style>html{scroll-behavior:smooth}</style>${ROWS}`);
   await send(page, { a: "place", s: "s", c: "10", r: "4", q: "2" });
   await heard(page, 1);
-  await send(page, { a: "delta", s: "s", op: "reveal", t: "h", q: "2" }, "start");
+  await delta(page, { s: "s", q: "2" }, { op: "reveal", t: "h", v: "start" });
   const got = await heard(page, 1);
   expect(got.map(rows)).toEqual([{ h: 0, i: 1, j: 2, k: 3 }]);
   expect(got[0]!.end).toBe(false);
-  await send(page, { a: "delta", s: "s", op: "reveal", t: "l", q: "2" });
+  await delta(page, { s: "s", q: "2" }, { op: "reveal", t: "l" });
   expect((await heard(page, 1)).map((v) => [rows(v), v.end])).toEqual([[{ i: 0, j: 1, k: 2, l: 3 }, true]]);
 });
 
@@ -153,7 +153,7 @@ test("a detached surface sends no view; the document that makes it the program's
   await send(page, { a: "doc", s: "s", scroll: "1", d: "1", q: "2" }, ROWS);
   await send(page, { a: "place", s: "s", c: "10", r: "4", q: "2" });
   await expect(surface(page, "s").locator("#a")).toBeVisible();
-  await send(page, { a: "delta", s: "s", op: "reveal", t: "e", q: "2" }, "start");
+  await delta(page, { s: "s", q: "2" }, { op: "reveal", t: "e", v: "start" });
   await expect.poll(() => root(page).evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
   await page.waitForTimeout(800);
   expect(await views(page)).toEqual([]);
@@ -171,8 +171,8 @@ test("a placement scrolled out of view hears nothing until it is drawn again, th
   const bottom = await term();
   await page.evaluate(() => (window.hotty.term as unknown as Scrolling).scrollToLine(0));
   await expect(page.locator('.hotty-surface[data-surface="s"]')).toBeHidden();
-  await send(page, { a: "delta", s: "s", op: "remove", t: "b", q: "2" });
-  await send(page, { a: "delta", s: "s", op: "reveal", t: "h", q: "2" }, "start");
+  await delta(page, { s: "s", q: "2" }, { op: "remove", t: "b" });
+  await delta(page, { s: "s", q: "2" }, { op: "reveal", t: "h", v: "start" });
   await page.waitForTimeout(500);
   expect(await views(page)).toEqual([]);
   await page.evaluate((line) => (window.hotty.term as unknown as Scrolling).scrollToLine(line), bottom);
@@ -180,10 +180,10 @@ test("a placement scrolled out of view hears nothing until it is drawn again, th
   expect((await heard(page, 1)).map(rows)).toEqual([{ h: 0, i: 1, j: 2, k: 3 }]);
 });
 
-test("the capabilities list reveal among the ops and view among the events", async ({ page }) => {
+test("a 0.3 host does reveal and view: the capabilities list neither ops nor events", async ({ page }) => {
   await open(page, "?pty=0");
-  await send(page, { a: "q", n: "1", v: "0.2" });
-  const caps = (await take(page)).msgs[0]!.body as { ops: string[]; events: string[] };
-  expect(caps.ops).toContain("reveal");
-  expect(caps.events).toContain("view");
+  await send(page, { a: "q", n: "1", v: "0.3" });
+  const caps = (await take(page)).msgs[0]!.body as Record<string, unknown>;
+  expect(caps).not.toHaveProperty("ops");
+  expect(caps).not.toHaveProperty("events");
 });

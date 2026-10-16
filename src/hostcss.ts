@@ -1,4 +1,4 @@
-// The host's stylesheet (PROTOCOL §7): the terminal's look, handed to every
+// The host's stylesheet (SPEC §8): the terminal's look, handed to every
 // surface. It sits in a cascade layer, so any rule the program writes wins
 // over it, as it would over a user-agent sheet.
 
@@ -8,6 +8,8 @@ export interface Metrics {
   /** Cell size in CSS pixels. */
   cellW: number;
   cellH: number;
+  /** One device pixel, in CSS pixels (`--hotty-px`, SPEC §8). */
+  px: number;
   fontFamily: string;
   fontSize: number;
 }
@@ -41,6 +43,7 @@ export function hostCss(theme: ITheme | undefined, m: Metrics): string {
     `  --hotty-accent: var(--hotty-ansi-${p.dark ? 12 : 4});`,
     `  --hotty-cell-w: ${m.cellW}px;`,
     `  --hotty-cell-h: ${m.cellH}px;`,
+    `  --hotty-px: ${m.px}px;`,
     `  --hotty-font: ${fontStack(m.fontFamily)};`,
     "  font-family: var(--hotty-font);",
     `  font-size: ${m.fontSize}px;`,

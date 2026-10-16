@@ -7,10 +7,10 @@
 // terminal's selection, and the keyboard back.
 
 import { expect, test, type Page } from "@playwright/test";
-import { open, sansArea, send, surface, take, write } from "./helpers.ts";
+import { delta, open, sansArea, send, surface, take, write } from "./helpers.ts";
 
 const evs = (msgs: Awaited<ReturnType<typeof take>>["msgs"]) =>
-  msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("s"), m.get("e"), m.get("t"), sansArea(m.body)]);
+  msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("s"), m.get("e"), m.get("t") ?? "", sansArea(m.body)]);
 
 /** Two cells, three columns wide each, the second with text to select. */
 const CELLS =
@@ -75,7 +75,7 @@ test("the drag holds the pointer: outside the terminal, over another surface, an
   await m.up(700, 650);
   const { msgs, raw } = await take(page);
   const got = evs(msgs);
-  expect(got[0]).toEqual(["x", "dragstart", "a", { c: 1, r: 0, keys: [] }]);
+  expect(got[0]).toEqual(["x", "dragstart", "a", { c: 1, r: 0 }]);
   expect(got.at(-1)?.slice(0, 3)).toEqual(["x", "dragend", ""]);
   // Every event is the dragged surface's, none the other's.
   expect(got.every((e) => e[0] === "x")).toBe(true);
@@ -85,6 +85,29 @@ test("the drag holds the pointer: outside the terminal, over another surface, an
   expect(cells.some((d) => d.r >= 2)).toBe(true);
   // No mouse report for the drag reached the program.
   expect(raw).not.toMatch(/\x1b\[</);
+});
+
+test("a drag carries the modifier keys held at each event, as bits left out when none is (SPEC §9, §9.1)", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "modifiers come from CDP");
+  await place(page, "x", CELLS, "2", { p: "1" });
+  const cdp = await page.context().newCDPSession(page);
+  const [ax, ay] = await centre(page, "x", "a");
+  const [bx, by] = await centre(page, "x", "b");
+  // CDP's bits: 1 Alt, 2 Control, 4 Meta, 8 Shift.
+  const at = (type: "mouseMoved" | "mousePressed" | "mouseReleased", x: number, y: number, modifiers: number) =>
+    cdp.send("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons: type === "mouseReleased" ? 0 : 1, clickCount: 1, modifiers });
+  await at("mouseMoved", ax, ay, 0);
+  await at("mousePressed", ax, ay, 8);
+  // Alt pressed later is reported, and the drag goes on.
+  await at("mouseMoved", bx, by, 8 | 1);
+  await at("mouseReleased", bx, by, 2);
+  const got = evs((await take(page)).msgs).map((e) => [e[1], e[3]]);
+  expect(got).toEqual([
+    ["press", { mods: 1 }],
+    ["dragstart", { c: 1, r: 0, mods: 1 }],
+    ["drag", { c: 4, r: 0, mods: 3 }],
+    ["dragend", { c: 4, r: 0, mods: 4 }],
+  ]);
 });
 
 test("a drag selects no text, whatever the document's CSS; plain text still selects", async ({ page, browserName }) => {
@@ -117,10 +140,10 @@ test("a new placement keeps a drag; scrolling it out of view ends it", async ({ 
   expect(evs((await take(page)).msgs)).toEqual([]);
   const [bx, by] = await centre(page, "x", "b");
   await m.move(bx, by);
-  expect(evs((await take(page)).msgs)).toEqual([["x", "drag", "b", { c: 4, r: 0, keys: [] }]]);
+  expect(evs((await take(page)).msgs)).toEqual([["x", "drag", "b", { c: 4, r: 0 }]]);
   // Its line scrolls off the screen: the drag ends there.
   await write(page, "\r\n".repeat(60));
-  expect(evs((await take(page)).msgs)).toEqual([["x", "dragend", "", { c: 4, r: 0, keys: [] }]]);
+  expect(evs((await take(page)).msgs)).toEqual([["x", "dragend", "", { c: 4, r: 0 }]]);
   await m.up(bx, by);
   expect(evs((await take(page)).msgs)).toEqual([]);
 });
@@ -149,11 +172,11 @@ test("steps: a drag of an element with data-steps follows the pointer along it, 
   await m.move(2, 2);
   expect(await steps()).toEqual([["drag", "", 0]]);
   // New counts change nothing until the next drag.
-  await send(page, { a: "delta", s: "x", op: "attr", t: "track", k: "data-steps", q: "2" }, "2");
+  await delta(page, { s: "x", q: "2" }, { op: "attr", t: "track", k: "data-steps", v: "2" });
   await m.move(...at(5, 0));
   expect(await steps()).toEqual([["drag", "track", 11]]);
   // Gone from the document: the step stays as it last was.
-  await send(page, { a: "delta", s: "x", op: "remove", t: "track", q: "2" });
+  await delta(page, { s: "x", q: "2" }, { op: "remove", t: "track" });
   await m.move(...at(1, 0));
   expect(await steps()).toEqual([["drag", "", 11]]);
   await m.up(...at(1, 0));
@@ -310,7 +333,7 @@ test.describe("§9.1: a touch drags where touch-action allows no pan its way", (
     const other = { x: r.x + 100, y: r.y + r.height / 2 };
     await f.second(other.x, other.y);
     const ended = (await take(page)).msgs.filter((m) => m.get("a") === "ev");
-    expect(ended.map((m) => [m.get("e"), m.get("t")])).toEqual([["dragend", ""]]);
+    expect(ended.map((m) => [m.get("e"), m.get("t") ?? ""])).toEqual([["dragend", ""]]);
     expect((ended[0]!.body as { r: number }).r).toBe(2);
     await f.both(20, 0, other);
     await f.up();
@@ -334,13 +357,13 @@ test.describe("§9.1: a touch drags where touch-action allows no pan its way", (
     await f.down(r.x + cw / 2, r.y + r.height / 2);
     await f.move(2 * cw, 0);
     const along = await got();
-    expect(along[0]).toEqual(["dragstart", "track", { c: 0, r: 0, keys: [], x: 1 }]);
-    expect(along.at(-1)).toEqual(["drag", "track", { c: 2, r: 0, keys: [], x: 5 }]);
+    expect(along[0]).toEqual(["dragstart", "track", { c: 0, r: 0, x: 1 }]);
+    expect(along.at(-1)).toEqual(["drag", "track", { c: 2, r: 0, x: 5 }]);
     // Two rows below it: no target, the same step.
     await f.move(0, 2 * r.height);
     expect(await got()).toEqual([
-      ["drag", "", { c: 2, r: 1, keys: [], x: 5 }],
-      ["drag", "", { c: 2, r: 2, keys: [], x: 5 }],
+      ["drag", "", { c: 2, r: 1, x: 5 }],
+      ["drag", "", { c: 2, r: 2, x: 5 }],
     ]);
     // On to the right, off the track: the step follows the finger.
     await f.move(4 * cw, 0);
@@ -348,12 +371,12 @@ test.describe("§9.1: a touch drags where touch-action allows no pan its way", (
     expect(off.every((e) => e[0] === "drag" && e[1] === "" && (e[2] as { r: number }).r === 2)).toBe(true);
     const xs = off.map((e) => (e[2] as { x: number }).x);
     expect(xs).toEqual([...xs].sort((a, b) => a - b));
-    expect(off.at(-1)?.[2]).toEqual({ c: 6, r: 2, keys: [], x: 13 });
+    expect(off.at(-1)?.[2]).toEqual({ c: 6, r: 2, x: 13 });
     // Past the track's end: the count, and there it stays.
     await f.move(16 * cw, 0);
-    expect((await got()).at(-1)?.[2]).toEqual({ c: 22, r: 2, keys: [], x: 40 });
+    expect((await got()).at(-1)?.[2]).toEqual({ c: 22, r: 2, x: 40 });
     await f.up();
-    expect(await got()).toEqual([["dragend", "", { c: 22, r: 2, keys: [], x: 40 }]]);
+    expect(await got()).toEqual([["dragend", "", { c: 22, r: 2, x: 40 }]]);
   });
 
   test("a long press, or Alt held at the touch, never drags", async ({ page, browserName }) => {
@@ -391,9 +414,9 @@ test.describe("§9.1: a touch drags where touch-action allows no pan its way", (
     // Along the track, the element under the finger stays the same: no
     // drag. Off it, a drag for each cell, with no target, and the lift.
     expect(evs((await take(page)).msgs).map((e) => [e[1], e[2], e[3]])).toEqual([
-      ["dragstart", "track", { c: 0, r: 0, keys: [] }],
-      ...[[2, 1], [2, 2], [3, 2], [4, 2], [5, 2], [6, 2]].map(([c, r]) => ["drag", "", { c, r, keys: [] }]),
-      ["dragend", "", { c: 6, r: 2, keys: [] }],
+      ["dragstart", "track", { c: 0, r: 0 }],
+      ...[[2, 1], [2, 2], [3, 2], [4, 2], [5, 2], [6, 2]].map(([c, r]) => ["drag", "", { c, r }]),
+      ["dragend", "", { c: 6, r: 2 }],
     ]);
   });
 

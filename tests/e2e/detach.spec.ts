@@ -6,10 +6,10 @@
 // typed text.
 
 import { expect, test, type Page } from "@playwright/test";
-import { open, sansArea, send, surface, take } from "./helpers.ts";
+import { delta, open, sansArea, send, surface, take } from "./helpers.ts";
 
 const evs = (msgs: Awaited<ReturnType<typeof take>>["msgs"]) =>
-  msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("e"), m.get("t"), sansArea(m.body)]);
+  msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("e"), m.get("t") ?? "", sansArea(m.body)]);
 
 /** The terminal has the browser's focus (the surface gave it back). */
 async function terminalHasKeyboard(page: Page) {
@@ -132,8 +132,14 @@ test.describe("§5.5: a detached surface", () => {
 
   test("sends no events of any kind, and its controls do nothing", async ({ page }) => {
     await place(page, "x", UI);
-    await place(page, "att", `<p>attached</p>`);
+    await place(page, "att", `<div style="height: 120px">attached</div>`);
+    // Both hear the rows their documents need (SPEC §5.2).
+    await send(page, { a: "place", s: "x", c: "60", r: "8", f: "1", q: "2" });
+    await send(page, { a: "place", s: "att", c: "60", r: "8", f: "1", q: "2" });
     await send(page, { a: "detach", s: "x", q: "2" });
+    // What the placements said before it detached is not what is checked.
+    await send(page, { a: "q", v: "0.3" });
+    await take(page);
     await page.evaluate(() => window.hotty.term.focus());
     const d = surface(page, "x");
     for (const id of ["p", "b", "l", "s", "sum", "c", "go"]) await d.locator(`#${id}`).click({ force: true });
@@ -142,7 +148,8 @@ test.describe("§5.5: a detached surface", () => {
     await page.mouse.click(t.x + t.width / 2, t.y + t.height / 2);
     await page.keyboard.type("new");
     await terminalHasKeyboard(page);
-    // A font change resizes both surfaces; only the attached one reports it.
+    // A font change changes the rows both documents need; only the attached
+    // one reports it.
     await page.evaluate(() => ((window.hotty.term as unknown as { options: { fontSize: number } }).options.fontSize = 20));
     const got: [string | undefined, string | undefined][] = [];
     let raw = "";
@@ -150,11 +157,11 @@ test.describe("§5.5: a detached surface", () => {
       .poll(async () => {
         const r = await take(page);
         raw += r.raw;
-        for (const m of r.msgs) if (m.get("a") === "ev") got.push([m.get("s"), m.get("e")]);
-        return got.some(([s, e]) => s === "att" && e === "resize");
+        for (const m of r.msgs) if (m.get("a") === "ev" && m.get("e") !== "caps") got.push([m.get("s"), m.get("e")]);
+        return got.some(([s, e]) => s === "att" && e === "fit");
       })
       .toBe(true);
-    expect(got).toEqual([["att", "resize"]]);
+    expect(got).toEqual([["att", "fit"]]);
     expect(raw).toBe("new");
     await expect(d.locator("#t")).toHaveValue("old");
     await expect(d.locator("#c")).not.toBeChecked();
@@ -167,7 +174,7 @@ test.describe("§5.5: a detached surface", () => {
     await send(page, { a: "focus", s: "x", t: "t", q: "2" });
     await page.keyboard.type("!");
     await take(page);
-    await send(page, { a: "detach", s: "x" });
+    await send(page, { a: "detach", s: "x", n: "1" });
     await terminalHasKeyboard(page);
     await page.keyboard.press("z");
     const { msgs, raw } = await take(page);
@@ -189,13 +196,13 @@ test.describe("§5.5: a detached surface", () => {
     expect(await inspect("b")).toEqual({ id: "b", value: "v" });
     expect(await inspect("off")).toEqual({ id: "off", disabled: "" });
     // A control a delta adds is disabled too; the program's unattr does not enable one.
-    await send(page, { a: "delta", s: "x", op: "append", t: "f", q: "2" }, "<input id=late>");
-    await send(page, { a: "delta", s: "x", op: "unattr", t: "b", k: "disabled", q: "2" });
+    await delta(page, { s: "x", q: "2" }, { op: "append", t: "f", v: "<input id=late>" });
+    await delta(page, { s: "x", q: "2" }, { op: "unattr", t: "b", k: "disabled" });
     await expect(d.locator("#late")).toBeDisabled();
     await expect(d.locator("#b")).toBeDisabled();
     expect(await inspect("late")).toEqual({ id: "late" });
     // A disabled the program writes is its own, and reported.
-    await send(page, { a: "delta", s: "x", op: "attr", t: "c", k: "disabled", q: "2" }, "");
+    await delta(page, { s: "x", q: "2" }, { op: "attr", t: "c", k: "disabled", v: "" });
     expect(await inspect("c")).toEqual({ id: "c", type: "checkbox", value: "yes", disabled: "" });
     expect(evs((await take(page)).msgs)).toEqual([]);
   });
@@ -253,7 +260,7 @@ test.describe("§5.5: a detached surface", () => {
     await send(page, { a: "focus", s: "x", t: "nope" });
     await send(page, { a: "focus", s: "x" });
     expect((await take(page)).msgs.map((m) => (m.body as { code?: string } | null)?.code)).toEqual(["EDETACHED", "EDETACHED", "EDETACHED"]);
-    await send(page, { a: "blur", s: "x" });
+    await send(page, { a: "blur", s: "x", n: "1" });
     expect((await take(page)).msgs.map((m) => [m.get("a"), m.get("re") ?? m.get("e")])).toEqual([["ok", "blur"]]);
     await d.locator("#b").click({ force: true });
     expect(evs((await take(page)).msgs)).toEqual([]);

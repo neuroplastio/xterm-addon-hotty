@@ -6,7 +6,7 @@ import { readFileSync, rmSync } from "node:fs";
 import { open, sansArea, send, surface, take, write } from "./helpers.ts";
 
 const evs = (msgs: Awaited<ReturnType<typeof take>>["msgs"]) =>
-  msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("e"), m.get("t"), sansArea(m.body)]);
+  msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("e"), m.get("t") ?? "", sansArea(m.body)]);
 
 test("form.py runs unchanged: typing, Tab, Space, a click, Esc, q", async ({ page }, info) => {
   const log = info.outputPath("form-events.jsonl");
@@ -26,7 +26,7 @@ test("form.py runs unchanged: typing, Tab, Space, a click, Esc, q", async ({ pag
   await page.keyboard.press("q");
   await expect.poll(() => page.evaluate(() => (window as unknown as { hotty: { exited: boolean } }).hotty.exited)).toBe(true);
   const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-  const got = lines.filter((l) => l.kind === "event").map((l) => [l.e, l.t, sansArea(l.detail)]);
+  const got = lines.filter((l) => l.kind === "event").map((l) => [l.e, l.t ?? "", sansArea(l.detail)]);
   // The program focused #name itself: no echo (SPEC §10.1). Each Tab and
   // the click name where focus went, after the change they commit.
   expect(got).toEqual([
@@ -37,7 +37,7 @@ test("form.py runs unchanged: typing, Tab, Space, a click, Esc, q", async ({ pag
     ["change", "notify", { checked: true, value: "yes" }],
     ["focus", "save", null],
     ["click", "save", null],
-    ["submit", "settings", { name: "Ada Lovelace", email: "ada@example.com", notify: "yes", theme: "dark" }],
+    ["submit", "settings", { fields: [["name", "Ada Lovelace"], ["email", "ada@example.com"], ["notify", "yes"], ["theme", "dark"]] }],
     ["blur", "", null],
   ]);
   expect(lines.filter((l) => l.kind === "keys").map((l) => l.data)).toEqual(["\u001b", "q"]);
@@ -91,7 +91,7 @@ test.describe("without a pty", () => {
       ["change", "t", { value: "hi" }], // committed as focus leaves it
       ["focus", "go", null],
       ["click", "go", { value: "now" }],
-      ["submit", "f", { q: "1", go: "now" }],
+      ["submit", "f", { fields: [["q", "1"], ["go", "now"]] }],
     ]);
     // The link did not navigate, and <details> opened locally.
     await expect(d.locator("#l")).toBeVisible();
@@ -142,7 +142,7 @@ test.describe("without a pty", () => {
   });
 });
 
-test("p=1: every press in the window is reported, first, until a placement without it", async ({ page }) => {
+test("p=1: every press in the window is reported, first; it belongs to the surface, and holds until p=0", async ({ page }) => {
   await open(page, "?pty=0&record-links");
   await send(
     page,
@@ -163,13 +163,23 @@ test("p=1: every press in the window is reported, first, until a placement witho
     // The press comes before the focus it causes, and before the blur.
     ["press", "t", null],
     ["focus", "t", null],
+    // No element with an id around it, and no modifier held: no detail.
     ["press", "", null],
     ["blur", "", null],
   ]);
   expect(await page.evaluate(() => [...(window.hotty as unknown as { opened: string[] }).opened])).toEqual(["https://example.com/"]);
-  // Placed again without p: no more presses.
+  // Placed again without p, or hidden and placed again: presses go on (SPEC §5.2).
+  await send(page, { a: "place", s: "pp", c: "60", r: "6", q: "2" });
+  await send(page, { a: "hide", s: "pp", q: "2" });
   await send(page, { a: "place", s: "pp", c: "60", r: "6", q: "2" });
   await take(page);
+  await d.locator("b").click();
+  expect(evs((await take(page)).msgs)).toEqual([["press", "card", null]]);
+  // p=0 stops them, and a value that is neither is as if absent.
+  await send(page, { a: "place", s: "pp", c: "60", r: "6", p: "yes", q: "2" });
+  await d.locator("b").click();
+  expect(evs((await take(page)).msgs)).toEqual([["press", "card", null]]);
+  await send(page, { a: "place", s: "pp", c: "60", r: "6", p: "0", q: "2" });
   await d.locator("b").click();
   expect(evs((await take(page)).msgs)).toEqual([]);
 });

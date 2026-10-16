@@ -15,12 +15,12 @@
 
 import type { IBufferRange, IDisposable, IMarker, ITerminalAddon, Terminal } from "@xterm/xterm";
 import { hostCss, palette } from "./hostcss.ts";
-import { OPS, DeltaError } from "./delta.ts";
-import { float, Writer, type Body } from "./msgpack.ts";
+import { DeltaError, readDelta } from "./delta.ts";
+import { Float, float, Writer, type Body, type Value } from "./msgpack.ts";
 import { clean, type Policy } from "./network.ts";
 import { Store } from "./resources.ts";
 import { EDIT_ACTIONS, editAction, editOf, type Platform, readKey } from "./keys.ts";
-import { type Menu, readMenu } from "./seq.ts";
+import { type Menu, readMenu } from "./menu.ts";
 import { type KeySettings, pressedName, type Route, type Scheme, Surface, type SurfaceHost } from "./surface.ts";
 import { Touch } from "./touch.ts";
 import { HOST, VERSION } from "./version.ts";
@@ -78,15 +78,7 @@ export interface HottyOptions {
    * is copied by its keymap (SPEC §10.2, §11), Ctrl+C and Cmd+C by
    * default, whatever this says.
    */
-  copyKeys?: (e: KeyboardEvent) => boolean;
-  /** The user's leader (SPEC §10.5, reported as `keys.leader`): the keys
-   * `<leader>` stands for in a `data-key`, as a sequence. Default
-   * `"Space"`. */
-  leader?: string;
-  /** How long a key sequence waits for its next key, in milliseconds
-   * (SPEC §10.5, `keys.timeout`). Default 2000. */
-  keyTimeout?: number;
-}
+  copyKeys?: (e: KeyboardEvent) => boolean;}
 
 const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
@@ -128,7 +120,7 @@ export interface Inspected {
 const GESTURE_MS = 150;
 
 /** The HOTTY versions the addon speaks (SPEC §4), highest first. */
-const SPEAKS = ["0.2"];
+const SPEAKS = ["0.3"];
 
 /**
  * The version a query is answered in (SPEC §4): the highest the addon
@@ -143,9 +135,6 @@ function answerIn(v: string | undefined): string {
   if (shared === undefined) throw new Failure("EVERSION", SPEAKS.join(","));
   return shared;
 }
-
-/** `drag` stands for `dragstart`, `drag` and `dragend` (SPEC §4, §9.1). */
-export const EVENTS = ["click", "change", "input", "submit", "press", "drag", "focus", "blur", "resize", "fit", "view", "command", "caps"];
 
 /** The longest label a menu shows, in characters; the rest is cut. */
 const LABEL_CHARS = 32;
@@ -168,6 +157,10 @@ class Failure extends Error {
     this.code = code;
   }
 }
+
+/** The optional features the addon has (SPEC §4). It lets the pointer pass
+ * through no surface (`passthrough`, §9.3) and sends no `hover` (§9.4). */
+const FEATURES = ["count", "menu"];
 
 type Reply = { extra?: [string, string][]; body?: Body };
 
@@ -196,10 +189,15 @@ export class HottyAddon implements ITerminalAddon {
   private css = "";
   private readonly policy: Policy;
   private metrics = { cellW: 0, cellH: 0, key: "" };
-  /** The cell (CSS px) and font the program last heard of, or saw at the
-   * start: a `resize` is owed when both have changed since (SPEC §5.3). */
+  /** The capabilities the program last heard (SPEC §4), from its query or a
+   * `caps` event; null while it has asked for none. */
+  private heard: Body | null = null;
+  /** The font and the cell (CSS px) it heard them with: a new cell is owed
+   * as `cellcss` when the font changed, or by more than a device pixel's
+   * rounding (SPEC §5.3). */
   private told = { cellW: 0, cellH: 0, font: "" };
-  private resizeTimer: ReturnType<typeof setTimeout> | null = null;
+  private capsTimer: ReturnType<typeof setTimeout> | null = null;
+  private pixelWatch: IDisposable | null = null;
   /** A surface's key is being forwarded to the terminal (`key`), and the
    * terminal's own focus is held off meanwhile. A program in the page may
    * answer the key inside its dispatch, since xterm.js parses what follows
@@ -210,7 +208,7 @@ export class HottyAddon implements ITerminalAddon {
   /** The wheel gesture under way: the surface its last wheel was over ("" for
    * the cells), where it goes, and when that wheel came. */
   private gesture: { surface: string; route: Route; at: number } | null = null;
-  /** How keys are read (SPEC §10.4, §10.5): `Mod` is Meta on a Mac. */
+  /** How keys are read (SPEC §10.4): `Mod` is Meta on a Mac. */
   private readonly keys: KeySettings;
   /** The edit commands the program takes on each screen (SPEC §10.6). */
   private readonly taken = { normal: new Set<string>(), alternate: new Set<string>() };
@@ -221,9 +219,7 @@ export class HottyAddon implements ITerminalAddon {
   private pasting: { key: string; timer: ReturnType<typeof setTimeout> } | null = null;
   /** `encodeKey` runs a key through xterm.js: it is not typed. */
   private encoding = false;
-  /** The which-key menus (SPEC §10.5, §10.6): a surface's while a sequence
-   * waits, over the program's, and where they show. */
-  private surfaceMenu: Menu | null = null;
+  /** The program's which-key menu (SPEC §10.5), and where it shows. */
   private programMenu: Menu | null = null;
   private menuEl: HTMLDivElement | null = null;
   /** The terminal's element, whose paste a `paste` command takes. */
@@ -232,7 +228,7 @@ export class HottyAddon implements ITerminalAddon {
   constructor(options: HottyOptions = {}) {
     this.opts = { maxSurfaces: 64, resourceQuota: 64 << 20, ...options };
     const platform: Platform = { mod: mac ? "Meta" : "Control" };
-    this.keys = { platform, leader: options.leader ?? "Space", timeout: options.keyTimeout ?? 2000 };
+    this.keys = { platform };
     this.policy = clean(options.network);
     this.store = new Store(this.opts.resourceQuota);
     this.store.onChange = (names) => {
@@ -250,7 +246,7 @@ export class HottyAddon implements ITerminalAddon {
       if (!this.encoding) {
         if (e.type === "keyup" && this.commandCodes.delete(e.code)) return false;
         if (e.type === "keydown") {
-          this.cellsKey(e);
+          this.menuKey(e);
           if (this.command(e)) return false;
         }
       }
@@ -291,6 +287,21 @@ export class HottyAddon implements ITerminalAddon {
       term.onScroll(() => this.reposition()),
       term.onWriteParsed(() => this.reposition()),
     );
+    this.watchPixels();
+  }
+
+  /** A zoom, or a display with another pixel density, changes
+   * `--hotty-px` (SPEC §5.3, §8) even where nothing is drawn: the media
+   * query for the current density stops matching when it changes. */
+  private watchPixels() {
+    this.pixelWatch?.dispose();
+    const query = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    const changed = () => {
+      this.checkMetrics();
+      this.watchPixels();
+    };
+    query.addEventListener("change", changed, { once: true });
+    this.pixelWatch = { dispose: () => query.removeEventListener("change", changed) };
   }
 
   dispose(): void {
@@ -303,6 +314,10 @@ export class HottyAddon implements ITerminalAddon {
     this.cellTouch?.dispose();
     this.cellTouch = null;
     this.reset();
+    if (this.capsTimer) clearTimeout(this.capsTimer);
+    this.capsTimer = null;
+    this.pixelWatch?.dispose();
+    this.pixelWatch = null;
     for (const d of this.disposables) d.dispose();
     this.disposables.length = 0;
     this.layer?.remove();
@@ -378,14 +393,18 @@ export class HottyAddon implements ITerminalAddon {
 
   private handle(cmd: Command): void | Promise<void> {
     const action = cmd.control.get("a") ?? "";
-    const quiet = Number(cmd.control.get("q") ?? "0");
+    // Only errors, unless asked (SPEC §3.5): a query and a command with `n`
+    // are answered, any other command only when it fails.
+    const quiet = Number(cmd.control.get("q") ?? (action === "q" || cmd.control.get("n") !== undefined ? "0" : "1"));
     const ok = (r: Reply | void) => {
       if (quiet === 0) this.reply("ok", cmd, r ?? {});
     };
     const fail = (e: unknown) => {
       const code = e instanceof Failure || e instanceof DeltaError ? e.code : "EINVAL";
       const detail = e instanceof Error ? e.message : String(e);
-      if (quiet < 2) this.reply("err", cmd, { body: { code, detail } });
+      // A delta's error names the op at fault by its index (SPEC §6.1).
+      const extra: [string, string][] = e instanceof DeltaError && e.i !== undefined ? [["i", String(e.i)]] : [];
+      if (quiet < 2) this.reply("err", cmd, { extra, body: { code, detail } });
     };
     try {
       const r = this.dispatch(action, cmd);
@@ -418,8 +437,9 @@ export class HottyAddon implements ITerminalAddon {
     switch (action) {
       case "q":
         // Answered at once, `late=1` or not: the addon is attached to its
-        // terminal from the start, so it holds no query (§4).
-        return { body: this.capabilities(answerIn(c.get("v"))) };
+        // terminal from the start, so it holds no query (§4). What the
+        // program hears is what a `caps` event differs from (§9).
+        return { body: this.hear(this.capabilities(answerIn(c.get("v")))) };
       case "doc": {
         const name = this.surfaceName(c);
         let s = this.surfaces.get(name);
@@ -449,8 +469,11 @@ export class HottyAddon implements ITerminalAddon {
         return;
       }
       case "delta": {
+        // Checked whole first, then applied in order as one unit; the first
+        // op that failed is the error (SPEC §6.1).
         const s = this.existing(c);
-        s.delta(c.get("op") ?? "morph", c.get("t"), c.get("k"), text(cmd.payload));
+        const failed = s.delta(readDelta(cmd.payload));
+        if (failed) throw failed;
         return;
       }
       case "res": {
@@ -504,7 +527,7 @@ export class HottyAddon implements ITerminalAddon {
         return;
       }
       case "menu":
-        // The program's which-key menu (SPEC §10.6); none hides it.
+        // The program's which-key menu (SPEC §10.5); none hides it.
         this.programMenu = cmd.payload.length ? readMenu(cmd.payload) : null;
         this.drawMenu();
         return;
@@ -523,21 +546,14 @@ export class HottyAddon implements ITerminalAddon {
     const limit = (n: number) => (Number.isFinite(n) ? Math.min(Math.floor(n), Number.MAX_SAFE_INTEGER) : undefined);
     return {
       v,
-      ops: OPS,
-      events: EVENTS,
-      cell: { w: Math.round(cellW * scale), h: Math.round(cellH * scale) },
+      cellcss: { w: float(cellW), h: float(cellH) },
       scale: float(scale),
       scheme: this.scheme(),
+      mod: this.keys.platform.mod,
+      features: FEATURES,
       limits: { resources: limit(this.store.quota), surfaces: limit(this.opts.maxSurfaces), message: MAX_COMMAND },
       net: this.policy,
-      scroll: true,
-      steps: true,
-      drop: true,
-      count: true,
-      mod: this.keys.platform.mod,
       edit: editOf(this.keys.platform),
-      keys: { leader: this.keys.leader, timeout: this.keys.timeout },
-      menu: true,
       host: HOST,
       version: VERSION,
     };
@@ -588,12 +604,17 @@ export class HottyAddon implements ITerminalAddon {
     s.setSize(cols, rows, cellW, cellH, win);
     s.setZ(z);
     this.unplace(s.name);
-    // Presses (SPEC §5.2): like z, the placement's.
-    s.presses = c.get("p") === "1";
-    // Fit (SPEC §5.2): the placement's too, from its own rows. The
-    // placement keeps its size: re-placing is the program's to do.
-    s.setFit(c.get("f") === "1" ? rows : null);
-    // View (SPEC §9.5): the placement's too; its first goes out once drawn.
+    // What the program hears (SPEC §5.2): `p`, `f` and `v` belong to the
+    // surface, 1 on and 0 off, held until sent again; anything else is as
+    // if absent. (Hover is not sent: `v` has nothing to turn on.)
+    const flag = (k: string) => (c.get(k) === "1" ? true : c.get(k) === "0" ? false : undefined);
+    s.presses = flag("p") ?? s.presses;
+    s.fits = flag("f") ?? s.fits;
+    // Fit counts from the placement's own rows. The placement keeps its
+    // size: re-placing is the program's to do.
+    s.setFit(s.fits ? rows : null);
+    // View (SPEC §9.5): its first goes out once drawn, if it differs from
+    // what the program last heard.
     s.beginPlacement();
 
     const buf = this.term.buffer.active;
@@ -659,7 +680,6 @@ export class HottyAddon implements ITerminalAddon {
     this.placements.delete(name);
     for (const d of p.disposables) d.dispose();
     p.marker?.dispose();
-    p.surface.presses = false;
     p.surface.setFit(null);
     p.surface.endPlacement();
     p.surface.park();
@@ -682,7 +702,7 @@ export class HottyAddon implements ITerminalAddon {
       if (p.kind === "alt" && type === "normal") this.remove(p.surface.name);
     }
     // Leaving the alternate screen drops the commands taken there, and any
-    // change hides the program's menu (SPEC §10.6).
+    // change hides the program's menu (SPEC §10.5).
     if (type === "normal") this.taken.alternate.clear();
     if (this.programMenu) {
       this.programMenu = null;
@@ -701,8 +721,12 @@ export class HottyAddon implements ITerminalAddon {
       layer: this.ensureLayer(),
       store: this.store,
       event: (surface, kind, target, detail) => {
-        const c = new Control().set("a", "ev").set("s", surface).set("e", kind).set("t", target);
-        this.send(encode(c, detail === undefined ? "" : this.writer.body(detail)));
+        // `t` is absent where no element is meant, and a detail with no
+        // field is no payload (SPEC §9).
+        const c = new Control().set("a", "ev").set("s", surface).set("e", kind);
+        if (target !== "") c.set("t", target);
+        const fields = detail !== undefined && Object.values(detail).some((v) => v != null);
+        this.send(encode(c, fields ? this.writer.body(detail!) : ""));
       },
       browserKey: (e) => this.browserKey(e),
       copyKey: (e) => this.copyKey(e),
@@ -735,10 +759,7 @@ export class HottyAddon implements ITerminalAddon {
       },
       keys: this.keys,
       command: (e) => this.command(e),
-      menu: (m) => {
-        this.surfaceMenu = m;
-        this.drawMenu();
-      },
+      typed: (e) => this.menuKey(e),
       sendKey: (data) => {
         const cs = (this.term as unknown as { _core: { coreService: DataSink } })._core.coreService;
         this.throughTerminal(() => cs.triggerDataEvent(data, true));
@@ -1003,7 +1024,7 @@ export class HottyAddon implements ITerminalAddon {
     return layer;
   }
 
-  // --- Commands in the cells and menus (SPEC §10.5, §10.6) ----------------
+  // --- Commands in the cells and the menu (SPEC §10.5, §10.6) -------------
 
   /** The paste a `paste` command's key brings (SPEC §10.6), heard before
    * xterm.js's own on its textarea: its text goes with the command, and
@@ -1067,10 +1088,10 @@ export class HottyAddon implements ITerminalAddon {
     this.send(encode(c, this.writer.body({ name, key, text: text || undefined })));
   }
 
-  /** A key typed on the cells while the program's menu shows (SPEC §10.6):
-   * Escape, and a key the menu does not list, hide it. The key still
-   * reaches the program. */
-  private cellsKey(e: KeyboardEvent) {
+  /** A key typed on the cells or in a surface while the program's menu
+   * shows (SPEC §10.5): Escape, and a key the menu does not list, hide it.
+   * The key still goes where it would without the menu. */
+  private menuKey(e: KeyboardEvent) {
     const m = this.programMenu;
     const key = pressedName(e);
     if (!m || key === null) return;
@@ -1082,15 +1103,14 @@ export class HottyAddon implements ITerminalAddon {
   }
 
   /**
-   * Draws the which-key menu (SPEC §10.5, §10.6) at the bottom right of
-   * the screen, on cells: a surface's while a sequence waits, else the
-   * program's. A title row, the keys typed and their group's label, then
-   * each key that can follow with what it does, in columns of at most
-   * `COLUMN_ITEMS`. A group's label has a `+`, and a disabled item is
-   * dimmed.
+   * Draws the program's which-key menu (SPEC §10.5) at the bottom right of
+   * the screen, on cells, over the surfaces too. A title row, the keys
+   * typed and their group's label, then each key that can follow with what
+   * it does, in columns of at most `COLUMN_ITEMS`. A group's label has a
+   * `+`, and a disabled item is dimmed.
    */
   private drawMenu() {
-    const m = this.surfaceMenu ?? this.programMenu;
+    const m = this.programMenu;
     if (!m) {
       this.menuEl?.remove();
       this.menuEl = null;
@@ -1220,19 +1240,27 @@ export class HottyAddon implements ITerminalAddon {
   private hostCss(): string {
     const { cellW, cellH } = this.cell();
     const o = this.term.options;
-    this.css = hostCss(o.theme, { cellW, cellH, fontFamily: o.fontFamily ?? "monospace", fontSize: o.fontSize ?? 15 });
+    this.css = hostCss(o.theme, { cellW, cellH, px: this.px(), fontFamily: o.fontFamily ?? "monospace", fontSize: o.fontSize ?? 15 });
     return this.css;
+  }
+
+  /** One device pixel in CSS pixels (`--hotty-px`, SPEC §8), the opposite of
+   * `scale`. */
+  private px(): number {
+    return 1 / (window.devicePixelRatio || 1);
   }
 
   private scheme(): Scheme {
     return palette(this.term.options.theme).dark ? "dark" : "light";
   }
 
-  /** On every render: did the cell size, font or theme change? */
+  /** On every render: did the cell size, font, theme or pixel density
+   * change? A new pixel density (a zoom) changes `--hotty-px` and draws the
+   * surfaces again, and tells the program nothing (SPEC §5.3). */
   private checkMetrics() {
     const { cellW, cellH } = this.cell();
     const o = this.term.options;
-    const key = `${cellW}x${cellH}|${o.fontFamily}|${o.fontSize}|${JSON.stringify(o.theme ?? {})}`;
+    const key = `${cellW}x${cellH}|${this.px()}|${this.font()}|${JSON.stringify(o.theme ?? {})}`;
     if (key === this.metrics.key) return;
     const first = this.metrics.cellW === 0;
     this.metrics = { cellW, cellH, key };
@@ -1245,33 +1273,61 @@ export class HottyAddon implements ITerminalAddon {
     this.reposition();
   }
 
+  /** What sets the cell's size, besides the pixel density. */
   private font(): string {
-    return `${this.term.options.fontFamily}|${this.term.options.fontSize}`;
+    const o = this.term.options;
+    return `${o.fontFamily}|${o.fontSize}|${o.lineHeight}|${o.letterSpacing}`;
   }
 
-  /** Once the cell and font settle: a new font that changed the cell is
-   * re-rendered with no program involvement, so the program hears its new
-   * size (SPEC §5.3, §9). A browser's zoom moves the cell only by device
-   * pixel rounding and keeps the font, and is not told. xterm.js may take
-   * the font and its cell in two renders, so this waits for both. */
+  /** The capabilities the program hears: it asked for them with its query,
+   * and answers differ from them in `caps` (SPEC §4). */
+  private hear(caps: Body): Body {
+    const { cellW, cellH } = this.cell();
+    this.heard = caps;
+    this.told = { cellW, cellH, font: this.font() };
+    return caps;
+  }
+
+  /** Once the cell, font and theme settle, the program hears what changed.
+   * xterm.js may take a font and its cell in two renders, so this waits for
+   * both. */
   private settle() {
-    if (this.resizeTimer) clearTimeout(this.resizeTimer);
-    this.resizeTimer = setTimeout(() => {
-      this.resizeTimer = null;
-      const { cellW, cellH } = this.cell();
-      const font = this.font();
-      const t = this.told;
-      const owed = font !== t.font && (cellW !== t.cellW || cellH !== t.cellH);
-      this.told = { cellW, cellH, font };
-      if (!owed) return;
-      for (const p of this.placements.values()) {
-        const s = p.surface;
-        if (s.detached) continue; // it sends no events (§5.5)
-        this.host().event(s.name, "resize", "", { w: float(Math.round(s.cols * cellW)), h: float(s.rows * cellH) });
-      }
+    if (this.capsTimer) clearTimeout(this.capsTimer);
+    this.capsTimer = setTimeout(() => {
+      this.capsTimer = null;
+      this.tellCaps();
     }, 100);
   }
+
+  /**
+   * Sends `caps` (SPEC §4, §9) with every field that differs from what the
+   * program last heard, to a program that asked for the capabilities. A
+   * zoom changes `scale` alone and sends nothing, and moves the cell only by
+   * device pixel rounding, with the font kept: that is not a new `cellcss`.
+   */
+  private tellCaps() {
+    const { cellW, cellH } = this.cell();
+    const font = this.font();
+    const t = this.told;
+    const owed = (font !== t.font && (cellW !== t.cellW || cellH !== t.cellH)) || Math.abs(cellW - t.cellW) > 1 || Math.abs(cellH - t.cellH) > 1;
+    if (owed) this.told = { cellW, cellH, font };
+    const heard = this.heard;
+    if (!heard) return;
+    const now = this.capabilities(String(heard.v));
+    const same = (a: unknown, b: unknown) => JSON.stringify(a, plain) === JSON.stringify(b, plain);
+    const changed: Record<string, Value> = {};
+    for (const [k, v] of Object.entries(now)) {
+      if (v == null || (k === "cellcss" && !owed) || same(v, heard[k])) continue;
+      changed[k] = v;
+    }
+    if (Object.keys(changed).every((k) => k === "scale")) return;
+    this.heard = { ...heard, ...changed };
+    this.send(encode(new Control().set("a", "ev").set("e", "caps"), this.writer.body(changed)));
+  }
 }
+
+/** A body's value as JSON would show it, a `Float` by its value. */
+const plain = (_: string, x: unknown) => (x instanceof Float ? { float: x.value } : x);
 
 /** Runs `f` after `chain`, synchronously when nothing before it was async. */
 function sequence(chain: Promise<void> | undefined, f: () => void | Promise<void>): Promise<void> | undefined {

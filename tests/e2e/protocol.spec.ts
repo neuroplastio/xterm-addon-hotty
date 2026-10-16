@@ -4,41 +4,51 @@
 import { expect, test, type Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { Float } from "../../src/msgpack.ts";
+import { Float, Writer } from "../../src/msgpack.ts";
 import { HOST, VERSION } from "../../src/version.ts";
 import { Control, encode, MAX_COMMAND } from "../../src/wire.ts";
 import { HOTTY_DIR } from "../hotty.ts";
-import { cell, cmd, open, send, surface, take, write } from "./helpers.ts";
+import { cell, cmd, delta, deltaCmd, open, send, surface, take, write } from "./helpers.ts";
 
 test.beforeEach(async ({ page }) => open(page));
 
-test("a=q answers with capabilities", async ({ page }) => {
-  await send(page, { a: "q", n: "7", v: "0.2" });
+test("a=q answers with capabilities: the fields of 0.3, and none of 0.2's", async ({ page }) => {
+  await send(page, { a: "q", v: "0.3" });
   const { msgs } = await take(page);
+  // A query is answered without `n` or `q` (SPEC §3.5).
   expect(msgs).toHaveLength(1);
   expect(msgs[0]!.get("a")).toBe("ok");
-  expect(msgs[0]!.get("n")).toBe("7");
-  const caps = msgs[0]!.body as { v: string; ops: string[]; cell: { w: number; h: number }; scale: Float; scroll: boolean; host: string; version: string; limits: Record<string, number>; count: boolean; drop: boolean };
-  expect(caps.v).toBe("0.2");
-  expect(caps.scroll).toBe(true);
+  const caps = msgs[0]!.body as Record<string, unknown> & { cellcss: { w: Float; h: Float }; limits: Record<string, number> };
+  expect(Object.keys(caps).sort()).toEqual(["cellcss", "edit", "features", "host", "limits", "mod", "net", "scale", "scheme", "v", "version"]);
+  expect(caps.v).toBe("0.3");
   expect(caps.host).toBe(HOST);
   expect(caps.version).toBe(VERSION);
-  expect(caps.ops).toContain("morph");
-  expect(caps.cell.h).toBeGreaterThan(0);
+  // The cell in CSS pixels, and a float even when whole (SPEC §3.3, §4).
+  expect(caps.cellcss.w).toBeInstanceOf(Float);
+  expect(caps.cellcss.h.value).toBeGreaterThan(0);
+  expect(caps.scale).toStrictEqual(new Float(1));
+  expect(caps.scheme).toBe("dark");
+  // What the addon does of the optional features.
+  expect(caps.features).toEqual(["count", "menu"]);
   // The limit it enforces on a message, decoded (SPEC §13).
   expect(caps.limits.message).toBe(MAX_COMMAND);
-  // A repeated click carries its count (SPEC §9).
-  expect(caps.count).toBe(true);
-  // A drop-only t, and where in t a drag is (SPEC §9.1).
-  expect(caps.drop).toBe(true);
-  // A float even when whole (SPEC §3.3, §4): 1.0 at this page's scale.
-  expect(caps.scale).toStrictEqual(new Float(1));
+});
+
+test("the cell in the capabilities is the cell the surfaces are laid out with", async ({ page }) => {
+  const { w, h } = await cell(page);
+  await send(page, { a: "doc", s: "x", q: "2" }, "<p>x</p>");
+  await send(page, { a: "place", s: "x", c: "10", r: "3", q: "2" });
+  const css = surface(page, "x").locator("html");
+  const [cw, ch] = await css.evaluate((el) => [getComputedStyle(el).getPropertyValue("--hotty-cell-w"), getComputedStyle(el).getPropertyValue("--hotty-cell-h")]);
+  expect([parseFloat(cw!), parseFloat(ch!)]).toEqual([w, h]);
+  // One device pixel (SPEC §8): the opposite of `scale`.
+  expect(await css.evaluate((el) => getComputedStyle(el).getPropertyValue("--hotty-px"))).toBe("1px");
 });
 
 test("the reference client reads the replies, each field of its type", async ({ page }) => {
-  await send(page, { a: "q", n: "1", v: "0.2" });
+  await send(page, { a: "q", n: "1", v: "0.3" });
   await send(page, { a: "place", s: "gone", c: "1" });
-  // A 0.1 program's query, which names no version (SPEC §4).
+  // A query that names no version, as a 0.1 program's (SPEC §4).
   await send(page, { a: "q", n: "2" });
   const stream = await page.evaluate(() => window.hotty.sent.splice(0).join(""));
   // Each sequence, as the client's Decoder takes it: the reply to q has
@@ -56,31 +66,60 @@ for seq in sys.stdin.buffer.read().split(b"\\x1b\\\\"):
         out.append({"code": r.code})
         continue
     c = r.caps()
-    out.append(c and {"v": c.v, "scale": type(c.scale).__name__, "cell": [type(x).__name__ for x in c.cell]})
+    out.append(c and {"v": c.v, "scale": type(c.scale).__name__, "cell": [type(c.cell_css.w).__name__, type(c.cell_css.h).__name__], "features": c.features})
 print(json.dumps(out))
 `;
   const out = JSON.parse(execFileSync("python3", ["-c", script], { input: stream, encoding: "utf8" }));
-  expect(out).toEqual([{ v: "0.2", scale: "float", cell: ["int", "int"] }, { code: "ENOENT" }, { code: "EVERSION" }]);
+  expect(out).toEqual([{ v: "0.3", scale: "float", cell: ["float", "float"], features: ["count", "menu"] }, { code: "ENOENT" }, { code: "EVERSION" }]);
+});
+
+test("a query lists the versions the program speaks: the addon answers in the highest it shares", async ({ page }) => {
+  await send(page, { a: "q", n: "1", v: "0.2,0.3" });
+  await send(page, { a: "q", n: "2", v: "0.2" });
+  const { msgs } = await take(page);
+  expect((msgs[0]!.body as { v: string }).v).toBe("0.3");
+  expect(msgs[1]!.get("a")).toBe("err");
+  expect(msgs[1]!.body).toEqual({ code: "EVERSION", detail: "0.3" });
 });
 
 test("r=auto fits the content and reports its rows", async ({ page }) => {
   const { h } = await cell(page);
   await send(page, { a: "doc", s: "x" }, "<div style='height: 95px'>tall</div>");
-  await send(page, { a: "place", s: "x", c: "30" });
+  await send(page, { a: "place", s: "x", c: "30", n: "1" });
   const { msgs } = await take(page);
   const placed = msgs.find((m) => m.get("re") === "place")!;
   expect(placed.get("r")).toBe(String(Math.ceil(95 / h)));
   await expect(surface(page, "x").locator("div")).toHaveText("tall");
 });
 
-test("a missing target is an error, and q quiets replies", async ({ page }) => {
-  await send(page, { a: "doc", s: "x", q: "1" }, "<p id=p>hi</p>");
-  await send(page, { a: "delta", s: "x", op: "text", t: "nope", q: "1" }, "x");
-  await send(page, { a: "delta", s: "x", op: "text", t: "nope", q: "2" }, "x");
+test("only errors, unless asked: a command is answered with an error, and with an ok only if it has n; q says otherwise", async ({ page }) => {
+  await send(page, { a: "doc", s: "x" }, "<p id=p>hi</p>");
+  await delta(page, { s: "x" }, { op: "text", t: "p", v: "ok" });
+  await delta(page, { s: "x" }, { op: "text", t: "nope", v: "x" });
+  await delta(page, { s: "x", q: "2" }, { op: "text", t: "nope", v: "x" });
+  await delta(page, { s: "x", n: "1" }, { op: "text", t: "p", v: "ok" });
+  await delta(page, { s: "x", n: "2", q: "1" }, { op: "text", t: "p", v: "ok" });
+  await delta(page, { s: "x", n: "3", q: "0" }, { op: "text", t: "nope", v: "x" });
+  await send(page, { a: "hide", s: "x", q: "0" });
   const { msgs } = await take(page);
-  expect(msgs).toHaveLength(1);
-  expect(msgs[0]!.get("a")).toBe("err");
-  expect((msgs[0]!.body as { code: string }).code).toBe("ENOTARGET");
+  expect(msgs.map((m) => [m.get("a"), m.get("re"), m.get("n"), m.get("i"), (m.body as { code?: string } | null)?.code])).toEqual([
+    ["err", "delta", undefined, "0", "ENOTARGET"],
+    ["ok", "delta", "1", undefined, undefined],
+    ["err", "delta", "3", "0", "ENOTARGET"],
+    ["ok", "hide", undefined, undefined, undefined],
+  ]);
+});
+
+test("a delta is checked whole: one bad op applies none, and the error names it by its index", async ({ page }) => {
+  await send(page, { a: "doc", s: "x", q: "2" }, "<p id=p>hi</p>");
+  await delta(page, { s: "x" }, { op: "text", t: "p", v: "changed" }, { op: "frob", t: "p" });
+  // Not a delta at all: not msgpack, empty, or a map of something else.
+  await send(page, { a: "delta", s: "x" }, "text");
+  await send(page, { a: "delta", s: "x" });
+  await send(page, { a: "delta", s: "x" }, new Writer().body({ ops: "text" }));
+  const { msgs } = await take(page);
+  expect(msgs.map((m) => [m.get("i"), (m.body as { code: string }).code])).toEqual([["1", "EINVAL"], [undefined, "EINVAL"], [undefined, "EINVAL"], [undefined, "EINVAL"]]);
+  await expect(surface(page, "x").locator("#p")).toHaveText("hi");
 });
 
 test("delta ops change the document as §6 says", async ({ page }) => {
@@ -88,24 +127,26 @@ test("delta ops change the document as §6 says", async ({ page }) => {
   await send(page, { a: "place", s: "x", c: "40", r: "10", q: "2" });
   const d = surface(page, "x");
   const q = { s: "x", q: "2" };
-  await send(page, { a: "delta", ...q, op: "text", t: "a" }, "A");
-  await send(page, { a: "delta", ...q, op: "append", t: "list" }, "<li id=c>c</li><li id=b>B</li>");
-  await send(page, { a: "delta", ...q, op: "prepend", t: "list" }, "<li id=z>z</li>");
-  await send(page, { a: "delta", ...q, op: "attr", t: "p", k: "class" }, "note");
-  await send(page, { a: "delta", ...q, op: "unattr", t: "p", k: "style" });
-  await send(page, { a: "delta", ...q, op: "var", t: "p", k: "w" }, "42");
-  await send(page, { a: "delta", ...q, op: "after", t: "p" }, "<p id=q>q</p>");
-  await send(page, { a: "delta", ...q, op: "remove", t: "z" });
+  await delta(page, q, { op: "text", t: "a", v: "A" });
+  await delta(page, q, { op: "append", t: "list", v: "<li id=c>c</li><li id=b>B</li>" });
+  await delta(page, q, { op: "prepend", t: "list", v: "<li id=z>z</li>" });
+  await delta(page, q, { op: "attr", t: "p", k: "class", v: "note" });
+  await delta(page, q, { op: "unattr", t: "p", k: "style" });
+  await delta(page, q, { op: "var", t: "p", k: "w", v: "42" });
+  await delta(page, q, { op: "after", t: "p", v: "<p id=q>q</p>" });
+  await delta(page, q, { op: "remove", t: "z" });
   await expect(d.locator("#list li")).toHaveText(["A", "B", "c"]);
   await expect(d.locator("#p")).toHaveAttribute("class", "note");
   await expect(d.locator("#p")).not.toHaveAttribute("style", /color/);
   expect(await d.locator("#p").evaluate((el) => (el as HTMLElement).style.getPropertyValue("--w"))).toBe("42");
   await expect(d.locator("#q")).toHaveText("q");
-  // morph by id with no target; a missing id is reported.
-  await send(page, { a: "delta", s: "x", op: "morph" }, "<p id=q>Q!</p><p id=missing></p>");
+  // morph by id with no target; a missing id is reported, with the op's index.
+  await delta(page, { s: "x" }, { op: "text", t: "a", v: "first" }, { op: "morph", v: "<p id=q>Q!</p><p id=missing></p>" });
   const { msgs } = await take(page);
   expect(msgs.at(-1)!.get("a")).toBe("err");
+  expect(msgs.at(-1)!.get("i")).toBe("1");
   expect((msgs.at(-1)!.body as { detail: string }).detail).toBe("missing");
+  await expect(d.locator("#list li").first()).toHaveText("first");
   await expect(d.locator("#q")).toHaveText("Q!");
 });
 
@@ -115,7 +156,7 @@ test("morph keeps element identity and what the user typed", async ({ page }) =>
   await send(page, { a: "focus", s: "f", t: "name", q: "2" });
   await page.keyboard.type("Ada");
   const before = await surface(page, "f").locator("#name").evaluate((el) => ((el as unknown as { mark: number }).mark = 1));
-  await send(page, { a: "delta", s: "f", t: "f", q: "2" }, "<form id=f><input id=name value='server'><span id=n>1</span></form>");
+  await delta(page, { s: "f", q: "2" }, { op: "morph", t: "f", v: "<form id=f><input id=name value='server'><span id=n>1</span></form>" });
   const input = surface(page, "f").locator("#name");
   expect(await input.evaluate((el) => (el as unknown as { mark: number }).mark)).toBe(before);
   await expect(input).toHaveValue("Ada");
@@ -124,7 +165,7 @@ test("morph keeps element identity and what the user typed", async ({ page }) =>
   await send(page, { a: "blur", s: "f", q: "2" });
   const { msgs } = await take(page);
   const evs = msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("e"), m.get("t"), m.body]);
-  expect(evs).toEqual([["change", "name", { value: "Ada" }], ["blur", "", null]]);
+  expect(evs).toEqual([["change", "name", { value: "Ada" }], ["blur", undefined, null]]);
 });
 
 test("a stylesheet resource that arrives after the document restyles it", async ({ page }) => {
@@ -159,7 +200,7 @@ test("synchronized output holds a batch until it ends", async ({ page }) => {
   await send(page, { a: "place", s: "x", c: "20", r: "2", q: "2" });
   const p = surface(page, "x").locator("#p");
   await write(page, "\x1b[?2026h");
-  await send(page, { a: "delta", s: "x", op: "text", t: "p", q: "2" }, "1");
+  await delta(page, { s: "x", q: "2" }, { op: "text", t: "p", v: "1" });
   await expect(p).toHaveText("0");
   await write(page, "\x1b[?2026l");
   await expect(p).toHaveText("1");
@@ -270,7 +311,7 @@ test("hide removes the placement and keeps the document for the next place", asy
   await d.locator("#i").fill("typed");
   await send(page, { a: "focus", s: "x", t: "i", q: "2" });
   await take(page);
-  await send(page, { a: "hide", s: "x" });
+  await send(page, { a: "hide", s: "x", n: "1" });
   await expect(box).toBeHidden();
   const { msgs } = await take(page);
   // Answered, and the keyboard went back to the terminal.
@@ -278,7 +319,7 @@ test("hide removes the placement and keeps the document for the next place", asy
     expect.arrayContaining([["ok", "hide"], ["ev", "blur"]]),
   );
   // Deltas apply while hidden; placing again shows it as it is, input kept.
-  await send(page, { a: "delta", s: "x", op: "text", t: "p", q: "2" }, "two");
+  await delta(page, { s: "x", q: "2" }, { op: "text", t: "p", v: "two" });
   await send(page, { a: "place", s: "x", c: "20", r: "2", q: "2" });
   await expect(box).toBeVisible();
   await expect(d.locator("#p")).toHaveText("two");
@@ -342,9 +383,17 @@ test("zlib payloads and chunked commands decode", async ({ page }) => {
   expect((await surface(page, "z").locator("#p").textContent())!.length).toBe(5 * 4000);
 });
 
-test("a font or theme change re-lays out every surface, and the program hears `resize`", async ({ page }) => {
+/** The cell the addon lays surfaces out with, in CSS pixels. */
+const cssCell = (page: Page) =>
+  page.evaluate(() => {
+    const c = (window.hotty.term as unknown as { _core: { _renderService: { dimensions: { css: { cell: { width: number; height: number } } } } } })._core._renderService.dimensions.css.cell;
+    return { w: c.width, h: c.height };
+  });
+
+test("a font or theme change re-lays out every surface, and a program that asked for the capabilities hears `caps`", async ({ page }) => {
   await send(page, { a: "doc", s: "x", q: "2" }, "<p id=p>x</p>");
   await send(page, { a: "place", s: "x", c: "20", r: "3", q: "2" });
+  await send(page, { a: "q", n: "1", v: "0.3" });
   await take(page);
   const box = page.locator('.hotty-surface[data-surface="x"]');
   const w0 = (await box.boundingBox())!.width;
@@ -353,30 +402,47 @@ test("a font or theme change re-lays out every surface, and the program hears `r
     t.options.fontSize = 22;
     t.options.theme = { ...t.options.theme, background: "#fdf6e3", foreground: "#073642" };
   });
-  // The cell size the addon uses (a=q reports it rounded to device pixels).
-  const cssCell = () =>
-    page.evaluate(() => (window.hotty.term as unknown as { _core: { _renderService: { dimensions: { css: { cell: { width: number } } } } } })._core._renderService.dimensions.css.cell.width);
-  await expect.poll(async () => Math.round((await box.boundingBox())!.width) - Math.round(20 * (await cssCell()))).toBe(0);
+  await expect.poll(async () => Math.round((await box.boundingBox())!.width) - Math.round(20 * (await cssCell(page)).w)).toBe(0);
   expect((await box.boundingBox())!.width).toBeGreaterThan(w0);
   const root = surface(page, "x").locator("html");
   await expect.poll(() => root.evaluate((el) => getComputedStyle(el).getPropertyValue("--hotty-bg").trim())).toBe("#fdf6e3");
   await expect.poll(() => root.evaluate((el) => getComputedStyle(el).colorScheme)).toBe("light");
-  let resize: unknown;
-  await expect.poll(async () => (resize = (await take(page)).msgs.find((m) => m.get("e") === "resize")?.body) !== undefined).toBe(true);
-  // CSS pixels, floats even when whole (SPEC §9): msgpack floats, which the
-  // reader keeps apart from ints (`take`), and the width a whole one here.
-  expect(resize).toEqual({ w: expect.any(Float), h: expect.any(Float) });
-  const { w } = resize as { w: Float };
-  expect(Number.isInteger(w.value), `w ${w.value}`).toBe(true);
+  let caps: unknown;
+  await expect.poll(async () => (caps = (await take(page)).msgs.find((m) => m.get("e") === "caps")) !== undefined).toBe(true);
+  // The fields that changed, and only those (SPEC §4, §9): the new cell in CSS
+  // pixels, floats, and the scheme. `scale` did not change.
+  const { w, h } = await cssCell(page);
+  expect((caps as { body: unknown; get(k: string): string | undefined }).body).toStrictEqual({ cellcss: { w: new Float(w), h: new Float(h) }, scheme: "light" });
+  // Of no surface and no element.
+  expect((caps as { get(k: string): string | undefined }).get("s")).toBeUndefined();
+  expect((caps as { get(k: string): string | undefined }).get("t")).toBeUndefined();
+  // A reply to a later query is what the program now hears, and a change
+  // that leaves it as it is sends nothing.
+  await send(page, { a: "q", v: "0.3" });
+  const again = (await take(page)).msgs[0]!.body as { cellcss: { w: Float }; scheme: string };
+  expect(again.scheme).toBe("light");
+  expect(again.cellcss.w.value).toBe(w);
 });
 
-test("a browser's zoom keeps the font, and the program hears no `resize`", async ({ page }) => {
+test("a program that asked for no capabilities hears no `caps`", async ({ page }) => {
+  await send(page, { a: "doc", s: "x", q: "2" }, "<p id=p>x</p>");
+  await send(page, { a: "place", s: "x", c: "20", r: "3", q: "2" });
+  await take(page);
+  const w0 = (await cssCell(page)).w;
+  await page.evaluate(() => ((window.hotty.term as unknown as { options: { fontSize: number } }).options.fontSize = 22));
+  await expect.poll(async () => (await cssCell(page)).w).toBeGreaterThan(w0);
+  await page.waitForTimeout(400);
+  expect((await take(page)).msgs.filter((m) => m.get("e") === "caps")).toEqual([]);
+});
+
+test("a browser's zoom keeps the font and sends nothing: the cell moves by device pixel rounding, and `--hotty-px` follows the pixel density", async ({ page, browserName }) => {
   // SPEC §5.3. Under a zoom, xterm.js's WebGL and canvas renderers round
   // the cell to device pixels, so the cell in CSS px moves a little with no
   // new font. The DOM renderer here keeps it, so the test moves it as they
   // would, and draws again.
   await send(page, { a: "doc", s: "x", q: "2" }, "<p>x</p>");
   await send(page, { a: "place", s: "x", c: "20", r: "3", q: "2" });
+  await send(page, { a: "q", n: "1", v: "0.3" });
   await take(page);
   await page.evaluate(() => {
     const t = window.hotty.term as unknown as {
@@ -391,7 +457,23 @@ test("a browser's zoom keeps the font, and the program hears no `resize`", async
   });
   // Past the addon's 100 ms settling.
   await page.waitForTimeout(400);
-  expect((await take(page)).msgs.filter((m) => m.get("e") === "resize")).toEqual([]);
+  expect((await take(page)).msgs.filter((m) => m.get("e") === "caps")).toEqual([]);
+  // A display with another pixel density: only `--hotty-px` changes, and
+  // nothing is sent.
+  if (browserName !== "chromium") return;
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1100, height: 700, deviceScaleFactor: 2, mobile: false });
+  // The emulation tells the page nothing; a browser's zoom tells it, and xterm.js draws.
+  await page.evaluate(() => {
+    const t = window.hotty.term as unknown as { rows: number; refresh(a: number, b: number): void };
+    t.refresh(0, t.rows - 1);
+  });
+  const root = surface(page, "x").locator("html");
+  await expect.poll(() => root.evaluate((el) => getComputedStyle(el).getPropertyValue("--hotty-px"))).toBe("0.5px");
+  await page.waitForTimeout(400);
+  expect((await take(page)).msgs.filter((m) => m.get("e") === "caps")).toEqual([]);
+  await send(page, { a: "q", v: "0.3" });
+  expect(((await take(page)).msgs[0]!.body as { scale: Float }).scale).toStrictEqual(new Float(2));
 });
 
 /** The `fit` events the program heard (SPEC §5.2), once there are `n`; a
@@ -420,7 +502,7 @@ test("f=1: the user opening a details is heard as `fit`, and the placement keeps
     "<style>body{margin:0} summary{display:block;height:var(--hotty-cell-h)} p{margin:0;height:calc(3 * var(--hotty-cell-h))}</style>" +
       "<details><summary>more</summary><p>three rows</p></details>",
   );
-  await send(page, { a: "place", s: "x", c: "20", r: "auto", f: "1" });
+  await send(page, { a: "place", s: "x", c: "20", r: "auto", f: "1", n: "1" });
   expect((await take(page)).msgs.find((m) => m.get("re") === "place")!.get("r")).toBe("1");
   await surface(page, "x").locator("summary").click();
   expect(await fits(page, 1)).toEqual([{ r: 4 }]);
@@ -431,7 +513,7 @@ test("f=1: deltas in one frame are heard once, with the rows drawn", async ({ pa
   await send(page, { a: "doc", s: "x", q: "2" }, `<style>body{margin:0}</style><div id=d style="height: calc(var(--n, 1) * var(--hotty-cell-h))"></div>`);
   await send(page, { a: "place", s: "x", c: "20", r: "auto", f: "1", q: "2" });
   await fits(page, 0);
-  const delta = (n: string) => cmd({ a: "delta", s: "x", op: "var", t: "d", k: "n", q: "2" }, n);
+  const delta = (n: string) => deltaCmd({ s: "x", q: "2" }, { op: "var", t: "d", k: "n", v: n });
   await write(page, delta("3") + delta("5"));
   expect(await fits(page, 1)).toEqual([{ r: 5 }]);
   // Back to what the program heard within a frame: nothing to hear.
@@ -442,7 +524,7 @@ test("f=1: deltas in one frame are heard once, with the rows drawn", async ({ pa
 test("f=1: a new cell size is heard when the rows the document needs change", async ({ page }) => {
   const h0 = await cellH(page);
   await send(page, { a: "doc", s: "x", q: "2" }, "<style>body{margin:0}</style><div style='height: 120px'></div>");
-  await send(page, { a: "place", s: "x", c: "20", r: "auto", f: "1" });
+  await send(page, { a: "place", s: "x", c: "20", r: "auto", f: "1", n: "1" });
   expect((await take(page)).msgs.find((m) => m.get("re") === "place")!.get("r")).toBe(String(Math.ceil(120 / h0)));
   await page.evaluate(() => ((window.hotty.term as unknown as { options: { fontSize: number } }).options.fontSize = 30));
   await expect.poll(() => cellH(page)).toBeGreaterThan(h0 * 1.5);

@@ -6,7 +6,7 @@
 // shared vectors check where gestures and keys go (conformance.spec.ts);
 // these check what they cannot: pixels, touch, the scrollback, the page.
 import { expect, test, type Page } from "@playwright/test";
-import { open, send, surface, take, write } from "./helpers.ts";
+import { delta, open, send, surface, take, write } from "./helpers.ts";
 
 // Scrollbars as a page has them: headless Chromium hides them all.
 test.use({ launchOptions: { ignoreDefaultArgs: ["--hide-scrollbars"] } });
@@ -429,7 +429,7 @@ test.describe("a document that scrolls", () => {
     await scrolling(page);
     await surface(page, "s").locator("#box").evaluate((el) => (el.scrollTop = 30));
     await root(page).evaluate((el) => (el.scrollTop = 20));
-    await send(page, { a: "delta", s: "s", t: "box", q: "2" }, `<div id=box>${Array.from({ length: 8 }, (_, i) => `<div id=b${i}>B${i}</div>`).join("")}</div>`);
+    await delta(page, { s: "s", q: "2" }, { op: "morph", t: "box", v: `<div id=box>${Array.from({ length: 8 }, (_, i) => `<div id=b${i}>B${i}</div>`).join("")}</div>` });
     await expect(surface(page, "s").locator("#b0")).toHaveText("B0");
     expect(await offset(page, "#box")).toEqual([0, 30]);
     expect(await offset(page, "html")).toEqual([0, 20]);
@@ -447,7 +447,7 @@ test.describe("a document that scrolls", () => {
     // Nine cells of ten: with the root's scrollbar beside them, they wrap.
     const line = "x".repeat(9);
     await send(page, { a: "doc", s: "s", scroll: "1", q: "2" }, `<style>body{margin:0;white-space:normal;word-break:break-all}</style><div>${line}</div><div>${line}</div><div>${line}</div>`);
-    await send(page, { a: "place", s: "s", c: "10", f: "1" });
+    await send(page, { a: "place", s: "s", c: "10", f: "1", n: "1" });
     const placed = (await take(page)).msgs.find((m) => m.get("re") === "place")!;
     expect(placed.get("r")).toBe("3");
     await page.waitForTimeout(100);

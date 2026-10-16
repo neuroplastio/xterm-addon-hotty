@@ -94,9 +94,9 @@ test("the buffer grows, and is reused", () => {
 });
 
 test("what it writes reads back, each value of its type", () => {
-  const body = { v: "0.2", cell: { w: 16, h: 32 }, scale: float(2), keys: ["shift"], c: -3, out: true };
+  const body = { v: "0.3", cellcss: { w: float(9), h: float(17.5) }, scale: float(2), features: ["menu"], c: -3, out: true };
   const got = unpack(new Writer().body(body)) as Record<string, unknown>;
-  assert.deepEqual(got, { v: "0.2", cell: { w: 16, h: 32 }, scale: new Float(2), keys: ["shift"], c: -3, out: true });
+  assert.deepEqual(got, { v: "0.3", cellcss: { w: new Float(9), h: new Float(17.5) }, scale: new Float(2), features: ["menu"], c: -3, out: true });
   assert.ok(got.scale instanceof Float);
   assert.equal(typeof got.c, "number");
 });
@@ -202,11 +202,10 @@ for (const v of vectors.decode.filter((v: { bodies?: unknown; requires?: string[
 test("the reference Python client reads the details by their types", () => {
   const ev = (kind: string, detail: Body) => encode(new Control().set("a", "ev").set("s", "x").set("e", kind).set("t", "id"), new Writer().body(detail));
   const stream = [
-    ev("resize", { w: float(720), h: float(48.5) }),
-    ev("dragend", { c: -2, r: 300, keys: ["shift", "ctrl"], x: 3 }),
+    ev("dragend", { c: -2, r: 300, mods: 5, x: 3 }),
     ev("click", { href: "next", area: { c: 0, r: 1, w: 10, h: 2 } }),
     ev("change", { checked: true, value: null }),
-    ev("submit", { q: "hi", theme: "dark" }),
+    ev("submit", { fields: [["q", "hi"], ["q", "again"]] }),
     ev("fit", { r: 3 }),
   ].join("");
   const script = `
@@ -220,22 +219,20 @@ for seq in sys.stdin.buffer.read().split(b"\\x1b\\\\"):
     e = m.event()
     name = lambda x: type(x).__name__
     out.append({
-        "resize": lambda: [name(x) for x in e.size()],
-        "dragend": lambda: vars(e.drag()),
+        "dragend": lambda: [vars(e.drag()), e.mods()],
         "click": lambda: [e.link(), vars(e.area())],
         "change": lambda: [e.checked(), e.value()],
-        "submit": lambda: e.fields(),
+        "submit": lambda: [list(p) for p in e.fields()],
         "fit": lambda: e.fit_rows(),
     }[e.kind]())
 print(json.dumps(out))
 `;
   const out = JSON.parse(execFileSync("python3", ["-c", script], { input: stream, encoding: "utf8" }));
   assert.deepEqual(out, [
-    ["float", "float"],
-    { c: -2, r: 300, keys: ["shift", "ctrl"], x: 3, y: null, tx: null, ty: null },
+    [{ c: -2, r: 300, x: 3, y: null, tx: null, ty: null }, 5],
     [["next", null], { c: 0, r: 1, w: 10, h: 2 }],
     [true, null],
-    { q: "hi", theme: "dark" },
+    [["q", "hi"], ["q", "again"]],
     3,
   ]);
 });

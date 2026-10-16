@@ -34,6 +34,7 @@ export const ACTIONS = new Set([
   "newline",
   "submit",
   "program",
+  "prefix",
   "copy",
   "cut",
   "paste",
@@ -219,28 +220,6 @@ export function editAction(p: Platform, name: string): string | null {
   for (const a of EDIT_ACTIONS) for (const k of edit[a] ?? []) m.bind(k, a);
   const k = readKey(p, name);
   return k === null ? null : (m.bindings.get(k) ?? null);
-}
-
-/** A `data-key` value's keys (SPEC §10.5), each as `readKey` reads it, and
- * `<leader>` as the keys of `leader`. Null for a value a host ignores: no
- * keys, a key that does not parse, Tab, Shift+Tab or Escape, or any other
- * name in angle brackets. */
-export function parseSequence(p: Platform, leader: string, value: string): string[] | null {
-  const out: string[] = [];
-  for (const w of value.split(/[ \t\n\f\r]+/)) {
-    if (!w) continue;
-    if (w === "<leader>") {
-      const l = parseSequence(p, "", leader);
-      if (!l) return null;
-      out.push(...l);
-      continue;
-    }
-    if (w.length > 2 && w.startsWith("<") && w.endsWith(">")) return null;
-    const k = readKey(p, w);
-    if (k === null || UNBOUND.has(k)) return null;
-    out.push(k);
-  }
-  return out.length ? out : null;
 }
 
 // --- Keys from the terminal's input (§10.4) ----------------------------------
@@ -474,10 +453,18 @@ export class Keymap {
   }
 
   /** Whether the key is the program's (SPEC §10.2, *Keys for the
-   * program*): bound to `program`. It reaches the program before the
-   * focused element uses it and before the surface scrolls with it. */
+   * program*): bound to `program`, or to `prefix`, which is `program` and
+   * more. It reaches the program before the focused element uses it and
+   * before the surface scrolls with it. */
   program(name: string): boolean {
-    return this.action(name) === "program";
+    const a = this.action(name);
+    return a === "program" || a === "prefix";
+  }
+
+  /** Whether the key begins a prefix (SPEC §10.2, §10.5): bound to
+   * `prefix`. Every key after it reaches the program too. */
+  prefix(name: string): boolean {
+    return this.action(name) === "prefix";
   }
 
   /** The scroll action the key is bound to, or null (SPEC §10.2,
@@ -494,7 +481,7 @@ export class Keymap {
     const k = readKey({ mod: this.mod }, name);
     if (k === null || UNBOUND.has(k)) return null;
     const a = this.action(k);
-    if (a !== undefined) return a === "program" || (MULTILINE_ACTIONS.has(a) && !this.multiline) ? null : a;
+    if (a !== undefined) return a === "program" || a === "prefix" || (MULTILINE_ACTIONS.has(a) && !this.multiline) ? null : a;
     const [mods, value] = splitKey(k)!;
     if (isChar(value) && !mods.some((m) => m !== "Shift")) return INSERT;
     return null;
@@ -535,9 +522,9 @@ export function parseKeymap(p: Platform, value: string, multiline = false): Keym
 
 /** A focused element's keymap outside a text field (SPEC §10.2, *Keys for
  * the program*): each `data-keys` value, the root's first, over no default.
- * Only its `program` bindings (`Keymap.program`) and its scroll actions
- * (`Keymap.scroll`) count there: a nearer binding of a key to another
- * action cancels a farther one. */
+ * Only its `program` and `prefix` bindings (`Keymap.program`,
+ * `Keymap.prefix`) and its scroll actions (`Keymap.scroll`) count there: a
+ * nearer binding of a key to another action cancels a farther one. */
 export function elementKeymap(p: Platform, ...values: string[]): Keymap {
   const m = new Keymap(false, p.mod);
   for (const v of values) for (const [k, a] of bindingsOf(v)) m.bind(k, a);

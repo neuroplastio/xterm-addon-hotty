@@ -64,3 +64,13 @@ test("a text field's keymap leaves scroll actions out, in the same value too", (
   assert.equal(m.lookup("Control+d"), "delete-char-forward");
   assert.equal(m.scroll("j"), null);
 });
+
+test("a key bound to prefix is the program's and begins a prefix; a text field's lookup gives it up", () => {
+  const m = resolve({}, false, "g=prefix", "ArrowLeft=program");
+  assert.equal(m.prefix("g"), true);
+  assert.equal(m.program("g"), true);
+  assert.equal(m.lookup("g"), null);
+  assert.equal(m.prefix("ArrowLeft"), false);
+  assert.equal(m.program("ArrowLeft"), true);
+  assert.equal(m.prefix("x"), false);
+});

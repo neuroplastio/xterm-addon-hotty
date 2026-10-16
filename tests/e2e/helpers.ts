@@ -3,7 +3,7 @@
 
 import type { FrameLocator, Page } from "@playwright/test";
 import { Control, decodeAll, encode } from "../../src/wire.ts";
-import type { Float } from "../../src/msgpack.ts";
+import { Writer, type Float } from "../../src/msgpack.ts";
 import { CAPS, DETAIL, ERROR, mistyped, show, unpack, type Type } from "../msgpack.ts";
 
 type Hotty = {
@@ -23,7 +23,7 @@ export async function open(page: Page, query = "?pty=0") {
   await page.waitForFunction(() => window.hotty !== undefined);
 }
 
-export function cmd(pairs: Record<string, string>, payload = ""): string {
+export function cmd(pairs: Record<string, string>, payload: string | Uint8Array = ""): string {
   return encode(new Control(Object.entries(pairs)), payload);
 }
 
@@ -31,8 +31,20 @@ export async function write(page: Page, data: string) {
   await page.evaluate((d) => window.hotty.write(d), data);
 }
 
-export async function send(page: Page, pairs: Record<string, string>, payload = "") {
+export async function send(page: Page, pairs: Record<string, string>, payload: string | Uint8Array = "") {
   await write(page, cmd(pairs, payload));
+}
+
+/** One op of a delta (SPEC §6.1). */
+export type Op = { op: string; t?: string; k?: string; v?: string };
+
+/** A delta command (SPEC §6.1): the ops are one msgpack map, `{"ops": […]}`. */
+export function deltaCmd(pairs: Record<string, string>, ...ops: Op[]): string {
+  return cmd({ a: "delta", ...pairs }, new Writer().body({ ops }));
+}
+
+export async function delta(page: Page, pairs: Record<string, string>, ...ops: Op[]) {
+  await write(page, deltaCmd(pairs, ...ops));
 }
 
 export interface Msg {
@@ -72,10 +84,10 @@ export function surface(page: Page, name: string): FrameLocator {
 }
 
 export async function cell(page: Page): Promise<{ w: number; h: number }> {
-  await send(page, { a: "q", n: "0", v: "0.2" });
+  await send(page, { a: "q", n: "0", v: "0.3" });
   const { msgs } = await take(page);
-  const caps = msgs.find((m) => m.get("re") === "q")!.body as { cell: { w: number; h: number }; scale: Float };
-  return { w: caps.cell.w / caps.scale.value, h: caps.cell.h / caps.scale.value };
+  const caps = msgs.find((m) => m.get("re") === "q")!.body as { cellcss: { w: Float; h: Float } };
+  return { w: caps.cellcss.w.value, h: caps.cellcss.h.value };
 }
 
 /**

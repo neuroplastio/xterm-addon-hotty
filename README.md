@@ -15,13 +15,14 @@ The package is an ES module with its TypeScript declarations, for xterm.js
 (`github:neuroplastio/xterm-addon-hotty#<commit>`): npm builds it as it
 installs it (`prepare`).
 
-It implements HOTTY 0.2, whose replies and events carry msgpack bodies
-(SPEC §3.3). 0.1.0-next.8 is the first release that does, and it breaks
-with programs written for 0.1, which read JSON bodies: programs and hosts
-update together. A program's query names the versions it speaks
-(`a=q:n=1:v=0.2`, SPEC §4): the addon answers a query that lists 0.2 with
-its capabilities, and any other, a 0.1 program's with no `v` included, with
-`EVERSION`, so that such a program finds no host and falls back to text.
+It implements HOTTY 0.3, whose bodies are msgpack maps (SPEC §3.3). A
+program's query names the versions it speaks (`a=q:n=1:v=0.3`, SPEC §4):
+the addon answers a query that lists 0.3 with its capabilities (`v`,
+`cellcss`, `scale`, `scheme`, `mod`, `features`, `limits`, `net`, `edit`,
+`host`, `version`), and any other with `EVERSION`, so that such a program
+finds no host and falls back to text. A command that asks for a reply (`n`)
+gets one; a query always does, and every other command is quiet unless it
+carries `n`.
 
 ```ts
 import { Terminal } from "@xterm/xterm";
@@ -86,11 +87,12 @@ runs programs for whoever connects.
 | piece | file | what it does |
 | --- | --- | --- |
 | wire | `src/wire.ts` | OSC 7279 control parsing, chunk reassembly, base64, zlib through `DecompressionStream`, and reply encoding |
-| bodies | `src/msgpack.ts` | SPEC §3.3: replies' and events' bodies as msgpack maps, each field as its type; a float field (`scale`, `resize`'s `w` and `h`) goes in a `Float`, even when whole. A field with nothing is left out, never nil, and a map is a plain object, keyed by strings, each written once |
+| bodies | `src/msgpack.ts` | SPEC §3.3: replies' and events' bodies as msgpack maps, each field as its type; a float field (`scale`, `cellcss`'s `w` and `h`) goes in a `Float`, even when whole. A field with nothing is left out, never nil, and a map is a plain object, keyed by strings, each written once |
 | addon | `src/addon.ts` | OSC handler, replies through `term.input(…, false)`, placement, synchronized output, RIS, the alternate screen, zoom and theme, and keys a surface does not use, through xterm.js's own keyboard handling |
 | surface | `src/surface.ts` | one sandboxed iframe per surface; events, focus and key routing |
-| keys | `src/keys.ts` | SPEC §10.2, §10.4: key names, the keys in what the terminal sends, keymaps (`data-keys`), and the actions on a field's text |
-| deltas | `src/delta.ts` | SPEC §6: the ops and morph |
+| keys | `src/keys.ts` | SPEC §10.2, §10.4: key names, the keys in what the terminal sends, keymaps (`data-keys`), the `prefix` action, and the actions on a field's text |
+| deltas | `src/delta.ts` | SPEC §6, §6.1: a delta body checked whole, then its ops and morph; a failure names the first failing op (`i`) |
+| menus | `src/menu.ts` | SPEC §10.5: reading a program's `a=menu` body |
 | reveal and view | `src/view.ts` | SPEC §6.1, §9.5: the boxes that hold an element, scrolling it into view in them, and whether some of it is shown |
 | resources | `src/resources.ts`, `src/resolver.ts` | `cid:` as `blob:` URLs; sanitizing everything before it reaches a live document |
 | host stylesheet | `src/hostcss.ts` | §8 from `term.options` (theme, font, cell size), in a cascade layer: the palette, `--hotty-accent`, and controls, focus, links and selection in the terminal's colours |
@@ -285,21 +287,21 @@ runs programs for whoever connects.
   reads `navigator.clipboard`. A cut with nothing selected, or in a password
   field, reaches the program. On a Mac, Cmd keys stay the browser's
   (`browserKeys`), its own cut, paste and undo.
-- **Key sequences** (SPEC §10.5): a `data-key` runs its element, read on
-  the platform (`Mod`), with the `leader` option as `<leader>` (default
-  Space) and `keyTimeout` as the wait (default 2000 ms). While one waits,
-  a which-key menu shows at the bottom right of the screen, on whole cells,
-  300 ms after it began. Keys a wait gives back go on as if typed: the
-  addon does what the browser would have done with them (a field types, a
-  button's Space or Enter clicks it, a select's arrows pick), except a date
-  field's, which are lost.
+- **Prefix** (SPEC §10.5): a key a keymap binds to `prefix` is the
+  program's, and while it is on every key, Tab and Escape included, goes to
+  the program. It ends when the program focuses (`a=focus`, with no `t` too)
+  or blurs, when the surface loses the keyboard or is hidden, or on a press
+  in the surface. The browser's own keys (`browserKeys`) stay the browser's.
+- **The program's menu** (SPEC §10.5): `a=menu` with a body shows a menu at
+  the bottom right of the screen, on whole cells, for the cells and for a
+  surface alike. It goes on a `a=menu` with no body, Escape, a key the menu
+  does not list (typed to the cells or to a surface), another screen, or RIS.
 - **Commands in the cells** (SPEC §10.6): `a=edit` is kept per screen, and
   a key of a command taken goes to the program as `command`, after the
   cells' selection is copied (`copyKeys`). A paste brings the text of the
   browser's own paste where the key makes one, as on the cells; from a
   surface it reads `navigator.clipboard`, and keys typed while that reads
-  can reach the program first. The program's `a=menu` shows where a
-  surface's does, and a surface's wait shows over it.
+  can reach the program first.
 - **Nothing in a surface scrolls unless its document asks** (SPEC §5.3, §9):
   - It shows no scrollbars, and pans nothing on a touch
     (`touch-action: none`). Any scroll offset the browser sets goes back to
@@ -394,7 +396,7 @@ runs programs for whoever connects.
   document's `scroll-behavior: smooth` animates them. A surface not placed
   scrolls nothing; one out of view is laid out unseen for it, as `r=auto`
   measures, and keeps the offsets.
-- **View** (SPEC §9.5, the capabilities' `events` list it). The elements
+- **View** (SPEC §9.5). The elements
   with `view` in `data-on` and an id are in view where some of their border
   box, as `getBoundingClientRect` has it (transforms included), lies inside
   the window, within the viewport's scrollbars, and inside the scrollport
@@ -480,14 +482,17 @@ img-src 'self' data: blob:; font-src 'self' data: blob:; media-src 'self' data: 
 
 - **Pixels differ.** The browser renders, so text, form controls and
   antialiasing look like the browser's. The cell footprint is the same (§9).
-- **More events.** The browser gives `resize` (after zoom or a font change) and
+- **Zoom and fonts.** A zoom or a change of display scale updates
+  `--hotty-px` in the host stylesheet (SPEC §8) and sends nothing; a font
+  change that moves the cell sends `caps` with the new `cellcss` to programs
+  that asked for caps. The browser also gives
   native `<select>`, IME and spellcheck.
 - **Not here yet:**
   - §9's text in xterm's buffer (search, serialize, and a selection across a
     surface);
   - following content that scrolls on the alternate screen;
   - the embedder's web fonts inside surfaces (system fonts work);
-  - `hover` (§9.4, `v=1` on `a=place`): `EVENTS` does not list it, so a
+  - `hover` (§9.4, `v=1` on `a=place`): `features` does not list it, so a
     program never asks, and the vectors that require it are skipped. The
     frame would report the nearest id on `pointerover` with no button
     down, and out on leaving the frame, an Alt press, or a release

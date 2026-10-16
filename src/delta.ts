@@ -6,17 +6,76 @@
 // list items without a context element; only what the morph keeps or inserts
 // reaches the live document, and a focused control keeps what the user typed.
 
+import { read } from "./msgpack.ts";
 import type { Resolver } from "./resolver.ts";
 
+/** An error of a delta (SPEC §3.6): its code, the detail, and, where one op
+ * is at fault, its index `i` (§6.1). */
 export class DeltaError extends Error {
   readonly code: string;
-  constructor(code: string, detail: string) {
+  readonly i: number | undefined;
+  constructor(code: string, detail: string, i?: number) {
     super(detail);
     this.code = code;
+    this.i = i;
   }
 }
 
-export const OPS = ["morph", "inner", "replace", "append", "prepend", "before", "after", "remove", "attr", "unattr", "text", "var", "reveal"];
+/** One op of a delta (SPEC §6.1), its fields as the body gave them. */
+export interface Op {
+  op: string;
+  t?: string;
+  k?: string;
+  v?: string;
+}
+
+const OPS = new Set(["morph", "inner", "replace", "append", "prepend", "before", "after", "remove", "attr", "unattr", "text", "var", "reveal"]);
+
+/** The ops that name a key `k`. */
+const KEYED = new Set(["attr", "unattr", "var"]);
+
+/**
+ * A delta's ops from its body (SPEC §6.1), the whole of it checked before
+ * any is applied. `EINVAL` where the body does not decode (§3.3), is not a
+ * map with a list of ops, or has none; where an op is not a map or names an
+ * op the table does not have; where `t` is missing (every op but `morph`
+ * needs one), or `k` for `attr`, `unattr` and `var`; or where `reveal` has
+ * a `v` other than `start` or `end`. The error names the first op at fault
+ * by its index. A field an op does not take is ignored, whatever its type,
+ * as is a key of an op that the table does not name.
+ */
+export function readDelta(bytes: Uint8Array): Op[] {
+  let body: unknown;
+  try {
+    body = read(bytes);
+  } catch (e) {
+    throw new DeltaError("EINVAL", `the delta does not decode: ${(e as Error).message}`);
+  }
+  const list = isMap(body) ? body.ops : undefined;
+  if (!Array.isArray(list)) throw new DeltaError("EINVAL", "a delta is a map with a list of ops");
+  if (list.length === 0) throw new DeltaError("EINVAL", "a delta has no ops");
+  return list.map((o, i) => {
+    const bad = (why: string) => new DeltaError("EINVAL", `op ${i}: ${why}`, i);
+    if (!isMap(o)) throw bad("not a map");
+    const op = o.op;
+    if (typeof op !== "string" || !OPS.has(op)) throw bad(`unknown op ${JSON.stringify(op)}`);
+    // t, k and v are strs, whether the op takes them or not; an empty id
+    // or name is none.
+    const field = (name: string, need: boolean): string | undefined => {
+      const x = o[name];
+      if (x !== undefined && typeof x !== "string") throw bad(`${name} is not a str`);
+      if (need && !x) throw bad(`op=${op} needs ${name}`);
+      return x;
+    };
+    const t = field("t", op !== "morph") || undefined;
+    const k = field("k", KEYED.has(op));
+    const v = field("v", false);
+    if (op === "reveal" && v !== undefined && v !== "start" && v !== "end") throw bad(`op=reveal takes start, end or nothing, not ${JSON.stringify(v)}`);
+    return { op, t, k: KEYED.has(op) ? k : undefined, v: op === "remove" || op === "unattr" ? undefined : v };
+  });
+}
+
+const isMap = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x) && !(x instanceof Uint8Array) && Object.getPrototypeOf(x) === null;
 
 /** Where `reveal` puts its target in each box that holds it (SPEC §6.1):
  * its top at the top, its bottom at the bottom, or "" for the nearest. */
@@ -42,19 +101,30 @@ export class Deltas {
     return Array.from(t.content.childNodes);
   }
 
-  apply(op: string, target: string | undefined, key: string | undefined, payload: string): void {
+  /**
+   * Applies the ops in order, as one unit (SPEC §6.1). An op whose target
+   * is missing changes nothing and the ops after it still apply; the first
+   * op that failed is returned, named by its index.
+   */
+  apply(ops: Op[]): DeltaError | null {
+    let failed: DeltaError | null = null;
+    ops.forEach((o, i) => {
+      try {
+        this.applyOp(o.op, o.t, o.k, o.v ?? "");
+      } catch (e) {
+        failed ??= e instanceof DeltaError ? new DeltaError(e.code, e.message, i) : new DeltaError("EINVAL", e instanceof Error ? e.message : String(e), i);
+      }
+    });
+    return failed;
+  }
+
+  private applyOp(op: string, target: string | undefined, key: string | undefined, payload: string): void {
     const find = (): Element => {
-      if (!target) throw new DeltaError("EINVAL", `op=${op} needs t=<element id>`);
-      const el = this.doc.getElementById(target);
-      if (!el) throw new DeltaError("ENOTARGET", target);
+      const el = target ? this.doc.getElementById(target) : null;
+      if (!el) throw new DeltaError("ENOTARGET", target ?? "");
       return el;
     };
-    const needKey = (): string => {
-      if (!key) throw new DeltaError("EINVAL", `op=${op} needs k=<name>`);
-      return key;
-    };
     switch (op) {
-      case "":
       case "morph": {
         if (target === undefined) {
           const missing: string[] = [];
@@ -114,14 +184,14 @@ export class Deltas {
         return;
       case "attr": {
         const t = find();
-        const name = needKey();
+        const name = key!;
         this.resolver.set(t, name, payload);
         syncProperty(t, name, payload, this.doc.activeElement === t);
         return;
       }
       case "unattr": {
         const t = find();
-        const name = needKey();
+        const name = key!;
         this.resolver.remove(t, name);
         syncProperty(t, name, null, this.doc.activeElement === t);
         return;
@@ -135,17 +205,15 @@ export class Deltas {
       }
       case "var": {
         const t = find();
-        const k = needKey();
+        const k = key!;
         const name = k.startsWith("--") ? k : `--${k}`;
         (t as HTMLElement).style?.setProperty(name, payload);
         return;
       }
       case "reveal": {
-        // It changes no node (SPEC §6.1). The payload is exact: `START` is
-        // another payload.
-        const t = find();
-        if (payload !== "" && payload !== "start" && payload !== "end") throw new DeltaError("EINVAL", `op=reveal takes start, end or nothing, not ${JSON.stringify(payload)}`);
-        this.revealer(t, payload);
+        // It changes no node (SPEC §6.1). The value is exact: `START` is
+        // another value, and was refused with the rest (`readDelta`).
+        this.revealer(find(), payload as Reveal);
         return;
       }
       default:

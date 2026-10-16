@@ -4,14 +4,15 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { HOTTY_DIR } from "../hotty.ts";
 import { deflateSync } from "node:zlib";
+import { read } from "../../src/msgpack.ts";
 import { Assembler, Control, decodeAll, encode, encodedMax, inflate, text, toBase64, CHUNK, MAX_COMMAND } from "../../src/wire.ts";
 
 const CLIENT = join(HOTTY_DIR, "clients", "python");
 
 test("control pairs parse, encode and mangle reserved characters", () => {
-  const c = Control.parse("a=delta:s=x:op=text:t=clock");
-  assert.equal(c.get("op"), "text");
-  assert.equal(c.encode(), "a=delta:s=x:op=text:t=clock");
+  const c = Control.parse("a=place:s=x:c=10:r=auto");
+  assert.equal(c.get("r"), "auto");
+  assert.equal(c.encode(), "a=place:s=x:c=10:r=auto");
   assert.equal(new Control().set("t", "a:b;c=d").encode(), "t=a_b_c_d");
   assert.throws(() => Control.parse("a=q:broken"));
 });
@@ -21,7 +22,10 @@ test("a long reply is chunked at 4096 and reassembles", async () => {
   const stream = encode(new Control().set("a", "ev").set("s", "s").set("q", "1"), body);
   const chunks = stream.split("\x1b\\").filter(Boolean);
   assert.equal(chunks.length, Math.ceil(Buffer.from(body).toString("base64").length / CHUNK));
-  assert.match(chunks[1]!, /^\x1b\]7279;m=1:q=1;/);
+  // The first chunk carries the whole control, every further one only `m` (SPEC §3.4).
+  assert.match(chunks[0]!, /^\x1b\]7279;a=ev:s=s:q=1:m=1;/);
+  assert.match(chunks[1]!, /^\x1b\]7279;m=1;/);
+  assert.match(chunks.at(-1)!, /^\x1b\]7279;m=0;/);
   const [cmd] = await decodeAll(stream);
   assert.equal(text(cmd!.payload), body);
   assert.equal(cmd!.control.get("m"), undefined);
@@ -33,6 +37,13 @@ test("a chunked command interrupted by another command is reported, and the next
   const got = await a.feed("a=del:s=x");
   assert.equal(got[0]!.kind, "invalid");
   assert.equal(got[1]!.kind, "command");
+});
+
+test("a continuation chunk carries only m: one with another key interrupts the command", async () => {
+  const a = new Assembler();
+  assert.deepEqual(await a.feed("a=doc:s=x:m=1;AAAA"), [{ kind: "partial" }]);
+  const got = await a.feed("m=1:q=1;AAAA");
+  assert.deepEqual(got.map((d) => d.kind), ["invalid", "partial"]);
 });
 
 test("zlib past the limit is refused, and inflating stops there", async () => {
@@ -90,6 +101,6 @@ sys.stdout.buffer.write(out.getvalue())
   const cmds = await decodeAll(stream);
   assert.equal(cmds.length, 2);
   assert.equal(text(cmds[0]!.payload), "<p>" + "héllo wörld ".repeat(2000) + "</p>");
-  assert.equal(cmds[1]!.control.get("op"), "text");
-  assert.equal(text(cmds[1]!.payload), "∑ ok");
+  assert.equal(cmds[1]!.control.get("a"), "delta");
+  assert.equal(JSON.stringify(read(cmds[1]!.payload)), JSON.stringify({ ops: [{ op: "text", t: "t", v: "∑ ok" }] }));
 });

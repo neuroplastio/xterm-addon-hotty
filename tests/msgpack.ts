@@ -157,7 +157,7 @@ export function unpack(b: Uint8Array): unknown {
 export type Type = "int" | "float" | "str" | "bool" | [Type] | { [field: string]: Type };
 
 const AREA: Type = { c: "int", r: "int", w: "int", h: "int" };
-const DRAG: Type = { c: "int", r: "int", keys: ["str"], x: "int", y: "int", tx: "int", ty: "int" };
+const DRAG: Type = { c: "int", r: "int", mods: "int", x: "int", y: "int", tx: "int", ty: "int" };
 
 /** SPEC §3.6: an error's body. */
 export const ERROR: Type = { code: "str", detail: "str" };
@@ -165,37 +165,28 @@ export const ERROR: Type = { code: "str", detail: "str" };
 /** SPEC §4: the capabilities. */
 export const CAPS: Type = {
   v: "str",
-  ops: ["str"],
-  events: ["str"],
-  cell: { w: "int", h: "int" },
+  cellcss: { w: "float", h: "float" },
   scale: "float",
   scheme: "str",
+  mod: "str",
+  features: ["str"],
   limits: { "*": "int" },
   net: { "*": ["str"] },
-  passthrough: "bool",
-  scroll: "bool",
-  steps: "bool",
-  drop: "bool",
-  count: "bool",
-  mod: "str",
   edit: { "*": ["str"] },
-  keys: { leader: "str", timeout: "int" },
-  menu: "bool",
   host: "str",
   version: "str",
 };
 
 /** SPEC §9: each event kind's detail; the kinds not here carry none. */
 export const DETAIL: Record<string, Type> = {
-  click: { href: "str", url: "str", value: "str", area: AREA, count: "int" },
-  press: { area: AREA },
+  click: { href: "str", url: "str", value: "str", area: AREA, mods: "int", count: "int" },
+  press: { area: AREA, mods: "int" },
   change: { checked: "bool", value: "str" },
   input: { value: "str" },
-  submit: { "*": "str" },
+  submit: { fields: [["str"]] },
   dragstart: DRAG,
   drag: DRAG,
   dragend: DRAG,
-  resize: { w: "float", h: "float" },
   fit: { r: "int" },
   hover: { c: "int", r: "int", out: "bool" },
   view: { in: { "*": AREA }, end: "bool" },
