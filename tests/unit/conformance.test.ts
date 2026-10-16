@@ -1,9 +1,12 @@
-// The shared vectors' wire, keys, keymap and edit sections
+// The shared vectors' wire, keys, keymap and edit sections, and the menu
+// steps of the protocol ones
 // (conformance/README.md) against this addon's code.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readVectors } from "../hotty.ts";
 import { Assembler, text, type Command } from "../../src/wire.ts";
+import { Writer, type Body } from "../../src/msgpack.ts";
+import { find, hides, isGroup, Menus, readMenu, readSeq, shownLevel } from "../../src/menu.ts";
 import { decodeKeys, elementKeymap, Field, parseKey, parseKeymap, resolve, TERMINAL_KEYS } from "../../src/keys.ts";
 
 const vectors = readVectors();
@@ -78,6 +81,50 @@ for (const v of vectors.edit) {
       // Nothing selected is an anchor at the caret (conformance/README.md).
       if ("anchor" in st) assert.equal(field.anchor ?? field.caret, st.anchor, `${where}: anchor`);
       if ("changed" in st) assert.equal(changed, st.changed, `${where}: changed`);
+    });
+  });
+}
+
+// The menu steps (conformance/README.md) of the protocol vectors, against the
+// menu code alone: the browser runner (tests/e2e/conformance.spec.ts) runs
+// the vectors whole, these steps through the addon.
+
+type MenuStep = { send?: Record<string, string>; body?: unknown; reply?: Record<string, string>; key?: string; menu?: "shown" | "pick"; expect?: unknown; name?: string; events?: unknown[] };
+const readKey = (k: string) => parseKey(k.replace(/^Mod/, "Control"));
+
+for (const v of (vectors.vectors as { name: string; requires?: string | string[]; steps: MenuStep[] }[]).filter((v) => [v.requires ?? []].flat().includes("menu"))) {
+  test(`menu: ${v.name}`, () => {
+    const menus = new Menus();
+    let seq: string[] | null = null;
+    v.steps.forEach((st, i) => {
+      const where = `step ${i + 1}`;
+      if (st.send) {
+        let code: string | undefined;
+        try {
+          if (st.send.show !== undefined && st.send.show !== "0" && st.send.show !== "1") throw new Error("show is 0 or 1");
+          const bytes = st.body === undefined ? new Uint8Array() : new Writer().body(st.body as Body);
+          if (st.send.show === "1") seq = readSeq(bytes);
+          else if (st.send.show === "0") seq = null;
+          else menus.set("normal", bytes.length ? readMenu(bytes) : null);
+        } catch {
+          code = "EINVAL";
+        }
+        if (st.reply) assert.equal(st.reply.code, code, `${where}: code`);
+      } else if (st.key !== undefined) {
+        const m = menus.get("normal");
+        const level = m && seq && shownLevel(m, seq, readKey);
+        if (seq && hides(level ? level.items : [], st.key, readKey)) seq = null;
+      } else if (st.menu === "shown") {
+        const m = menus.get("normal");
+        const level = m && seq ? shownLevel(m, seq, readKey) : null;
+        const got = level && level.items.map((i) => ({ key: i.key, label: i.label, group: isGroup(i), enabled: i.enabled }));
+        assert.deepEqual(got, st.expect, `${where}: shown`);
+      } else if (st.menu === "pick") {
+        const m = menus.get("normal");
+        const item = m && find(m, st.name!);
+        const got = item?.enabled ? [{ e: "command", s: null, t: null, detail: { name: item.name } }] : [];
+        assert.deepEqual(got, st.events, `${where}: events`);
+      }
     });
   });
 }

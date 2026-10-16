@@ -1,5 +1,5 @@
 // What a peer's bytes can make the addon read or allocate (SPEC §3.3, §6.1,
-// §10.5): msgpack's reader, a delta body's whole check, a menu's body.
+// §10.7): msgpack's reader, a delta body's whole check, a menu's body.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { read, Writer } from "../../src/msgpack.ts";
@@ -52,10 +52,16 @@ test("readDelta: a body is checked whole, and i names the first op that fails", 
 });
 
 test("readMenu: items and label are read, a body that is no menu throws", () => {
-  const m = readMenu(w({ seq: ["Control+x"], label: "L", items: [{ key: "a", label: "A" }, { key: "b", group: true, enabled: false }] }));
-  assert.deepEqual(m, { seq: ["Control+x"], label: "L", items: [{ key: "a", label: "A", group: false, enabled: true }, { key: "b", label: "", group: true, enabled: false }] });
-  assert.deepEqual(readMenu(w({})), { seq: [], label: "", items: [] });
+  const m = readMenu(w({ label: "L", items: [{ key: "a", label: "A", name: "a" }, { key: "b", enabled: true, items: [] }] }));
+  assert.deepEqual(m, {
+    label: "L",
+    items: [
+      { key: "a", label: "A", name: "a", enabled: false, items: undefined },
+      { key: "b", label: "", name: "", enabled: true, items: [] },
+    ],
+  });
+  assert.deepEqual(readMenu(w({})), { label: "", items: [] });
   assert.throws(() => readMenu(w({ items: [1] })));
-  assert.throws(() => readMenu(w({ seq: [1] })));
+  assert.throws(() => readMenu(w({ label: 1 })));
   assert.throws(() => readMenu(Uint8Array.of(0x01)));
 });

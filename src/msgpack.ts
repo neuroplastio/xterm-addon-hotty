@@ -1,7 +1,7 @@
 // Bodies (SPEC §3.3): each reply's and event's is one msgpack map, and each
 // field has a type, int, float, str or bool. The Writer writes what the host
 // sends; `read` reads what a program sends, a delta's ops (SPEC §6.1) and a
-// menu (§10.5).
+// menu (§10.7).
 //
 // JavaScript has one kind of number and msgpack two, and a field's type is
 // the spec's, not its value's: `scale` is a float at 2 as at 1.5. So a

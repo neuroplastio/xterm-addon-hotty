@@ -2,7 +2,7 @@
 // terminal leaves them alone and so does a surface holding the keyboard, so
 // reload, zoom and the developer tools work. Every other key is the
 // program's. And where the shared vectors do not look: a prefix (SPEC
-// §10.5), the program's menu (§10.5) on a surface and in the cells, a paste
+// §10.5), the program's menu (§10.7) on a surface and in the cells, a paste
 // command's text (§10.6).
 import { expect, type Page, test } from "@playwright/test";
 import { Writer } from "../../src/msgpack.ts";
@@ -168,7 +168,7 @@ test("a prefix scrolls nothing and ends with the keyboard: a=blur, the surface h
   expect(evs((await take(page)).msgs)).toEqual([["blur", "x", undefined]]);
 });
 
-// The program's menu (SPEC §10.5).
+// The program's menu (SPEC §10.7): a level of it shown, and its palette.
 
 /** The menu's text, row by row; null when none shows. */
 const menu = (page: Page) =>
@@ -179,14 +179,32 @@ const menu = (page: Page) =>
     return rows.map((r) => r.textContent);
   });
 
-const showMenu = (page: Page, items = [{ key: "b", label: "Switch", group: false, enabled: true }, { key: "f", label: "files", group: true, enabled: false }]) =>
-  write(page, encode(new Control([["a", "menu"]]), new Writer().body({ seq: ["Control+x"], label: "Buffers", items }).slice()));
+const tree = {
+  label: "Buffers",
+  items: [
+    {
+      key: "Control+x",
+      label: "Leader",
+      enabled: true,
+      items: [
+        { key: "b", label: "Switch", name: "switch", enabled: true },
+        { key: "f", label: "files", enabled: false, items: [{ key: "o", label: "Open", name: "open", enabled: false }] },
+      ],
+    },
+  ],
+};
+
+/** The program's menu, and the level of it its keys reach shown. */
+const showMenu = async (page: Page, seq = ["Control+x"]) => {
+  await write(page, encode(new Control([["a", "menu"]]), new Writer().body(tree).slice()));
+  await write(page, encode(new Control([["a", "menu"], ["show", "1"]]), new Writer().body({ seq }).slice()));
+};
 
 test("the program's menu shows until it sends none, or a key it does not list, in the cells", async ({ page }) => {
   await open(page, "?pty=0");
   await page.evaluate(() => window.hotty.term.focus());
   await showMenu(page);
-  await expect.poll(() => menu(page)).toEqual(["Control+x Buffers", "b Switch", "f +files"]);
+  await expect.poll(() => menu(page)).toEqual(["Control+x Leader", "b Switch", "f +files"]);
   // A disabled item is dimmed.
   expect(await page.evaluate(() => (document.querySelector(".hotty-menu > div:last-child > div > div:last-child") as HTMLElement).style.opacity)).toBe("0.5");
   await page.keyboard.press("b");
@@ -212,7 +230,7 @@ test("a program on a surface shows its menu too: Escape and a key it does not li
   await send(page, { a: "place", s: "x", c: "20", r: "3", q: "2" });
   await send(page, { a: "focus", s: "x", t: "a", q: "2" });
   await showMenu(page);
-  await expect.poll(() => menu(page)).toEqual(["Control+x Buffers", "b Switch", "f +files"]);
+  await expect.poll(() => menu(page)).toEqual(["Control+x Leader", "b Switch", "f +files"]);
   await take(page);
   // A listed key is the program's, after the prefix, and the menu stays.
   await page.keyboard.press("b");
@@ -276,4 +294,121 @@ test("the capabilities report the key settings and the menu", async ({ page }) =
   expect(caps.features).toContain("menu");
   expect(caps).not.toHaveProperty("keys");
   expect(caps).not.toHaveProperty("menu");
+});
+
+test("a menu is kept for each screen; a level shown and the palette go with a change of screen", async ({ page }) => {
+  await open(page, "?pty=0");
+  type Addon = { openPalette(): void; paletteOpen: boolean; pick(n: string): boolean };
+  const addon = (f: (a: Addon) => unknown) => page.evaluate(`(${f})(window.hotty.addon)`);
+  await showMenu(page);
+  await expect.poll(() => menu(page)).not.toBeNull();
+  await addon((a) => a.openPalette());
+  expect(await addon((a) => a.paletteOpen)).toBe(true);
+  await write(page, "\x1b[?1049h");
+  expect(await menu(page)).toBeNull();
+  expect(await addon((a) => a.paletteOpen)).toBe(false);
+  // The alternate screen has no menu of its own yet: nothing to pick.
+  expect(await addon((a) => a.pick("switch"))).toBe(false);
+  await send(page, { a: "menu", q: "2" }, new Writer().body({ items: [{ label: "Alt", name: "alt", enabled: true }] }));
+  expect(await addon((a) => a.pick("alt"))).toBe(true);
+  // Leaving the alternate screen drops its menu; the main screen's stays.
+  await write(page, "\x1b[?1049l");
+  expect(await addon((a) => a.pick("alt"))).toBe(false);
+  expect(await addon((a) => a.pick("switch"))).toBe(true);
+  expect((await take(page)).msgs.map((m) => [m.get("e"), m.body])).toEqual([["command", { name: "alt" }], ["command", { name: "switch" }]]);
+});
+
+// The palette (SPEC §10.7).
+
+const rowsOf = (page: Page) =>
+  page.evaluate(() =>
+    Array.from(document.querySelectorAll<HTMLElement>(".hotty-palette-row"), (r) => [r.firstElementChild!.textContent, r.lastElementChild!.textContent, r.classList.contains("selected"), r.style.opacity === "0.5"]),
+  );
+
+test("the palette filters rows, moves with the arrows, picks with Enter and closes on Escape; nothing typed reaches the program", async ({ page }) => {
+  await open(page, "?pty=0&palette-key=Mod%2BShift%2Bm");
+  await page.evaluate(() => window.hotty.term.focus());
+  await write(page, encode(new Control([["a", "menu"]]), new Writer().body({
+    label: "Files",
+    items: [
+      { key: "Control+x", label: "Leader", enabled: true, items: [
+        { key: "f", label: "File", enabled: true, items: [
+          { key: "n", label: "New file", name: "file-new", enabled: true },
+          { key: "r", label: "Rename", name: "file-rename", enabled: false },
+        ] },
+        { key: "q", label: "Quit", name: "quit", enabled: true },
+      ] },
+      { label: "Reload", name: "reload", enabled: true },
+    ],
+  }).slice()));
+  await take(page);
+  // The palette key opens it; the title is the menu's label.
+  await page.keyboard.press("Control+Shift+M");
+  await expect(page.locator(".hotty-palette")).toBeVisible();
+  await expect(page.locator(".hotty-palette > div:first-child")).toHaveText("Files");
+  expect(await rowsOf(page)).toEqual([
+    ["Leader › File › New file", "Control+x f n", true, false],
+    ["Leader › File › Rename", "Control+x f r", false, true],
+    ["Leader › Quit", "Control+x q", false, false],
+    ["Reload", "", false, false],
+  ]);
+  // Typing filters; the selection moves to the first row that is enabled.
+  await page.keyboard.type("file REN");
+  expect(await rowsOf(page)).toEqual([["Leader › File › Rename", "Control+x f r", false, true]]);
+  for (let i = 0; i < 8; i++) await page.keyboard.press("Backspace");
+  await page.keyboard.type("le ");
+  expect((await rowsOf(page)).map((r) => r[0])).toEqual(["Leader › File › New file", "Leader › File › Rename", "Leader › Quit"]);
+  // Arrows skip the disabled row; Control+n and Control+p move too.
+  await page.keyboard.press("ArrowDown");
+  expect((await rowsOf(page)).map((r) => r[2])).toEqual([false, false, true]);
+  await page.keyboard.press("Control+p");
+  expect((await rowsOf(page)).map((r) => r[2])).toEqual([true, false, false]);
+  // The selection stops at the ends.
+  await page.keyboard.press("ArrowUp");
+  expect((await rowsOf(page)).map((r) => r[2])).toEqual([true, false, false]);
+  await page.keyboard.press("Control+n");
+  await page.keyboard.press("Control+n");
+  expect((await rowsOf(page)).map((r) => r[2])).toEqual([false, false, true]);
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".hotty-palette")).toHaveCount(0);
+  const { msgs, raw } = await take(page);
+  expect(msgs.map((m) => [m.get("e"), m.body])).toEqual([["command", { name: "quit" }]]);
+  expect(raw).toBe("");
+  // Nothing to pick; Escape closes, and the terminal has the keyboard again.
+  await page.keyboard.press("Control+Shift+M");
+  await page.keyboard.type("zzz");
+  await expect(page.locator(".hotty-palette")).toContainText("Nothing to pick");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".hotty-palette")).toHaveCount(0);
+  await page.keyboard.press("a");
+  const after = await take(page);
+  expect(after.msgs).toHaveLength(0);
+  expect(after.raw).toBe("a");
+  // A click on an enabled row picks it; a menu sent while it is open
+  // refreshes the rows and keeps the filter.
+  await page.keyboard.press("Control+Shift+M");
+  await page.keyboard.type("reload");
+  await write(page, encode(new Control([["a", "menu"]]), new Writer().body({ items: [{ label: "Reload now", name: "reload", enabled: true }, { label: "Other", name: "other", enabled: true }] }).slice()));
+  expect(await rowsOf(page)).toEqual([["Reload now", "", true, false]]);
+  await page.locator(".hotty-palette-row").click();
+  await expect(page.locator(".hotty-palette")).toHaveCount(0);
+  expect((await take(page)).msgs.map((m) => [m.get("e"), m.body])).toEqual([["command", { name: "reload" }]]);
+});
+
+test("a pick of paste sends the clipboard's text, and of copy with text selected copies it and sends nothing", async ({ page, browserName, context }) => {
+  test.skip(browserName !== "chromium", "Playwright sets the clipboard in Chromium only");
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await open(page, "?pty=0");
+  const pick = (n: string) => page.evaluate((n) => (window.hotty as unknown as { addon: { pick(n: string): boolean } }).addon.pick(n), n);
+  await write(page, encode(new Control([["a", "menu"]]), new Writer().body({ items: [{ label: "Paste", name: "paste", enabled: true }, { label: "Copy", name: "copy", enabled: true }] }).slice()));
+  await page.evaluate(() => navigator.clipboard.writeText("hi"));
+  await take(page);
+  expect(await pick("paste")).toBe(true);
+  await expect.poll(async () => (await take(page)).msgs.map((m) => [m.get("e"), m.body])).toEqual([["command", { name: "paste", text: "hi" }]]);
+  await write(page, "selected");
+  await page.evaluate(() => (window.hotty.term as unknown as { selectAll(): void }).selectAll());
+  expect(await pick("copy")).toBe(true);
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("selected");
+  expect((await take(page)).msgs).toHaveLength(0);
 });

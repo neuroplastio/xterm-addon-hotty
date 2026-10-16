@@ -92,7 +92,7 @@ runs programs for whoever connects.
 | surface | `src/surface.ts` | one sandboxed iframe per surface; events, focus and key routing |
 | keys | `src/keys.ts` | SPEC §10.2, §10.4: key names, the keys in what the terminal sends, keymaps (`data-keys`), the `prefix` action, and the actions on a field's text |
 | deltas | `src/delta.ts` | SPEC §6, §6.1: a delta body checked whole, then its ops and morph; a failure names the first failing op (`i`) |
-| menus | `src/menu.ts` | SPEC §10.5: reading a program's `a=menu` body |
+| menus | `src/menu.ts` | SPEC §10.7: reading a program's `a=menu` body, the level a sequence reaches, the palette's rows and filter |
 | reveal and view | `src/view.ts` | SPEC §6.1, §9.5: the boxes that hold an element, scrolling it into view in them, and whether some of it is shown |
 | resources | `src/resources.ts`, `src/resolver.ts` | `cid:` as `blob:` URLs; sanitizing everything before it reaches a live document |
 | host stylesheet | `src/hostcss.ts` | §8 from `term.options` (theme, font, cell size), in a cascade layer: the palette, `--hotty-accent`, and controls, focus, links and selection in the terminal's colours |
@@ -292,10 +292,32 @@ runs programs for whoever connects.
   the program. It ends when the program focuses (`a=focus`, with no `t` too)
   or blurs, when the surface loses the keyboard or is hidden, or on a press
   in the surface. The browser's own keys (`browserKeys`) stay the browser's.
-- **The program's menu** (SPEC §10.5): `a=menu` with a body shows a menu at
-  the bottom right of the screen, on whole cells, for the cells and for a
-  surface alike. It goes on a `a=menu` with no body, Escape, a key the menu
-  does not list (typed to the cells or to a surface), another screen, or RIS.
+- **The program's menu** (SPEC §10.7): `a=menu` with a body sets the
+  program's menu, a tree of items (`key`, `label`, `name`, `enabled`,
+  `items`) nested at most eight deep, and `a=menu` with none leaves it none;
+  a body of another shape is `EINVAL`. The addon keeps one for each screen:
+  leaving the alternate screen drops its menu, RIS both. `a=menu:show=1`
+  shows the level its `seq` reaches (the items that have a key) at the
+  bottom right of the screen, on whole cells, for the cells and a surface
+  alike; a menu sent meanwhile shows the same keys' level of the new one.
+  `show=0`, Escape, a key the level does not list (typed to the cells or to
+  a surface), another screen, or RIS hides it. `shownMenu()` returns the
+  level shown (`{key, label, group, enabled}[]`, or null), for tests.
+- **The palette** (SPEC §10.7): a list of the menu's items that have a
+  name, at the top centre of the terminal, each under its groups' labels
+  (`Leader › File › New file`) with the keys that reach it, and a filter
+  line to type in (every word a substring of the label or the name). The
+  arrows and Ctrl+P/Ctrl+N move among the enabled rows, Enter or a click
+  picks, Escape closes it; nothing typed meanwhile reaches the program or
+  the terminal. `openPalette()`, `closePalette()` and `paletteOpen` open,
+  close and tell; the `paletteKey` option (a key as SPEC §10.4 writes a
+  binding, e.g. `"Mod+Shift+m"`; default none) toggles it from the
+  terminal. `pick(name)` is what a pick does, for an embedder's own UI:
+  `command` with `{name}` and nothing else, or for `copy` with text
+  selected, the selection copied and nothing sent, and for `paste` the
+  clipboard's text with it. It returns false for a disabled item or an
+  unknown name. A menu sent while the palette is open refreshes its rows
+  and keeps the filter; a change of screen closes it.
 - **Commands in the cells** (SPEC §10.6): `a=edit` is kept per screen, and
   a key of a command taken goes to the program as `command`, after the
   cells' selection is copied (`copyKeys`). A paste brings the text of the

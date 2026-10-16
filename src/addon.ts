@@ -20,7 +20,7 @@ import { Float, float, Writer, type Body, type Value } from "./msgpack.ts";
 import { clean, type Policy } from "./network.ts";
 import { Store } from "./resources.ts";
 import { EDIT_ACTIONS, editAction, editOf, type Platform, readKey } from "./keys.ts";
-import { type Menu, readMenu } from "./menu.ts";
+import { filter, find, hides, isGroup, type Menu, Menus, readMenu, readSeq, rowLabel, rows, type Row, shownLevel } from "./menu.ts";
 import { type KeySettings, pressedName, type Route, type Scheme, Surface, type SurfaceHost } from "./surface.ts";
 import { Touch } from "./touch.ts";
 import { HOST, VERSION } from "./version.ts";
@@ -78,7 +78,13 @@ export interface HottyOptions {
    * is copied by its keymap (SPEC §10.2, §11), Ctrl+C and Cmd+C by
    * default, whatever this says.
    */
-  copyKeys?: (e: KeyboardEvent) => boolean;}
+  copyKeys?: (e: KeyboardEvent) => boolean;
+  /**
+   * A key that opens the palette of the program's menu (SPEC §10.7) when
+   * pressed on the terminal, and closes it, named as SPEC §10.4 writes a
+   * binding: `"Mod+Shift+m"`. Default: none; `openPalette()` opens it.
+   */
+  paletteKey?: string;}
 
 const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
@@ -219,9 +225,17 @@ export class HottyAddon implements ITerminalAddon {
   private pasting: { key: string; timer: ReturnType<typeof setTimeout> } | null = null;
   /** `encodeKey` runs a key through xterm.js: it is not typed. */
   private encoding = false;
-  /** The program's which-key menu (SPEC §10.5), and where it shows. */
-  private programMenu: Menu | null = null;
+  /** The program's menu on each screen (SPEC §10.7). */
+  private readonly menus = new Menus();
+  /** The keys of the level shown (`a=menu:show=1`), null when none is, and
+   * where it shows. */
+  private shownSeq: string[] | null = null;
   private menuEl: HTMLDivElement | null = null;
+  /** The palette (SPEC §10.7) while it is open: what the user typed, and
+   * the row selected, by its label path and name. */
+  private palette: { el: HTMLDivElement; title: HTMLDivElement; input: HTMLInputElement; list: HTMLDivElement } | null = null;
+  private paletteFilter = "";
+  private paletteSelected = "";
   /** The terminal's element, whose paste a `paste` command takes. */
   private pasteOn: HTMLElement | null = null;
 
@@ -246,6 +260,7 @@ export class HottyAddon implements ITerminalAddon {
       if (!this.encoding) {
         if (e.type === "keyup" && this.commandCodes.delete(e.code)) return false;
         if (e.type === "keydown") {
+          if (this.paletteKeyPressed(e)) return false;
           this.menuKey(e);
           if (this.command(e)) return false;
         }
@@ -273,8 +288,10 @@ export class HottyAddon implements ITerminalAddon {
         this.reset();
         this.taken.normal.clear();
         this.taken.alternate.clear();
-        this.programMenu = null;
+        this.menus.clear();
+        this.shownSeq = null;
         this.drawMenu();
+        this.closePalette();
         return false;
       }),
       term.buffer.onBufferChange((b) => this.onBufferChange(b.type)),
@@ -311,6 +328,8 @@ export class HottyAddon implements ITerminalAddon {
     this.pasteOn = null;
     this.menuEl?.remove();
     this.menuEl = null;
+    this.palette?.el.remove();
+    this.palette = null;
     this.cellTouch?.dispose();
     this.cellTouch = null;
     this.reset();
@@ -526,11 +545,23 @@ export class HottyAddon implements ITerminalAddon {
         this.taken[this.term.buffer.active.type] = new Set(take);
         return;
       }
-      case "menu":
-        // The program's which-key menu (SPEC §10.5); none hides it.
-        this.programMenu = cmd.payload.length ? readMenu(cmd.payload) : null;
+      case "menu": {
+        // The program's menu (SPEC §10.7): set or left none, or a level of
+        // it shown or hidden.
+        const screen = this.term.buffer.active.type;
+        const show = c.get("show");
+        if (show !== undefined && show !== "0" && show !== "1") throw new Failure("EINVAL", "show is 0 or 1");
+        if (show === "1") {
+          this.shownSeq = readSeq(cmd.payload);
+        } else if (show === "0") {
+          this.shownSeq = null;
+        } else {
+          this.menus.set(screen, cmd.payload.length ? readMenu(cmd.payload) : null);
+          this.refreshPalette();
+        }
         this.drawMenu();
         return;
+      }
       case "":
         throw new Failure("EINVAL", "missing a=<action>");
       default:
@@ -701,13 +732,14 @@ export class HottyAddon implements ITerminalAddon {
       // Surfaces placed on the alternate screen die with it (PROTOCOL §4).
       if (p.kind === "alt" && type === "normal") this.remove(p.surface.name);
     }
-    // Leaving the alternate screen drops the commands taken there, and any
-    // change hides the program's menu (SPEC §10.5).
+    // Leaving the alternate screen drops the commands taken and the menu
+    // there, and any change hides the level shown and closes the palette
+    // (SPEC §10.6, §10.7).
     if (type === "normal") this.taken.alternate.clear();
-    if (this.programMenu) {
-      this.programMenu = null;
-      this.drawMenu();
-    }
+    this.menus.change(type);
+    this.shownSeq = null;
+    this.drawMenu();
+    this.closePalette();
     this.reposition();
   }
 
@@ -1024,7 +1056,7 @@ export class HottyAddon implements ITerminalAddon {
     return layer;
   }
 
-  // --- Commands in the cells and the menu (SPEC §10.5, §10.6) -------------
+  // --- Commands in the cells and the menu (SPEC §10.6) -----------------
 
   /** The paste a `paste` command's key brings (SPEC §10.6), heard before
    * xterm.js's own on its textarea: its text goes with the command, and
@@ -1081,36 +1113,82 @@ export class HottyAddon implements ITerminalAddon {
     return true;
   }
 
-  /** The event `command` (SPEC §10.6): of no surface and no element. A
-   * paste's text is left out where the clipboard holds none. */
-  private sendCommand(name: string, key: string, text?: string) {
+  /** The event `command` (SPEC §10.6): of no surface and no element, with
+   * the key that made it where one did. A paste's text is left out where
+   * the clipboard holds none. */
+  private sendCommand(name: string, key?: string, text?: string) {
     const c = new Control().set("a", "ev").set("e", "command");
     this.send(encode(c, this.writer.body({ name, key, text: text || undefined })));
   }
 
-  /** A key typed on the cells or in a surface while the program's menu
-   * shows (SPEC §10.5): Escape, and a key the menu does not list, hide it.
-   * The key still goes where it would without the menu. */
+  // --- The program's menu (SPEC §10.7) --------------------------------------
+
+  /** A key's name as this host reads it (`Mod` read), or as written. */
+  private readonly read = (k: string) => readKey(this.keys.platform, k);
+  private readonly show = (k: string) => this.read(k) ?? k;
+
+  /** The program's menu on the active screen. */
+  private menu(): Menu | null {
+    return this.menus.get(this.term.buffer.active.type);
+  }
+
+  /** The level shown: the keyed items of the level `shownSeq` reaches. */
+  private level() {
+    const m = this.menu();
+    return m && this.shownSeq ? shownLevel(m, this.shownSeq, this.read) : null;
+  }
+
+  /**
+   * The keyed items of the level shown, as the program sent them, or null
+   * when none shows: what the conformance vectors' `menu: shown` checks.
+   */
+  shownMenu(): { key: string; label: string; group: boolean; enabled: boolean }[] | null {
+    const l = this.level();
+    return l ? l.items.map((i) => ({ key: i.key, label: i.label, group: isGroup(i), enabled: i.enabled })) : null;
+  }
+
+  /**
+   * Picks the item the active screen's menu names `name` (SPEC §10.7), as
+   * the palette does: `command` goes to the program with just the name. A
+   * `copy` while the terminal has text selected copies it instead, and a
+   * `paste` brings the clipboard's text, as the terminal's Edit menu does.
+   * Returns whether anything was picked: not a disabled item, a name no
+   * item has, or no menu.
+   */
+  pick(name: string): boolean {
+    const m = this.menu();
+    const item = m && find(m, name);
+    if (!item?.enabled) return false;
+    this.closePalette();
+    if (name === "copy" && this.term.hasSelection()) {
+      navigator.clipboard?.writeText(this.term.getSelection()).catch(() => {});
+    } else if (name === "paste") {
+      void (navigator.clipboard?.readText().catch(() => "") ?? Promise.resolve("")).then((text) => this.sendCommand("paste", undefined, text));
+    } else this.sendCommand(name);
+    return true;
+  }
+
+  /** A key typed on the cells or in a surface while a level of the
+   * program's menu shows (SPEC §10.7): Escape, and a key the level does not
+   * list, hide it. The key still goes where it would without the menu. */
   private menuKey(e: KeyboardEvent) {
-    const m = this.programMenu;
     const key = pressedName(e);
-    if (!m || key === null) return;
-    const p = this.keys.platform;
-    const k = readKey(p, key);
-    if (k !== "Escape" && m.items.some((i) => readKey(p, i.key) === k)) return;
-    this.programMenu = null;
+    if (this.shownSeq === null || key === null) return;
+    // A level that shows nothing lists no key: any key hides it.
+    if (!hides(this.level()?.items ?? [], key, this.read)) return;
+    this.shownSeq = null;
     this.drawMenu();
   }
 
   /**
-   * Draws the program's which-key menu (SPEC §10.5) at the bottom right of
-   * the screen, on cells, over the surfaces too. A title row, the keys
-   * typed and their group's label, then each key that can follow with what
-   * it does, in columns of at most `COLUMN_ITEMS`. A group's label has a
-   * `+`, and a disabled item is dimmed.
+   * Draws the level of the program's menu shown (SPEC §10.7) at the bottom
+   * right of the screen, on cells, over the surfaces too. A title row, the
+   * keys typed and their group's label, then each key that can follow with
+   * what it does, in columns of at most `COLUMN_ITEMS`. A group's label has
+   * a `+`, and a disabled item is dimmed.
    */
   private drawMenu() {
-    const m = this.programMenu;
+    const m = this.level();
     if (!m) {
       this.menuEl?.remove();
       this.menuEl = null;
@@ -1153,7 +1231,7 @@ export class HottyAddon implements ITerminalAddon {
       return s;
     };
     const title = document.createElement("div");
-    title.append(span(m.seq.join(" "), { color: accent }));
+    title.append(span(this.shownSeq!.join(" "), { color: accent }));
     if (m.label) title.append(" " + m.label);
     const cols = document.createElement("div");
     Object.assign(cols.style, { display: "flex", gap: `${2 * cellW}px` });
@@ -1161,14 +1239,15 @@ export class HottyAddon implements ITerminalAddon {
     for (let i = 0; i < m.items.length; i += per) {
       const col = document.createElement("div");
       for (const item of m.items.slice(i, i + per)) {
-        let label = item.group && !item.label.startsWith("+") ? `+${item.label}` : item.label;
+        const group = isGroup(item);
+        let label = group && !item.label.startsWith("+") ? `+${item.label}` : item.label;
         const chars = [...label];
         if (chars.length > LABEL_CHARS) label = chars.slice(0, LABEL_CHARS - 1).join("") + "…";
         const row = document.createElement("div");
         row.style.height = `${cellH}px`;
         if (!item.enabled) row.style.opacity = "0.5";
-        else if (item.group) row.style.color = p.ansi[5]!;
-        row.append(span(item.key, { color: accent, fontWeight: "bold" }), " " + label);
+        else if (group) row.style.color = p.ansi[5]!;
+        row.append(span(this.show(item.key), { color: accent, fontWeight: "bold" }), " " + label);
         col.append(row);
       }
       cols.append(col);
@@ -1185,6 +1264,202 @@ export class HottyAddon implements ITerminalAddon {
       top: `${(this.term.rows - h) * cellH}px`,
       overflow: "hidden",
     });
+  }
+
+  // --- The palette (SPEC §10.7) ----------------------------------------------
+
+  /** Whether the palette of the program's menu is open. */
+  get paletteOpen(): boolean {
+    return this.palette !== null;
+  }
+
+  /** The key that opens and closes the palette (`paletteKey`), pressed. */
+  private paletteKeyPressed(e: KeyboardEvent): boolean {
+    const want = this.opts.paletteKey && this.read(this.opts.paletteKey);
+    const key = pressedName(e);
+    if (!want || key === null || this.read(key) !== want) return false;
+    e.preventDefault();
+    if (this.palette) this.closePalette();
+    else this.openPalette();
+    return true;
+  }
+
+  /**
+   * Opens the palette (SPEC §10.7) at the top centre of the terminal: the
+   * items of the active screen's menu that have a name, a filter line to
+   * type in, and the keys that reach each. Nothing typed while it is open
+   * reaches the program or the terminal. Enter picks the selected row,
+   * Escape closes it, and so does a click away.
+   */
+  openPalette(): void {
+    if (this.palette) return;
+    let layer: HTMLDivElement;
+    try {
+      layer = this.ensureLayer();
+    } catch {
+      return; // not open yet
+    }
+    const el = document.createElement("div");
+    el.className = "hotty-palette";
+    const title = document.createElement("div");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.spellcheck = false;
+    input.autocomplete = "off";
+    const list = document.createElement("div");
+    el.append(title, input, list);
+    // The terminal's own focus handling stays out of it.
+    el.addEventListener("mousedown", (e) => e.stopPropagation());
+    list.addEventListener("mousedown", (e) => e.preventDefault());
+    input.addEventListener("input", () => {
+      this.paletteFilter = input.value;
+      this.drawPalette();
+    });
+    input.addEventListener("keydown", (e) => this.paletteKeydown(e));
+    input.addEventListener("blur", () => {
+      if (this.palette?.input === input) this.closePalette(false);
+    });
+    this.palette = { el, title, input, list };
+    this.paletteFilter = "";
+    this.paletteSelected = "";
+    layer.append(el);
+    this.drawPalette();
+    input.focus();
+  }
+
+  /** Closes the palette, and the terminal has the keyboard again. */
+  closePalette(refocus = true): void {
+    const p = this.palette;
+    if (!p) return;
+    this.palette = null;
+    p.el.remove();
+    if (refocus) this.term.focus();
+  }
+
+  /** The palette's keys (SPEC §10.7). Typing is the input's own. */
+  private paletteKeydown(e: KeyboardEvent) {
+    e.stopPropagation();
+    if (this.paletteKeyPressed(e)) return;
+    const key = pressedName(e);
+    const step = key === "ArrowDown" || key === "Control+n" ? 1 : key === "ArrowUp" || key === "Control+p" ? -1 : 0;
+    if (step) this.paletteMove(step);
+    else if (key === "Enter") this.paletteEnter();
+    else if (key === "Escape") this.closePalette();
+    else return;
+    e.preventDefault();
+  }
+
+  /** The rows that match what was typed, and the one selected: the one
+   * selected before if it still shows, else the first that is enabled. */
+  private paletteRows(): { rows: Row[]; selected: Row | null } {
+    const m = this.menu();
+    const all = m ? rows(m, this.show) : [];
+    const matching = filter(all, this.paletteFilter);
+    const id = (r: Row) => `${rowLabel(r)}\0${r.item.name}`;
+    const selected = matching.find((r) => r.item.enabled && id(r) === this.paletteSelected) ?? matching.find((r) => r.item.enabled) ?? null;
+    this.paletteSelected = selected ? id(selected) : "";
+    return { rows: matching, selected };
+  }
+
+  private paletteMove(step: number) {
+    const { rows, selected } = this.paletteRows();
+    const enabled = rows.filter((r) => r.item.enabled);
+    if (!enabled.length || !selected) return;
+    const next = enabled[Math.min(enabled.length - 1, Math.max(0, enabled.indexOf(selected) + step))]!;
+    this.paletteSelected = `${rowLabel(next)}\0${next.item.name}`;
+    this.drawPalette();
+  }
+
+  private paletteEnter() {
+    const { selected } = this.paletteRows();
+    if (selected) this.pick(selected.item.name);
+  }
+
+  /** A menu sent while the palette is open: its rows, the filter kept. */
+  private refreshPalette() {
+    if (this.palette) this.drawPalette();
+  }
+
+  /** Draws the palette in the terminal's colours and font, over the cells
+   * and the surfaces, at the top centre. */
+  private drawPalette() {
+    const pal = this.palette;
+    if (!pal) return;
+    const { cellW, cellH } = this.cell();
+    const o = this.term.options;
+    const p = palette(o.theme);
+    const accent = p.ansi[p.dark ? 12 : 4]!;
+    const cols = Math.max(1, Math.min(this.term.cols, 64));
+    Object.assign(pal.el.style, {
+      position: "absolute",
+      left: `${Math.floor((this.term.cols - cols) / 2) * cellW}px`,
+      top: "0",
+      width: `${cols * cellW}px`,
+      boxSizing: "border-box",
+      background: `color-mix(in srgb, ${p.fg} 10%, ${p.bg})`,
+      color: p.fg,
+      fontFamily: o.fontFamily ?? "monospace",
+      fontSize: `${o.fontSize ?? 15}px`,
+      lineHeight: `${cellH}px`,
+      zIndex: "8",
+      pointerEvents: "auto",
+      boxShadow: `0 0 0 1px color-mix(in srgb, ${p.fg} 30%, ${p.bg})`,
+    });
+    const m = this.menu();
+    Object.assign(pal.title.style, { padding: `0 ${cellW}px`, height: `${cellH}px`, color: accent, whiteSpace: "pre", overflow: "hidden", textOverflow: "ellipsis" });
+    pal.title.textContent = m?.label || "Actions";
+    Object.assign(pal.input.style, {
+      display: "block",
+      boxSizing: "border-box",
+      width: "100%",
+      height: `${cellH}px`,
+      padding: `0 ${cellW}px`,
+      margin: "0",
+      border: "0",
+      borderTop: `1px solid color-mix(in srgb, ${p.fg} 30%, ${p.bg})`,
+      borderBottom: `1px solid color-mix(in srgb, ${p.fg} 30%, ${p.bg})`,
+      outline: "none",
+      borderRadius: "0",
+      background: p.bg,
+      color: p.fg,
+      font: "inherit",
+      lineHeight: `${cellH}px`,
+    });
+    if (pal.input.value !== this.paletteFilter) pal.input.value = this.paletteFilter;
+    Object.assign(pal.list.style, { maxHeight: `${Math.max(1, Math.min(12, this.term.rows - 3)) * cellH}px`, overflowY: "auto" });
+    const { rows: shown, selected } = this.paletteRows();
+    pal.list.replaceChildren();
+    if (!shown.length) {
+      const none = document.createElement("div");
+      Object.assign(none.style, { padding: `0 ${cellW}px`, height: `${cellH}px`, opacity: "0.5" });
+      none.textContent = "Nothing to pick";
+      pal.list.append(none);
+      return;
+    }
+    for (const r of shown) {
+      const row = document.createElement("div");
+      row.className = "hotty-palette-row";
+      Object.assign(row.style, { display: "flex", gap: `${2 * cellW}px`, padding: `0 ${cellW}px`, height: `${cellH}px`, whiteSpace: "pre" });
+      const label = document.createElement("span");
+      Object.assign(label.style, { flex: "1", minWidth: "0", overflow: "hidden", textOverflow: "ellipsis" });
+      label.textContent = rowLabel(r);
+      const keys = document.createElement("span");
+      Object.assign(keys.style, { color: accent, fontWeight: "bold" });
+      keys.textContent = r.keys;
+      row.append(label, keys);
+      if (!r.item.enabled) row.style.opacity = "0.5";
+      else {
+        row.style.cursor = "pointer";
+        row.addEventListener("click", () => this.pick(r.item.name));
+      }
+      if (r === selected) {
+        row.classList.add("selected");
+        Object.assign(row.style, { background: accent, color: p.bg });
+        keys.style.color = p.bg;
+      }
+      pal.list.append(row);
+      if (r === selected) row.scrollIntoView({ block: "nearest" });
+    }
   }
 
   private browserKey(e: KeyboardEvent): boolean {

@@ -81,7 +81,7 @@ export interface SurfaceHost {
    *  key is a shortcut of (SPEC §10.6): the host sent the command, and the
    *  key goes no further. */
   command(e: KeyboardEvent): boolean;
-  /** A key typed in the surface (SPEC §10.5): the program's menu is hidden
+  /** A key typed in the surface (SPEC §10.7): the program's menu is hidden
    *  by Escape and by a key it does not list. */
   typed(e: KeyboardEvent): void;
   /** A key the browser keeps (the `browserKeys` option): the surface

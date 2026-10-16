@@ -23,6 +23,8 @@ type Step = {
   by?: [number, number];
   key?: string;
   keys?: string[];
+  menu?: "shown" | "pick";
+  name?: string;
   count?: number;
   terminal?: boolean;
   events?: Expected[];
@@ -348,6 +350,16 @@ function define(vector: { name: string; requires?: string | string[]; steps: Ste
           } else if (v === null) expect(k === "code" || k === "detail" ? body[k] : got.get(k), `${where}: ${k} is absent`).toBeUndefined();
           else expect(k === "code" || k === "detail" ? body[k] : got.get(k), `${where}: ${k}`).toBe(v);
         }
+      } else if (step.menu === "shown") {
+        // The level the host shows (SPEC §10.7), as the program sent it.
+        const got = await page.evaluate(() => (window.hotty as unknown as { addon: { shownMenu(): unknown } }).addon.shownMenu());
+        expect(got, `${where}: the level shown`).toEqual(step.expect);
+      } else if (step.menu === "pick") {
+        await take(page);
+        const picked = await page.evaluate((n) => (window.hotty as unknown as { addon: { pick(n: string): boolean } }).addon.pick(n), step.name!);
+        const msgs = await sent(page, step.events);
+        checkEvents(where, msgs, step.events);
+        if (step.events !== undefined) expect(picked, `${where}: picked`).toBe(step.events.length > 0);
       } else if (step.inspect) {
         const [s, id] = step.inspect;
         const got = await page.evaluate(([s, id]) => (window as unknown as { hotty: { addon: { inspect(s: string, id: string): unknown } } }).hotty.addon.inspect(s, id), [s, id] as const);
