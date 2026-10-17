@@ -5,9 +5,9 @@
 import { expect, type Page, test } from "@playwright/test";
 import { open, send, surface, take } from "./helpers.ts";
 
-// Meta+v pastes too: a key the browser pastes nothing with, where `Mod` is
-// Control (SPEC §10.4).
-const DOC = `<div data-keys="Meta+v=paste"><input id=i data-on=input value="one two"><textarea id=a data-on=input></textarea><input id=pw type=password value=secret></div>`;
+// super+v pastes too: a key the browser pastes nothing with, where `mod` is
+// ctrl (SPEC §10.4).
+const DOC = `<div data-keys="super+v=paste"><input id=i data-on=input value="one two"><textarea id=a data-on=input></textarea><input id=pw type=password value=secret></div>`;
 
 /** The page with a surface `k`, its field `i` focused, and the clipboard a
  * list the test reads and a text it gives. */

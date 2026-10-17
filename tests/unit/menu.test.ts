@@ -7,7 +7,7 @@ import { readKey } from "../../src/keys.ts";
 import { entries, find, hides, isGroup, type Menu, Menus, MENU_DEPTH, reach, readMenu, readSeq, shownLevel } from "../../src/menu.ts";
 
 const w = (b: unknown) => new Writer().body(b as never);
-const platform = { mod: "Control" } as const;
+const platform = { mod: "ctrl" } as const;
 const read = (k: string) => readKey(platform, k);
 const show = (k: string) => read(k) ?? k;
 
@@ -15,7 +15,7 @@ const menu: Menu = readMenu(
   w({
     label: "Files",
     items: [
-      { key: "Mod+x", label: "Leader", enabled: true, items: [
+      { key: "mod+x", label: "Leader", enabled: true, items: [
         { key: "f", label: "File", enabled: true, items: [
           { key: "n", label: "New file", name: "file-new", enabled: true },
           { key: "r", label: "Rename", name: "file-rename", enabled: false },
@@ -28,11 +28,11 @@ const menu: Menu = readMenu(
   }),
 );
 
-test("reach: the first group each key names, Mod read as the host's mod", () => {
+test("reach: the first group each key names, mod read as the host's mod", () => {
   assert.equal(reach(menu, [], read)!.label, "Files");
-  assert.deepEqual(reach(menu, ["Control+x", "f"], read)!.items.map((i) => i.key), ["n", "r"]);
-  assert.equal(reach(menu, ["Mod+x"], read)!.label, "Leader");
-  assert.equal(reach(menu, ["Control+x", "q"], read), null, "q is no group");
+  assert.deepEqual(reach(menu, ["ctrl+x", "f"], read)!.items.map((i) => i.key), ["n", "r"]);
+  assert.equal(reach(menu, ["mod+x"], read)!.label, "Leader");
+  assert.equal(reach(menu, ["ctrl+x", "q"], read), null, "q is no group");
   assert.equal(reach(menu, ["x"], read), null);
 });
 
@@ -45,7 +45,7 @@ test("a group has an item: an empty items is none, and keys walking into it reac
 });
 
 test("shownLevel: the keyed items only, null when none has a key or the keys reach no group", () => {
-  assert.deepEqual(shownLevel(menu, [], read)!.items.map((i) => i.key), ["Mod+x", "z"]);
+  assert.deepEqual(shownLevel(menu, [], read)!.items.map((i) => i.key), ["mod+x", "z"]);
   assert.equal(shownLevel(readMenu(w({ items: [{ label: "A", name: "a" }] })), [], read), null);
   assert.equal(shownLevel(menu, ["nope"], read), null);
 });
@@ -57,7 +57,12 @@ test("hides: Escape and a key the level does not list", () => {
   assert.equal(hides(level, "z", read), false);
   assert.equal(hides([], "z", read), true, "a level that shows nothing lists no key");
   assert.equal(hides([], "Escape", read), true);
-  assert.equal(hides(level, "Control+x", read), false);
+  assert.equal(hides(level, "ctrl+x", read), false);
+  // A press has two names, and the level lists it if it lists either.
+  assert.equal(hides(level, ["key_z", "z"], read), false);
+  assert.equal(hides(level, ["key_q", "q"], read), true);
+  assert.equal(hides(level, ["escape"], read), true);
+  assert.equal(hides(level, [], read), true);
 });
 
 test("find: the first item of a name in depth-first order, an empty name none", () => {
@@ -86,9 +91,9 @@ test("readSeq: none is the top, anything but an array of str throws", () => {
 
 test("entries: named items depth-first under their groups, with the keys that reach them", () => {
   assert.deepEqual(entries(menu, show), [
-    { name: "file-new", label: "Leader › File › New file", keys: "Control+x f n", enabled: true },
-    { name: "file-rename", label: "Leader › File › Rename", keys: "Control+x f r", enabled: false },
-    { name: "quit", label: "Leader › Quit", keys: "Control+x q", enabled: true },
+    { name: "file-new", label: "Leader › File › New file", keys: "ctrl+x f n", enabled: true },
+    { name: "file-rename", label: "Leader › File › Rename", keys: "ctrl+x f r", enabled: false },
+    { name: "quit", label: "Leader › Quit", keys: "ctrl+x q", enabled: true },
     { name: "reload", label: "Reload", keys: "", enabled: true },
     { name: "quit", label: "Again", keys: "z", enabled: true },
   ]);

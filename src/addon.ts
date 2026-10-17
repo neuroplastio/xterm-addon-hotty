@@ -19,9 +19,9 @@ import { DeltaError, readDelta } from "./delta.ts";
 import { Float, float, Writer, type Body, type Value } from "./msgpack.ts";
 import { clean, type Policy } from "./network.ts";
 import { Store } from "./resources.ts";
-import { EDIT_ACTIONS, editAction, editOf, type Platform, readKey } from "./keys.ts";
+import { displayKey, EDIT_ACTIONS, editAction, editOf, type Platform, pressNames, readKey } from "./keys.ts";
 import { entries, find, hides, isGroup, type Menu, type MenuEntry, Menus, readMenu, readSeq, shownLevel } from "./menu.ts";
-import { type KeySettings, pressedName, type Route, type Scheme, Surface, type SurfaceHost } from "./surface.ts";
+import { type KeySettings, type Route, type Scheme, Surface, type SurfaceHost } from "./surface.ts";
 import { Touch } from "./touch.ts";
 import { HOST, VERSION } from "./version.ts";
 import { Assembler, Control, encode, MAX_COMMAND, OSC, text, type Command, type Decoded } from "./wire.ts";
@@ -121,7 +121,7 @@ export interface Inspected {
 const GESTURE_MS = 150;
 
 /** The HOTTY versions the addon speaks (SPEC §4), highest first. */
-const SPEAKS = ["0.3"];
+const SPEAKS = ["0.4"];
 
 /**
  * The version a query is answered in (SPEC §4): the highest the addon
@@ -209,7 +209,7 @@ export class HottyAddon implements ITerminalAddon {
   /** The wheel gesture under way: the surface its last wheel was over ("" for
    * the cells), where it goes, and when that wheel came. */
   private gesture: { surface: string; route: Route; at: number } | null = null;
-  /** How keys are read (SPEC §10.4): `Mod` is Meta on a Mac. */
+  /** How keys are read (SPEC §10.4): `mod` is `super` on a Mac, `ctrl` elsewhere. */
   private readonly keys: KeySettings;
   /** The edit commands the program takes on each screen (SPEC §10.6). */
   private readonly taken = { normal: new Set<string>(), alternate: new Set<string>() };
@@ -231,7 +231,7 @@ export class HottyAddon implements ITerminalAddon {
 
   constructor(options: HottyOptions = {}) {
     this.opts = { maxSurfaces: 64, resourceQuota: 64 << 20, ...options };
-    const platform: Platform = { mod: mac ? "Meta" : "Control" };
+    const platform: Platform = { mod: mac ? "super" : "ctrl" };
     this.keys = { platform };
     this.policy = clean(options.network);
     this.store = new Store(this.opts.resourceQuota);
@@ -1071,17 +1071,24 @@ export class HottyAddon implements ITerminalAddon {
   private command(e: KeyboardEvent): boolean {
     const taken = this.taken[this.term.buffer.active.type];
     if (taken.size === 0) return false;
-    const key = pressedName(e);
-    const name = key === null ? null : editAction(this.keys.platform, key);
-    if (key === null || name === null || !taken.has(name)) return false;
+    // A press has two names, looked up physical first (§10.4).
+    let name: string | null = null;
+    let k = "";
+    for (const key of pressNames(e)) {
+      name = editAction(this.keys.platform, key);
+      if (name !== null) {
+        k = key;
+        break;
+      }
+    }
+    if (name === null || !taken.has(name)) return false;
     this.commandCodes.add(e.code);
     if (name !== "paste") {
       e.preventDefault();
-      this.sendCommand(name, readKey(this.keys.platform, key)!);
+      this.sendCommand(name, k);
       return true;
     }
     if (this.pasting) clearTimeout(this.pasting.timer);
-    const k = readKey(this.keys.platform, key)!;
     // A key the user typed on the cells pastes, as the browser's default
     // action; one a surface gave on, or a browser that makes no paste of
     // it, has the clipboard read.
@@ -1106,9 +1113,11 @@ export class HottyAddon implements ITerminalAddon {
 
   // --- The program's menu (SPEC §10.7) --------------------------------------
 
-  /** A key's name as this host reads it (`Mod` read), or as written. */
+  /** A key's name as this host reads it (`mod` read), or null. */
   private readonly read = (k: string) => readKey(this.keys.platform, k);
-  private readonly show = (k: string) => this.read(k) ?? k;
+  /** A key as the menu shows it (myelin key names §6): read, with arrows
+   * and Tab as symbols. */
+  private readonly show = (k: string) => displayKey(this.read(k) ?? k);
 
   /** The program's menu on the active screen. */
   private menu(): Menu | null {
@@ -1133,12 +1142,13 @@ export class HottyAddon implements ITerminalAddon {
   /**
    * The items of the active screen's menu that have a name (SPEC §10.7), in
    * its order, for a page that lists them in a command palette of its own:
-   * each under its groups' labels, with the keys that reach it, `Mod` read
-   * as the platform does. The addon draws no palette; `pick` runs an item.
+   * each under its groups' labels, with the keys that reach it, `mod` read
+   * as the platform does, in myelin key names (a page shows them with
+   * `displayKey`, §6). The addon draws no palette; `pick` runs an item.
    */
   menuItems(): MenuEntry[] {
     const m = this.menu();
-    return m ? entries(m, this.show) : [];
+    return m ? entries(m, (k) => this.read(k) ?? k) : [];
   }
 
   /**
@@ -1165,10 +1175,10 @@ export class HottyAddon implements ITerminalAddon {
    * program's menu shows (SPEC §10.7): Escape, and a key the level does not
    * list, hide it. The key still goes where it would without the menu. */
   private menuKey(e: KeyboardEvent) {
-    const key = pressedName(e);
-    if (this.shownSeq === null || key === null) return;
+    const keys = pressNames(e);
+    if (this.shownSeq === null || keys.length === 0) return;
     // A level that shows nothing lists no key: any key hides it.
-    if (!hides(this.level()?.items ?? [], key, this.read)) return;
+    if (!hides(this.level()?.items ?? [], keys, this.read)) return;
     this.shownSeq = null;
     this.drawMenu();
   }
@@ -1224,7 +1234,7 @@ export class HottyAddon implements ITerminalAddon {
       return s;
     };
     const title = document.createElement("div");
-    title.append(span(this.shownSeq!.join(" "), { color: accent }));
+    title.append(span(this.shownSeq!.map(this.show).join(" "), { color: accent }));
     if (m.label) title.append(" " + m.label);
     const cols = document.createElement("div");
     Object.assign(cols.style, { display: "flex", gap: `${2 * cellW}px` });

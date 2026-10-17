@@ -23,7 +23,7 @@ export interface MenuItem {
   items: MenuItem[] | undefined;
 }
 
-/** How a host reads a key name against a typed one (SPEC §10.4): `Mod` read
+/** How a host reads a key name against a typed one (SPEC §10.4): `mod` read
  * as the host's mod, null when the name does not parse. */
 export type ReadKey = (name: string) => string | null;
 
@@ -90,10 +90,11 @@ export function shownLevel(menu: Menu, seq: string[], readKey: ReadKey): { label
 }
 
 /** Whether a typed key leaves the level shown up: only Escape, and a key
- * the level does not list, hide it (SPEC §10.7). */
-export function hides(items: MenuItem[], typed: string, readKey: ReadKey): boolean {
-  const k = readKey(typed);
-  return k === null || k === "Escape" || !items.some((i) => i.key !== "" && readKey(i.key) === k);
+ * the level does not list, hide it (SPEC §10.7). A press has two names
+ * (§10.4); it is listed if either is. */
+export function hides(items: MenuItem[], typed: string | string[], readKey: ReadKey): boolean {
+  const ks = [typed].flat().map(readKey).filter((k): k is string => k !== null);
+  return ks.length === 0 || ks.includes("escape") || !items.some((i) => i.key !== "" && ks.some((k) => k === readKey(i.key)));
 }
 
 /** Whether an item is a group: it has at least one item (SPEC §10.7). */

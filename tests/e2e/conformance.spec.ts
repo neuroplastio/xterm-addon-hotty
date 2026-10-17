@@ -132,7 +132,7 @@ class Mouse {
       await cdp.detach();
       return;
     }
-    const names = { shift: "Shift", ctrl: "Control", alt: "Alt", meta: "Meta" } as Record<string, string>;
+    const names = { shift: "Shift", ctrl: "Control", alt: "Alt", super: "Meta" } as Record<string, string>;
     for (const k of keys) await this.page.keyboard.down(names[k]!);
     if (step.pointer === "move") await this.page.mouse.move(this.x, this.y);
     else if (step.pointer === "down") await this.page.mouse.down({ clickCount: step.count ?? 1 });
@@ -257,7 +257,7 @@ async function point(page: Page, s: string, at: string | [number, number]): Prom
 }
 
 // What the vectors may require (conformance/README.md) that this addon has:
-// the features `count` and `menu` (SPEC §4), all a 0.3 host does (`scroll`,
+// the features `count` and `menu` (SPEC §4), all a 0.4 host does (`scroll`,
 // `steps`, `drop`, `view`), a history in its fields (`undo`), edit commands
 // (`commands`, §10.6), and `touch` (§9.1, §16) where this runner can touch
 // it, in Chromium, through CDP: Playwright gives Firefox no touch moves. It
@@ -309,7 +309,7 @@ function define(vector: { name: string; requires?: string | string[]; steps: Ste
         // held, as a keyboard would: xterm.js encodes Alt with a key from
         // its key code and Shift, not from the character.
         await take(page);
-        const names = { shift: "Shift", ctrl: "Control", alt: "Alt", meta: "Meta" } as Record<string, string>;
+        const names = { shift: "Shift", ctrl: "Control", alt: "Alt", super: "Meta" } as Record<string, string>;
         const keys = [...(step.keys ?? [])];
         if (/^[A-Z~!@#$%^&*()_+{}|:"<>?]$/.test(step.key) && !keys.includes("shift")) keys.unshift("shift");
         for (const k of keys) await page.keyboard.down(names[k]!);
@@ -321,7 +321,7 @@ function define(vector: { name: string; requires?: string | string[]; steps: Ste
         // xterm.js sends nothing for Meta with an arrow, Home or End (the
         // browser's line keys on a Mac): that such a key went on to the
         // terminal cannot be seen, only that the surface did not use it.
-        const silent = keys.includes("meta") && /^(Arrow.*|Home|End)$/.test(step.key) && raw === "";
+        const silent = keys.includes("super") && /^(Arrow.*|Home|End)$/.test(step.key) && raw === "";
         if (step.terminal !== undefined && !(silent && step.terminal)) expect(raw !== "", `${where}: the program got ${JSON.stringify(step.key)} (${JSON.stringify(raw)})`).toBe(step.terminal);
       } else if (step.send) {
         await take(page);

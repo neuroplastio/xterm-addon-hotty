@@ -366,7 +366,7 @@ test.describe("a document that scrolls", () => {
   test("a key the focused element's data-keys gives the program is the program's before the document's: a text field's, a select's, a radio button's", async ({ page }) => {
     await scrolling(page);
     const controls = `<input id=t><select id=l><option>x<option>y</select><input type=radio name=r id=r1 checked><input type=radio name=r id=r2>`;
-    await send(page, { a: "doc", s: "s", scroll: "1", q: "2" }, `<section data-keys="ArrowDown=program PageDown=program">${controls}</section>${ROWS}`);
+    await send(page, { a: "doc", s: "s", scroll: "1", q: "2" }, `<section data-keys="arrow_down=program page_down=program">${controls}</section>${ROWS}`);
     const top = () => root(page).evaluate((el) => el.scrollTop);
     for (const id of ["t", "l", "r1"]) {
       await send(page, { a: "focus", s: "s", t: id, q: "2" });
@@ -388,7 +388,7 @@ test.describe("a document that scrolls", () => {
   test("keys bound to scroll actions scroll as far as the browser's keys do, half pages by half the box, and overscroll-behavior stops them going outward", async ({ page }) => {
     await scrolling(page);
     const rows = Array.from({ length: 40 }, (_, i) => `<p>${i}</p>`).join("");
-    const keys = "j=scroll-down k=scroll-up d=scroll-half-page-down u=scroll-half-page-up f=scroll-page-down b=scroll-page-up g=scroll-start G=scroll-end";
+    const keys = "j=scroll-down k=scroll-up d=scroll-half-page-down u=scroll-half-page-up f=scroll-page-down b=scroll-page-up g=scroll-start shift+g=scroll-end";
     await send(
       page,
       { a: "doc", s: "s", scroll: "1", q: "2" },
@@ -408,7 +408,7 @@ test.describe("a document that scrolls", () => {
       await page.keyboard.press(key);
       expect(Math.abs((await v()) - want), key).toBeLessThanOrEqual(1);
     }
-    await page.keyboard.press("G");
+    await page.keyboard.press("Shift+G");
     expect(await v()).toBe(800 - 100);
     // At its end the box goes outward, to the root.
     await page.keyboard.press("j");
@@ -418,7 +418,7 @@ test.describe("a document that scrolls", () => {
     expect((await take(page)).raw).toBe("");
     // A box with overscroll-behavior: contain keeps them at its end.
     await send(page, { a: "focus", s: "s", t: "c", q: "2" });
-    await page.keyboard.press("G");
+    await page.keyboard.press("Shift+G");
     const top = await root(page).evaluate((el) => el.scrollTop);
     await page.keyboard.press("j");
     expect(await root(page).evaluate((el) => el.scrollTop)).toBe(top);

@@ -98,7 +98,7 @@ const evs = (msgs: Awaited<ReturnType<typeof take>>["msgs"]) => msgs.filter((m) 
 // A prefix (SPEC §10.5).
 
 const PREFIX = `<style>body{margin:0}button{display:block;margin:0;padding:0;border:0;box-sizing:border-box;font:inherit;height:var(--hotty-cell-h);width:calc(6*var(--hotty-cell-w))}</style>
-<main data-keys="Mod+k=prefix"><button id=a>A</button><button id=b data-keys="g=prefix">B</button><input id=f></main>`;
+<main data-keys="mod+k=prefix"><button id=a>A</button><button id=b data-keys="g=prefix">B</button><input id=f></main>`;
 
 async function prefixed(page: Page, scroll = "") {
   await open(page, "?pty=0");
@@ -185,7 +185,7 @@ const tree = {
   label: "Buffers",
   items: [
     {
-      key: "Control+x",
+      key: "ctrl+x",
       label: "Leader",
       enabled: true,
       items: [
@@ -206,7 +206,7 @@ const alpha = (page: Page, selector: string) =>
   }, selector);
 
 /** The program's menu, and the level of it its keys reach shown. */
-const showMenu = async (page: Page, seq = ["Control+x"]) => {
+const showMenu = async (page: Page, seq = ["ctrl+x"]) => {
   await write(page, encode(new Control([["a", "menu"]]), new Writer().body(tree).slice()));
   await write(page, encode(new Control([["a", "menu"], ["show", "1"]]), new Writer().body({ seq }).slice()));
 };
@@ -219,7 +219,7 @@ test("the program's menu shows until it sends none, or a key it does not list, i
   await open(page, "?pty=0");
   await page.evaluate(() => window.hotty.term.focus());
   await showMenu(page);
-  await expect.poll(() => menu(page)).toEqual(["Control+x Leader", "b Switch", "f +files"]);
+  await expect.poll(() => menu(page)).toEqual(["ctrl+x Leader", "b Switch", "f +files"]);
   // A disabled item is dimmed.
   expect(await page.evaluate(() => (document.querySelector(".hotty-menu > div:last-child > div > div:last-child") as HTMLElement).style.opacity)).toBe("0.5");
   // A hair short of opaque.
@@ -248,7 +248,7 @@ test("a program on a surface shows its menu too: Escape and a key it does not li
   await send(page, { a: "place", s: "x", c: "20", r: "3", q: "2" });
   await send(page, { a: "focus", s: "x", t: "a", q: "2" });
   await showMenu(page);
-  await expect.poll(() => menu(page)).toEqual(["Control+x Leader", "b Switch", "f +files"]);
+  await expect.poll(() => menu(page)).toEqual(["ctrl+x Leader", "b Switch", "f +files"]);
   await take(page);
   // A listed key is the program's, after the prefix, and the menu stays.
   await page.keyboard.press("b");
@@ -296,7 +296,7 @@ test("a paste command brings the clipboard's text, from the browser's paste; wit
   await page.evaluate(() => window.hotty.term.focus());
   await send(page, { a: "edit", take: "paste", q: "2" });
   await page.keyboard.press("Control+v");
-  await expect.poll(async () => (await take(page)).msgs.map((m) => [m.get("e"), m.body])).toEqual([["command", { name: "paste", key: "Control+v", text: "hi" }]]);
+  await expect.poll(async () => (await take(page)).msgs.map((m) => [m.get("e"), m.body])).toEqual([["command", { name: "paste", key: "ctrl+v", text: "hi" }]]);
   await send(page, { a: "edit", q: "2" });
   await page.keyboard.press("Control+v");
   // xterm.js's own: ^V, which it sends in place of a paste.
@@ -305,10 +305,10 @@ test("a paste command brings the clipboard's text, from the browser's paste; wit
 
 test("the capabilities report the key settings and the menu", async ({ page }) => {
   await open(page, "?pty=0");
-  await send(page, { a: "q", v: "0.3" });
+  await send(page, { a: "q", v: "0.4" });
   const caps = (await take(page)).msgs[0]!.body as Record<string, unknown>;
-  expect(caps.mod).toBe("Control");
-  expect(caps.edit).toEqual({ "select-all": ["Control+a"], copy: ["Control+c"], cut: ["Control+x"], paste: ["Control+v"], undo: ["Control+z"], redo: ["Control+Z", "Control+y"] });
+  expect(caps.mod).toBe("ctrl");
+  expect(caps.edit).toEqual({ "select-all": ["ctrl+a"], copy: ["ctrl+c"], cut: ["ctrl+x"], paste: ["ctrl+v"], undo: ["ctrl+z"], redo: ["ctrl+shift+z", "ctrl+y"] });
   expect(caps.features).toContain("menu");
   expect(caps).not.toHaveProperty("keys");
   expect(caps).not.toHaveProperty("menu");
@@ -347,7 +347,7 @@ test("menuItems() lists the named items under their groups' labels with their ke
   await write(page, encode(new Control([["a", "menu"]]), new Writer().body({
     label: "Files",
     items: [
-      { key: "Mod+x", label: "Leader", enabled: true, items: [
+      { key: "mod+x", label: "Leader", enabled: true, items: [
         { key: "f", label: "File", enabled: true, items: [
           { key: "n", label: "New file", name: "file-new", enabled: true },
           { key: "r", label: "Rename", name: "file-rename", enabled: false },
@@ -359,12 +359,12 @@ test("menuItems() lists the named items under their groups' labels with their ke
     ],
   }).slice()));
   await take(page);
-  // Mod as the platform reads it; a group's items under its label; no keys
+  // mod as the platform reads it; a group's items under its label; no keys
   // for an item no key reaches, and the name for one with no label.
   expect(await addon(page, (a) => a.menuItems())).toEqual([
-    { name: "file-new", label: "Leader › File › New file", keys: "Control+x f n", enabled: true },
-    { name: "file-rename", label: "Leader › File › Rename", keys: "Control+x f r", enabled: false },
-    { name: "quit", label: "Leader › Quit", keys: "Control+x q", enabled: true },
+    { name: "file-new", label: "Leader › File › New file", keys: "ctrl+x f n", enabled: true },
+    { name: "file-rename", label: "Leader › File › Rename", keys: "ctrl+x f r", enabled: false },
+    { name: "quit", label: "Leader › Quit", keys: "ctrl+x q", enabled: true },
     { name: "reload", label: "Reload", keys: "", enabled: true },
     { name: "go", label: "go", keys: "g", enabled: true },
   ]);

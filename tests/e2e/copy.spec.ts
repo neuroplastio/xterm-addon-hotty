@@ -102,7 +102,7 @@ test("the terminal's selection is copied, and there is one selection", async ({ 
 
 test("a document's keymap may give Control+c to the program while its text is selected", async ({ page }) => {
   await setup(page);
-  await send(page, { a: "doc", s: "k", q: "2" }, `<p id=p data-keys="Control+c=program Control+k=copy">Some words to copy</p>`);
+  await send(page, { a: "doc", s: "k", q: "2" }, `<p id=p data-keys="ctrl+c=program ctrl+k=copy">Some words to copy</p>`);
   await selectParagraph(page);
   await page.evaluate(() => window.hotty.term.focus());
   await take(page);

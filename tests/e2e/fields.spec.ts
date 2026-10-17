@@ -22,7 +22,7 @@ async function inputs(page: Page): Promise<string[]> {
 }
 
 test("with the kitty keyboard protocol on, a field has its keys, and the program still gets the rest in that encoding", async ({ page }) => {
-  await field(page, `<input id=t data-on=input value=abc data-keys="Control+a=line-start">`, "t");
+  await field(page, `<input id=t data-on=input value=abc data-keys="ctrl+a=line-start">`, "t");
   await write(page, "\x1b[=1;1u"); // disambiguate: Control+a is CSI 97;5u
   await take(page);
   await page.keyboard.press("End");
@@ -35,7 +35,7 @@ test("with the kitty keyboard protocol on, a field has its keys, and the program
 });
 
 test("an email field is text while focused, so the actions can place its caret; the program sees its own type", async ({ page }) => {
-  await field(page, `<input id=e type=email data-on=input value="ab@c" data-keys="Control+a=line-start Alt+f=word-forward">`, "e");
+  await field(page, `<input id=e type=email data-on=input value="ab@c" data-keys="ctrl+a=line-start alt+f=word-forward">`, "e");
   await page.keyboard.press("Control+a");
   await page.keyboard.type("x");
   expect(await inputs(page)).toEqual(["xab@c"]);
@@ -48,7 +48,7 @@ test("an email field is text while focused, so the actions can place its caret; 
 });
 
 test("a number field types what a number holds, and edits with its keymap", async ({ page }) => {
-  await field(page, `<input id=n type=number data-on=input value=12 data-keys="Control+a=line-start">`, "n");
+  await field(page, `<input id=n type=number data-on=input value=12 data-keys="ctrl+a=line-start">`, "n");
   await page.keyboard.press("End");
   await page.keyboard.type("x3");
   await page.keyboard.press("Control+a");
@@ -133,7 +133,7 @@ test("a key with Meta that xterm.js sends without it is not the field's: the pro
 });
 
 test("an editing host edits with its keymap: words and lines as SPEC §10.2 has them", async ({ page }) => {
-  await field(page, `<div id=d contenteditable data-keys="Control+w=delete-word-backward Control+a=line-start Control+k=delete-to-line-end">foo bar baz</div>`, "d");
+  await field(page, `<div id=d contenteditable data-keys="ctrl+w=delete-word-backward ctrl+a=line-start ctrl+k=delete-to-line-end">foo bar baz</div>`, "d");
   // An editing host keeps a space at the end as a no-break space.
   const text = () => surface(page, "f").locator("#d").evaluate((el) => el.textContent!.replace(/\u00a0/g, " "));
   await page.keyboard.press("End");

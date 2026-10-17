@@ -15,9 +15,10 @@ The package is an ES module with its TypeScript declarations, for xterm.js
 (`github:neuroplastio/xterm-addon-hotty#<commit>`): npm builds it as it
 installs it (`prepare`).
 
-It implements HOTTY 0.3, whose bodies are msgpack maps (SPEC §3.3). A
-program's query names the versions it speaks (`a=q:n=1:v=0.3`, SPEC §4):
-the addon answers a query that lists 0.3 with its capabilities (`v`,
+It implements HOTTY 0.4, whose bodies are msgpack maps (SPEC §3.3) and
+whose keys are named by myelin key names 0.1 (§10.4). A
+program's query names the versions it speaks (`a=q:n=1:v=0.4`, SPEC §4):
+the addon answers a query that lists 0.4 with its capabilities (`v`,
 `cellcss`, `scale`, `scheme`, `mod`, `features`, `limits`, `net`, `edit`,
 `host`, `version`), and any other with `EVERSION`, so that such a program
 finds no host and falls back to text. A command that asks for a reply (`n`)
@@ -126,10 +127,14 @@ runs programs for whoever connects.
   selection works as usual. A right click leaves focus where the browser
   put it, so the context menu's Copy copies the surface's selection.
 - **A text field's keys** (SPEC §10.2, §10.4) are the program's keymap.
-  A key that types no text (not a character, or a character with Control
-  or Meta) is offered first as pressed, named from the DOM's event, before
-  xterm.js translates it: on a Mac, Option+Left is Alt+ArrowLeft, not the
-  ESC b the program would read. Otherwise the key goes through xterm.js's
+  A key that types no text (not a character, or a character with `ctrl`
+  or `super`) is offered first as pressed, named from the DOM's event by
+  its physical key (`code`: `ctrl+key_w`) and the character it types
+  (`key`: `ctrl+w`), the physical one looked up first, before xterm.js
+  translates it: on a Mac, Option+Left is `alt+arrow_left`, not the ESC b
+  the program would read. A modifier tapped on its own is named on its
+  release (`shift_left`, `shift`), which matters to a key bound to
+  `prefix`. Otherwise the key goes through xterm.js's
   keyboard handling, with what it would send the program kept back, and
   is named from that, so a field sees the key the program would read, in
   the encoding the program enabled. The field's keymap (the default, then each `data-keys` from the root to the
@@ -152,7 +157,8 @@ runs programs for whoever connects.
 - **Keys for the program** (SPEC §10.2). Any focused element has a keymap:
   each `data-keys` from the root to it, over the default only in a text
   field; with nothing focused there is none. A key it binds to `program`
-  (named as in a text field, a key with Shift looked up again without it)
+  (named as in a text field; a key with `shift` that is not a character is
+  looked up again without it)
   goes to the program as xterm.js encoded it, and the browser does nothing
   with it: a select's arrows pick nothing, and a document that scrolls does
   not scroll. Outside a text field the keymap's other bindings do nothing
@@ -267,8 +273,8 @@ runs programs for whoever connects.
   new HottyAddon({ browserKeys: (e) => browserKeys(e) || (e.ctrlKey && e.key === "k") });
   ```
 - **Copying** (SPEC §10.2, §11): a surface's selection is copied by its
-  keymap, `Mod+c` by default (Cmd+C on a Mac, Ctrl+C elsewhere: `Mod` is
-  the platform's, §10.4), and neither the surface nor the
+  keymap, `mod+c` by default (Cmd+C on a Mac, Ctrl+C elsewhere: `mod` is
+  `super` or `ctrl`, the platform's, §10.4), and neither the surface nor the
   program hears the key; a document that binds one to `program` gives it
   to the program while its text is selected. A focused field copies its
   selection, never a password field's. With nothing selected the key goes
@@ -297,7 +303,9 @@ runs programs for whoever connects.
   `items`) nested at most eight deep, and `a=menu` with none leaves it none;
   a body of another shape is `EINVAL`. The addon keeps one for each screen:
   leaving the alternate screen drops its menu, RIS both. `a=menu:show=1`
-  shows the level its `seq` reaches (the items that have a key) at the
+  shows the level its `seq` reaches (the items that have a key, each shown
+  as myelin key names §6 shows it: `←` `→` `↑` `↓`, `⇥` and `⇧⇥`, and
+  every other key as its canonical name) at the
   bottom right of the screen, on whole cells, for the cells and a surface
   alike; a menu sent meanwhile shows the same keys' level of the new one.
   `show=0`, Escape, a key the level does not list (typed to the cells or to
@@ -311,7 +319,9 @@ runs programs for whoever connects.
   enabled}` (the exported `MenuEntry`): `label` is its groups' labels and
   its own joined with `" › "` (`Leader › File › New file`; the name where it
   has no label), and `keys` the keys that reach it, space-separated, with
-  `Mod` read as the platform's (`Control+x f n`; empty when no key does).
+  `mod` read as the platform's, in myelin key names (`ctrl+x f n`; empty
+  when no key does; `displayKey()` shows one as §6 does, with `←` for
+  `arrow_left`).
   `pick(name)` runs one: `command` with `{name}` and no key, or for `copy`
   with text selected on the cells, the selection copied and nothing sent,
   and for `paste` the clipboard's text with it. It returns false, and

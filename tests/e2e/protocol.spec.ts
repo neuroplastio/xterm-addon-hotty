@@ -12,15 +12,15 @@ import { cell, cmd, delta, deltaCmd, open, send, surface, take, write } from "./
 
 test.beforeEach(async ({ page }) => open(page));
 
-test("a=q answers with capabilities: the fields of 0.3, and none of 0.2's", async ({ page }) => {
-  await send(page, { a: "q", v: "0.3" });
+test("a=q answers with capabilities: the fields of 0.4, and none of 0.2's", async ({ page }) => {
+  await send(page, { a: "q", v: "0.4" });
   const { msgs } = await take(page);
   // A query is answered without `n` or `q` (SPEC §3.5).
   expect(msgs).toHaveLength(1);
   expect(msgs[0]!.get("a")).toBe("ok");
   const caps = msgs[0]!.body as Record<string, unknown> & { cellcss: { w: Float; h: Float }; limits: Record<string, number> };
   expect(Object.keys(caps).sort()).toEqual(["cellcss", "edit", "features", "host", "limits", "mod", "net", "scale", "scheme", "v", "version"]);
-  expect(caps.v).toBe("0.3");
+  expect(caps.v).toBe("0.4");
   expect(caps.host).toBe(HOST);
   expect(caps.version).toBe(VERSION);
   // The cell in CSS pixels, and a float even when whole (SPEC §3.3, §4).
@@ -46,7 +46,7 @@ test("the cell in the capabilities is the cell the surfaces are laid out with", 
 });
 
 test("the reference client reads the replies, each field of its type", async ({ page }) => {
-  await send(page, { a: "q", n: "1", v: "0.3" });
+  await send(page, { a: "q", n: "1", v: "0.4" });
   await send(page, { a: "place", s: "gone", c: "1" });
   // A query that names no version, as a 0.1 program's (SPEC §4).
   await send(page, { a: "q", n: "2" });
@@ -70,16 +70,16 @@ for seq in sys.stdin.buffer.read().split(b"\\x1b\\\\"):
 print(json.dumps(out))
 `;
   const out = JSON.parse(execFileSync("python3", ["-c", script], { input: stream, encoding: "utf8" }));
-  expect(out).toEqual([{ v: "0.3", scale: "float", cell: ["float", "float"], features: ["count", "menu"] }, { code: "ENOENT" }, { code: "EVERSION" }]);
+  expect(out).toEqual([{ v: "0.4", scale: "float", cell: ["float", "float"], features: ["count", "menu"] }, { code: "ENOENT" }, { code: "EVERSION" }]);
 });
 
 test("a query lists the versions the program speaks: the addon answers in the highest it shares", async ({ page }) => {
-  await send(page, { a: "q", n: "1", v: "0.2,0.3" });
+  await send(page, { a: "q", n: "1", v: "0.3,0.4" });
   await send(page, { a: "q", n: "2", v: "0.2" });
   const { msgs } = await take(page);
-  expect((msgs[0]!.body as { v: string }).v).toBe("0.3");
+  expect((msgs[0]!.body as { v: string }).v).toBe("0.4");
   expect(msgs[1]!.get("a")).toBe("err");
-  expect(msgs[1]!.body).toEqual({ code: "EVERSION", detail: "0.3" });
+  expect(msgs[1]!.body).toEqual({ code: "EVERSION", detail: "0.4" });
 });
 
 test("r=auto fits the content and reports its rows", async ({ page }) => {
@@ -393,7 +393,7 @@ const cssCell = (page: Page) =>
 test("a font or theme change re-lays out every surface, and a program that asked for the capabilities hears `caps`", async ({ page }) => {
   await send(page, { a: "doc", s: "x", q: "2" }, "<p id=p>x</p>");
   await send(page, { a: "place", s: "x", c: "20", r: "3", q: "2" });
-  await send(page, { a: "q", n: "1", v: "0.3" });
+  await send(page, { a: "q", n: "1", v: "0.4" });
   await take(page);
   const box = page.locator('.hotty-surface[data-surface="x"]');
   const w0 = (await box.boundingBox())!.width;
@@ -418,7 +418,7 @@ test("a font or theme change re-lays out every surface, and a program that asked
   expect((caps as { get(k: string): string | undefined }).get("t")).toBeUndefined();
   // A reply to a later query is what the program now hears, and a change
   // that leaves it as it is sends nothing.
-  await send(page, { a: "q", v: "0.3" });
+  await send(page, { a: "q", v: "0.4" });
   const again = (await take(page)).msgs[0]!.body as { cellcss: { w: Float }; scheme: string };
   expect(again.scheme).toBe("light");
   expect(again.cellcss.w.value).toBe(w);
@@ -442,7 +442,7 @@ test("a browser's zoom keeps the font and sends nothing: the cell moves by devic
   // would, and draws again.
   await send(page, { a: "doc", s: "x", q: "2" }, "<p>x</p>");
   await send(page, { a: "place", s: "x", c: "20", r: "3", q: "2" });
-  await send(page, { a: "q", n: "1", v: "0.3" });
+  await send(page, { a: "q", n: "1", v: "0.4" });
   await take(page);
   await page.evaluate(() => {
     const t = window.hotty.term as unknown as {
@@ -472,7 +472,7 @@ test("a browser's zoom keeps the font and sends nothing: the cell moves by devic
   await expect.poll(() => root.evaluate((el) => getComputedStyle(el).getPropertyValue("--hotty-px"))).toBe("0.5px");
   await page.waitForTimeout(400);
   expect((await take(page)).msgs.filter((m) => m.get("e") === "caps")).toEqual([]);
-  await send(page, { a: "q", v: "0.3" });
+  await send(page, { a: "q", v: "0.4" });
   expect(((await take(page)).msgs[0]!.body as { scale: Float }).scale).toStrictEqual(new Float(2));
 });
 

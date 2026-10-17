@@ -7,7 +7,7 @@ import { readVectors } from "../hotty.ts";
 import { Assembler, text, type Command } from "../../src/wire.ts";
 import { Writer, type Body } from "../../src/msgpack.ts";
 import { find, hides, isGroup, Menus, readMenu, readSeq, shownLevel } from "../../src/menu.ts";
-import { decodeKeys, elementKeymap, Field, parseKey, parseKeymap, resolve, TERMINAL_KEYS } from "../../src/keys.ts";
+import { decodeKeys, elementKeymap, Field, keyText, parseKey, parseKeymap, readKey as readOn, resolve, TERMINAL_KEYS } from "../../src/keys.ts";
 
 const vectors = readVectors();
 
@@ -40,6 +40,8 @@ for (const w of vectors.wire) {
 for (const v of vectors.keys) {
   test(`keys: ${v.name}`, () => {
     if ("input" in v) assert.deepEqual(decodeKeys(v.input), v.keys);
+    else if ("text" in v) assert.equal(keyText(v.key), v.text);
+    else if ("mod" in v) assert.equal(readOn({ mod: v.mod }, v.key), v.canon);
     else assert.equal(parseKey(v.key), v.canon);
   });
 }
@@ -62,6 +64,7 @@ for (const v of vectors.keymap) {
     const m = resolve(v.platform ?? {}, v.multiline, ...(v.terminal_keys ? [TERMINAL_KEYS] : []), ...v.keys);
     for (const [key, want] of Object.entries(v.lookup)) assert.equal(m.lookup(key), want, key);
     for (const [key, want] of Object.entries(v.selects ?? {})) assert.equal(m.selects(key), want, `${key}: selects`);
+    for (const [key, want] of Object.entries(v.binds ?? {})) assert.equal(m.binds(key), want, `${key}: binds`);
   });
 }
 
@@ -90,7 +93,7 @@ for (const v of vectors.edit) {
 // the vectors whole, these steps through the addon.
 
 type MenuStep = { send?: Record<string, string>; body?: unknown; reply?: Record<string, string>; key?: string; menu?: "shown" | "pick"; expect?: unknown; name?: string; events?: unknown[] };
-const readKey = (k: string) => parseKey(k.replace(/^Mod/, "Control"));
+const readKey = (k: string) => readOn({}, k);
 
 for (const v of (vectors.vectors as { name: string; requires?: string | string[]; steps: MenuStep[] }[]).filter((v) => [v.requires ?? []].flat().includes("menu"))) {
   test(`menu: ${v.name}`, () => {

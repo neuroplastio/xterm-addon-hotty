@@ -21,7 +21,7 @@ import type { Body, Value } from "./msgpack.ts";
 import { cspSources, intersect, parse, type Policy } from "./network.ts";
 import { NO_BASE, type Store } from "./resources.ts";
 import { edited, type FieldState, History, type Run, runOf, stateOf, step } from "./history.ts";
-import { chars, elementKeymap, INSERT, inputKeys, isBreak, isSpace, type InputKey, MULTILINE_ACTIONS, type Platform, plan, resolve, ROW_ACTIONS, type Rows, type Text } from "./keys.ts";
+import { chars, elementKeymap, INSERT, inputKeys, isBreak, isSpace, type InputKey, type Keymap, keyText, MULTILINE_ACTIONS, NOT_KEYS, type Platform, plan, pressNames, resolve, ROW_ACTIONS, type Rows, Taps, type Text } from "./keys.ts";
 
 /** A surface's CSP: nothing from the network but what the host grants. The
  * `<base>` is the addon's own (a document's is read, then dropped), so any
@@ -357,6 +357,8 @@ export class Surface {
   private css = "";
   /** Keys whose keydown went to the program, so their keyup follows. */
   private forwarded = new Set<string>();
+  /** Modifier keys tapped (SPEC §10.4), named on their release. */
+  private readonly taps = new Taps();
   /** A run of row moves in a field (SPEC §10.2): the caret it left, and the
    * place along the row it keeps. Anything else that moves the caret ends
    * it. */
@@ -984,7 +986,9 @@ export class Surface {
     const start = sel.getRangeAt(0).startContainer;
     const el = start.nodeType === 1 ? (start as Element) : start.parentElement;
     if (!el) return null;
-    return resolve(this.host.keys.platform, false, ...keysValues(el)).lookup(domKeyName(e)) === "copy" ? text : false;
+    const keymap = resolve(this.host.keys.platform, false, ...keysValues(el));
+    const named = pressNames(e).find((n) => keymap.binds(n));
+    return named !== undefined && keymap.lookup(named) === "copy" ? text : false;
   }
 
   /** Drops the document's selection: the user pressed elsewhere (SPEC §11). */
@@ -1179,6 +1183,7 @@ export class Surface {
   }
 
   private onKey(e: KeyboardEvent) {
+    this.taps.feed(e);
     if (e.isComposing || e.defaultPrevented) return;
     // The program's menu hides on Escape and on a key it does not list.
     this.host.typed(e);
@@ -1257,10 +1262,10 @@ export class Surface {
     if (!values.some((v) => v.includes("program") || v.includes("prefix"))) return false;
     const keymap = elementKeymap(this.host.keys.platform, ...values);
     const data = this.host.encodeKey(e);
-    const keys: InputKey[] = typedKeys(e, data);
-    if (!keys.some((k) => k.key !== null && keymap.program(k.key))) return false;
+    const keys = asked(keymap, e, data);
+    if (!keys.some((k) => keymap.program(k))) return false;
     this.toProgram(e, data);
-    if (keys.some((k) => k.key !== null && keymap.prefix(k.key))) this.prefix = true;
+    if (keys.some((k) => keymap.prefix(k))) this.prefix = true;
     return true;
   }
 
@@ -1279,8 +1284,7 @@ export class Surface {
     if (!values.some((v) => v.includes("scroll-"))) return false;
     const keymap = elementKeymap(this.host.keys.platform, ...values);
     const data = this.host.encodeKey(e);
-    const keys: InputKey[] = typedKeys(e, data);
-    const action = keys.map((k) => (k.key === null ? null : keymap.scroll(k.key))).find((a) => a !== null);
+    const action = asked(keymap, e, data).map((k) => keymap.scroll(k)).find((a) => a !== null);
     const k = action ? SCROLL_ACTIONS[action] : undefined;
     if (!k || !(this.axes & (k.axis === "y" ? 1 : 2))) return false;
     e.preventDefault();
@@ -1327,9 +1331,10 @@ export class Surface {
 
   /**
    * A key in a text field, offered at most twice (SPEC §10.4). A key that
-   * types no text is offered first as pressed, named from the DOM's event,
-   * before xterm.js translates it (on a Mac, Option+ArrowLeft is ESC b to
-   * the program). Otherwise it is named as the program would read it: from
+   * types no text is offered first as pressed, named from the DOM's event
+   * by its physical key and its character (`pressNames`), before xterm.js
+   * translates it (on a Mac, Option+ArrowLeft is ESC b to the program).
+   * Otherwise it is named as the program would read it: from
    * what xterm.js would send the program for it, in the encoding the
    * program enabled, read as SPEC §10.4 says. The field's keymap (the
    * default, then each `data-keys` from the root to the field) says what
@@ -1346,10 +1351,12 @@ export class Surface {
       const use = keymap.lookup(key);
       return (use === "copy" || use === "cut") && !cuts ? null : use;
     };
-    const pressed = typesNoText(e) ? domKeyName(e) : null;
-    const first = pressed !== null && lookup(pressed) !== null;
+    // The first name of the press that the keymap binds decides alone: the
+    // physical key before the character (SPEC §10.4).
+    const named = typesNoText(e) ? pressNames(e).find((n) => keymap.binds(n)) : undefined;
+    const first = named !== undefined && lookup(named) !== null;
     const data = first ? "" : this.host.encodeKey(e);
-    const keys: InputKey[] = first ? [{ key: pressed, data: "" }] : typedKeys(e, data);
+    const keys: InputKey[] = first ? [{ key: named!, data: "" }] : named !== undefined ? [{ key: named, data: data ?? "" }] : typedKeys(e, data);
     const uses = keys.map((k) => (k.key === null ? null : lookup(k.key)));
     // A move with Shift selects (§10.2).
     const extend = keys.map((k) => k.key !== null && keymap.selects(k.key));
@@ -1369,7 +1376,7 @@ export class Surface {
       // A character, typed as the browser types it (input methods, the
       // undo history); Enter that submits, as the browser submits a form
       // with it (the default button's click, and `change` first).
-      const typed = use === INSERT && !(number && !NUMBER_CHARS.test(keyText(key)));
+      const typed = use === INSERT && !(number && !NUMBER_CHARS.test(keyText(key) ?? ""));
       const enter = use === "submit" && e.key === "Enter" && el.localName === "input";
       // The browser's own paste, where its key is the one pressed.
       const paste = use === "paste" && first && (mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.altKey;
@@ -1385,8 +1392,8 @@ export class Surface {
       if (use === null) {
         if (k.data) this.host.sendKey(k.data);
       } else if (use === INSERT) {
-        const text = keyText(k.key!);
-        if (!number || NUMBER_CHARS.test(text)) this.edit(el, multiline, { kind: "type", text });
+        const text = keyText(k.key!) ?? "";
+        if (text && (!number || NUMBER_CHARS.test(text))) this.edit(el, multiline, { kind: "type", text });
       } else if (use === "submit") {
         this.goal = null;
         submitFrom(el);
@@ -1682,9 +1689,21 @@ export class Surface {
     this.host.key(e);
   }
 
+  /** A modifier key tapped, named as its sided key and as the modifier key
+   * (SPEC §10.4): one bound to `prefix` begins one (§10.5). The program
+   * has the key as the terminal sends it, like any other. */
+  private tapped(names: string[]) {
+    if (!this.keyboard || this.prefix) return;
+    const keymap = elementKeymap(this.host.keys.platform, ...keysValues(this.focusedControl() ?? this.doc.body));
+    const named = names.find((n) => keymap.binds(n));
+    if (named !== undefined && keymap.prefix(named)) this.prefix = true;
+  }
+
   /** The release of a key the program had: the program hears it too, if it
    *  asked the terminal for releases (SPEC §10.3). */
   private onKeyUp(e: KeyboardEvent) {
+    const tap = this.taps.feed(e);
+    if (tap.length) this.tapped(tap);
     if (!this.forwarded.delete(e.code)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -2675,8 +2694,8 @@ function ancestry(el: Element): Element[] {
   return out;
 }
 
-/** The modifier keys held, as bits (SPEC §9): 1 Shift, 2 Alt, 4 Control, 8
- * Meta. Undefined when none is, since a body leaves the field out. */
+/** The modifier keys held, as bits (SPEC §9): 1 shift, 2 alt, 4 ctrl, 8
+ * super. Undefined when none is, since a body leaves the field out. */
 function modsOf(e: { shiftKey: boolean; ctrlKey: boolean; altKey: boolean; metaKey: boolean }): number | undefined {
   const bits = (e.shiftKey ? 1 : 0) | (e.altKey ? 2 : 0) | (e.ctrlKey ? 4 : 0) | (e.metaKey ? 8 : 0);
   return bits || undefined;
@@ -2783,12 +2802,6 @@ function keysValues(el: Element): string[] {
   return values;
 }
 
-/** The text a character key types (`Space` is a space). */
-function keyText(key: string): string {
-  const v = key.endsWith("++") ? "+" : key.slice(key.lastIndexOf("+") + 1);
-  return v === "Space" ? " " : v;
-}
-
 /** A key that types no text (SPEC §10.4): one that is not a character, or a
  * character with Control or Meta. A field is offered it as pressed first;
  * typing comes only as the program would read it. */
@@ -2798,32 +2811,23 @@ function typesNoText(e: KeyboardEvent): boolean {
   return !NOT_KEYS.has(e.key);
 }
 
-/** Key values that are no key a field is offered: modifiers, dead keys, an
- * input method's. */
-const NOT_KEYS = new Set(["Unidentified", "Dead", "Process", "Compose", "Shift", "Control", "Alt", "AltGraph", "Meta", "OS", "Super", "Hyper", "Fn", "FnLock", "CapsLock", "NumLock", "ScrollLock", "Symbol", "SymbolLock"]);
-
-/** A pressed key's name (SPEC §10.4), or null for a modifier on its own,
- * a dead key or an input method's: no key. */
-export function pressedName(e: KeyboardEvent): string | null {
-  return NOT_KEYS.has(e.key) ? null : domKeyName(e);
-}
-
 /** A key as the program would read it (SPEC §10.4), from what xterm.js
  * sends for it (`data`; null when it cannot say, and the key is named from
- * the event). xterm.js drops a Meta it has no encoding for, so Meta+Backspace
- * is DEL: such a key is none the surface reads, and goes on as it came. */
+ * the event, as a character where it is one). xterm.js drops a Meta it has
+ * no encoding for, so Meta+Backspace is DEL: such a key is none the surface
+ * reads, and goes on as it came. */
 function typedKeys(e: KeyboardEvent, data: string | null): InputKey[] {
-  if (data === null) return [{ key: domKeyName(e), data: "" }];
+  if (data === null) return [{ key: pressNames(e).at(-1) ?? null, data: "" }];
   const keys = inputKeys(data);
-  return e.metaKey ? keys.map((k) => (k.key !== null && !/(^|\+)Meta\+/.test(k.key) ? { ...k, key: null } : k)) : keys;
+  return e.metaKey ? keys.map((k) => (k.key !== null && !/(^|\+)super\+/.test(k.key) ? { ...k, key: null } : k)) : keys;
 }
 
-/** A key's name from the DOM's event (SPEC §10.4): the modifiers, then the
- * key's value, Shift left out before a character. */
-function domKeyName(e: KeyboardEvent): string {
-  const char = [...e.key].length === 1;
-  const mods = [e.ctrlKey && "Control", e.altKey && "Alt", e.metaKey && "Meta", e.shiftKey && !char && "Shift"].filter(Boolean);
-  return [...mods, e.key === " " ? "Space" : e.key].join("+");
+/** The names to ask an element's keymap about a key (SPEC §10.4): the first
+ * name as pressed that it binds, alone, for a key that types no text;
+ * otherwise the keys as the program would read it. */
+function asked(keymap: Keymap, e: KeyboardEvent, data: string | null): string[] {
+  const named = typesNoText(e) ? pressNames(e).find((n) => keymap.binds(n)) : undefined;
+  return named !== undefined ? [named] : typedKeys(e, data).flatMap((k) => (k.key === null ? [] : [k.key]));
 }
 
 /**
