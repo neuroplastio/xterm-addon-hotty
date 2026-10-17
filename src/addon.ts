@@ -22,7 +22,7 @@ import { Store } from "./resources.ts";
 import { displayKey, EDIT_ACTIONS, editAction, editOf, type Platform, pressNames, readKey } from "./keys.ts";
 import { entries, find, hides, isGroup, type Menu, type MenuEntry, Menus, readMenu, readSeq, shownLevel } from "./menu.ts";
 import { type KeySettings, type Route, type Scheme, Surface, type SurfaceHost } from "./surface.ts";
-import { Touch } from "./touch.ts";
+import { areaAt, areaDrags, LONG_PRESS_MS, readTouchAreas, Touch, type TouchArea, type TouchBegin } from "./touch.ts";
 import { HOST, VERSION } from "./version.ts";
 import { Assembler, Control, encode, MAX_COMMAND, OSC, text, type Command, type Decoded } from "./wire.ts";
 
@@ -46,9 +46,10 @@ export interface HottyOptions {
   /**
    * Touch on the whole terminal (SPEC §9): a drag scrolls, over the cells
    * and the surfaces alike, and a tap on the cells is a click for the
-   * program. This replaces xterm.js's own touch handling, which in 6.1 sends
-   * wheel reports with no position (NaN) and turns taps into nothing.
-   * Default true.
+   * program. In the cells a program names with `a=touch` (§9.6), a drag
+   * the way one drags is the program's mouse instead. This replaces
+   * xterm.js's own touch handling, which in 6.1 sends wheel reports with no
+   * position (NaN) and turns taps into nothing. Default true.
    */
   touch?: boolean;
   /**
@@ -168,6 +169,14 @@ type Reply = { extra?: [string, string][]; body?: Body };
 /** Where xterm.js sends what the program reads (its core service). */
 type DataSink = { triggerDataEvent(data: string, wasUserInput?: boolean): void };
 
+/** The modifier keys an event has held. */
+type Keys = Pick<MouseEvent, "altKey" | "ctrlKey" | "shiftKey" | "metaKey">;
+const keysOf = (e: Keys): Keys => ({ altKey: e.altKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, metaKey: e.metaKey });
+
+/** What `pressCells` replays of a mouse event: a surface's, or a finger's
+ * as the mouse (SPEC §9.6). */
+type MouseLike = Keys & Pick<MouseEvent, "screenX" | "screenY" | "buttons" | "detail">;
+
 export class HottyAddon implements ITerminalAddon {
   private term!: Terminal;
   private readonly opts: Required<Pick<HottyOptions, "maxSurfaces" | "resourceQuota">> & HottyOptions;
@@ -222,6 +231,9 @@ export class HottyAddon implements ITerminalAddon {
   private encoding = false;
   /** The program's menu on each screen (SPEC §10.7). */
   private readonly menus = new Menus();
+  /** The cells where a finger drags as the mouse, on each screen (SPEC
+   * §9.6). */
+  private readonly touchAreas: Record<"normal" | "alternate", TouchArea[]> = { normal: [], alternate: [] };
   /** The keys of the level shown (`a=menu:show=1`), null when none is, and
    * where it shows. */
   private shownSeq: string[] | null = null;
@@ -277,6 +289,8 @@ export class HottyAddon implements ITerminalAddon {
         this.reset();
         this.taken.normal.clear();
         this.taken.alternate.clear();
+        this.touchAreas.normal = [];
+        this.touchAreas.alternate = [];
         this.menus.clear();
         this.shownSeq = null;
         this.drawMenu();
@@ -531,6 +545,11 @@ export class HottyAddon implements ITerminalAddon {
         this.taken[this.term.buffer.active.type] = new Set(take);
         return;
       }
+      case "touch":
+        // The cells where a finger drags as the mouse (SPEC §9.6), on this
+        // screen; no body leaves none. A drag under way goes on.
+        this.touchAreas[this.term.buffer.active.type] = readTouchAreas(cmd.payload);
+        return;
       case "menu": {
         // The program's menu (SPEC §10.7): set or left none, or a level of
         // it shown or hidden.
@@ -717,9 +736,13 @@ export class HottyAddon implements ITerminalAddon {
       // Surfaces placed on the alternate screen die with it (PROTOCOL §4).
       if (p.kind === "alt" && type === "normal") this.remove(p.surface.name);
     }
-    // Leaving the alternate screen drops the commands taken and the menu
-    // there, and any change hides the level shown (SPEC §10.6, §10.7).
-    if (type === "normal") this.taken.alternate.clear();
+    // Leaving the alternate screen drops the commands taken, the touch
+    // areas and the menu there, and any change hides the level shown (SPEC
+    // §9.6, §10.6, §10.7).
+    if (type === "normal") {
+      this.taken.alternate.clear();
+      this.touchAreas.alternate = [];
+    }
     this.menus.change(type);
     this.shownSeq = null;
     this.drawMenu();
@@ -955,9 +978,83 @@ export class HottyAddon implements ITerminalAddon {
           el.ownerDocument.dispatchEvent(new MouseEvent("mouseup", { ...at, buttons: 0 }));
         },
         toPage: (x, y) => [x, y],
+        claim: (dx, dy, e, begin) => this.claimCells(dx, dy, e, begin),
+        dragMove: (x, y, e) => this.fingerMouse("move", x, y, e),
+        dragEnd: (x, y, e) => this.fingerMouse("up", x, y, e),
+        dragCancel: () => {
+          const f = this.finger;
+          if (f) this.fingerMouse("up", f.x, f.y, f.keys);
+        },
       },
       true,
     );
+  }
+
+  /** Where the finger of a drag that is the program's mouse (SPEC §9.6)
+   * last was, in the page, with the keys held then. */
+  private finger: { x: number; y: number; keys: Keys } | null = null;
+
+  /**
+   * A touch on the cells that has just gone past the slop, by dx, dy so far
+   * (SPEC §9.6). One that began in an area the program named, without Alt
+   * and not held as a long press, whose first move goes a way the area
+   * drags, is the mouse's primary button: pressed on the cell where it
+   * began, then moved to the finger's cell if that is another. Every other
+   * touch scrolls, as on any cell.
+   */
+  private claimCells(dx: number, dy: number, e: TouchEvent, begin: TouchBegin): true | "drag" {
+    if (begin.altKey || e.timeStamp - begin.time >= LONG_PRESS_MS) return true;
+    const area = this.areaUnder(begin.x, begin.y);
+    if (!area || !areaDrags(area, dx, dy)) return true;
+    // The cells' Touch measures in the page: the finger is dx, dy back
+    // from where it began.
+    const [x, y] = [begin.x - dx, begin.y - dy];
+    this.fingerMouse("down", begin.x, begin.y, { ...keysOf(e), altKey: false });
+    const [c0, r0] = this.screenCell(begin.x, begin.y, true);
+    const [c, r] = this.screenCell(x, y, true);
+    if (c !== c0 || r !== r0) this.fingerMouse("move", x, y, e);
+    return "drag";
+  }
+
+  /**
+   * The area the program named (SPEC §9.6) under a point in the page, where
+   * one applies: while the program has xterm.js report the mouse's buttons
+   * (without Alt: `mouseEventsRequireAlt` leaves a finger nothing), and the
+   * terminal shows the screen, not its scrollback.
+   */
+  private areaUnder(x: number, y: number): TouchArea | null {
+    const t = this.term;
+    const buf = t.buffer.active;
+    if (t.modes.mouseTrackingMode === "none" || t.options.mouseEventsRequireAlt || buf.viewportY !== buf.baseY) return null;
+    const [col, row] = this.screenCell(x, y, false);
+    if (col < 0 || row < 0 || col >= t.cols || row >= t.rows) return null;
+    return areaAt(this.touchAreas[buf.type], col, row);
+  }
+
+  /** The cell of the screen at a point in the page, from 0 at its top
+   * left; `clamp`ed onto the screen as xterm.js reports a mouse past its
+   * edge. */
+  private screenCell(x: number, y: number, clamp: boolean): [number, number] {
+    const screen = this.term.element?.querySelector(".xterm-screen")?.getBoundingClientRect();
+    const { cellW, cellH } = this.cell();
+    const col = Math.floor((x - (screen?.left ?? 0)) / cellW);
+    const row = Math.floor((y - (screen?.top ?? 0)) / cellH);
+    if (!clamp) return [col, row];
+    return [Math.min(Math.max(col, 0), this.term.cols - 1), Math.min(Math.max(row, 0), this.term.rows - 1)];
+  }
+
+  /**
+   * The finger of a drag in an area (SPEC §9.6) as the mouse's primary
+   * button, pressed, moved or released at a point in the page: replayed on
+   * the cells (`pressCells`), so that xterm.js reports it as a mouse's, in
+   * the program's mode and encoding, with the keys held. Never with Shift,
+   * which on a press makes xterm.js select instead of reporting (but on a
+   * Mac), and nothing is selected.
+   */
+  private fingerMouse(kind: "down" | "move" | "up", x: number, y: number, keys: Keys) {
+    const held = { altKey: keys.altKey, ctrlKey: keys.ctrlKey, metaKey: keys.metaKey, shiftKey: false };
+    this.finger = kind === "up" ? null : { x, y, keys: held };
+    this.pressCells(kind, { ...held, screenX: 0, screenY: 0, buttons: kind === "up" ? 0 : 1, detail: kind === "move" ? 0 : 1 }, x, y);
   }
 
   /** A wheel, at a point in the page, replayed on the terminal's screen,
@@ -982,15 +1079,16 @@ export class HottyAddon implements ITerminalAddon {
 
   /**
    * A press with Alt held on a surface, a move of its gesture, or its
-   * release (SPEC §9.2), replayed on the cells beneath, where xterm.js
-   * handles them as its own mouse: a report to the program, with Alt, or
-   * its selection (rectangular, with Alt). The press goes to the screen,
-   * where xterm.js listens for presses; the moves and the release to its
+   * release (SPEC §9.2), or a finger's as the mouse (§9.6, `fingerMouse`),
+   * replayed on the cells beneath, where xterm.js handles them as its own
+   * mouse: a report to the program, with Alt, or its selection
+   * (rectangular, with Alt). The press goes to the screen, where xterm.js
+   * listens for presses; the moves and the release to its
    * document, where it listens while a button is held. The keyboard goes
    * back to the terminal first, as on a click on the cells (§10.1): a
    * surface that had it sends `blur`.
    */
-  private pressCells(kind: "down" | "move" | "up", e: MouseEvent, x: number, y: number) {
+  private pressCells(kind: "down" | "move" | "up", e: MouseLike, x: number, y: number) {
     const el = this.term.element;
     if (!el) return;
     const init: MouseEventInit = {

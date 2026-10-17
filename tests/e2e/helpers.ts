@@ -104,3 +104,41 @@ export function sansArea(detail: unknown): unknown {
   }
   return Object.keys(rest).length ? rest : null;
 }
+
+/** The centre of the screen's cell `[c, r]`, from 0 at its top left, in the
+ * page: where a touch step without `s` touches (SPEC §9.6). */
+export async function screenPoint(page: Page, at: [number, number]): Promise<[number, number]> {
+  return page.evaluate((at) => {
+    const r = document.querySelector(".xterm-screen")!.getBoundingClientRect();
+    const t = window.hotty.term;
+    const [w, h] = [r.width / t.cols, r.height / t.rows];
+    return [r.left + (at[0] + 0.5) * w, r.top + (at[1] + 0.5) * h];
+  }, at);
+}
+
+/** A report of the mouse's primary button, on a cell of the screen from 0
+ * (SPEC §9.6, conformance/README.md). */
+export type Report = [kind: "down" | "move" | "up", c: number, r: number];
+
+/**
+ * What the terminal reported of the mouse's primary button (SPEC §9.6), in
+ * what the program read: SGR reports (`CSI < b ; x ; y M`, `m` a release)
+ * whose button is the first, with a held button's motion (32) or not,
+ * whatever modifiers (4, 8, 16) they carry. A wheel's (64) and another
+ * button's are not. Cells count from 0 here, from 1 in a report.
+ */
+export function mouseReports(raw: string): Report[] {
+  const out: Report[] = [];
+  for (const [, b, x, y, f] of raw.matchAll(/\x1b\[<(\d+);(\d+);(\d+)([Mm])/g)) {
+    const button = Number(b);
+    if ((button & ~(4 | 8 | 16 | 32)) !== 0) continue;
+    out.push([f === "m" ? "up" : button & 32 ? "move" : "down", Number(x) - 1, Number(y) - 1]);
+  }
+  return out;
+}
+
+/** Reports as the vectors compare them (conformance/README.md): of each run
+ * of moves, the last. */
+export function collapseMoves(reports: Report[]): Report[] {
+  return reports.filter((r, i) => r[0] !== "move" || reports[i + 1]?.[0] !== "move");
+}

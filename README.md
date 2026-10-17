@@ -94,6 +94,7 @@ runs programs for whoever connects.
 | keys | `src/keys.ts` | SPEC §10.2, §10.4: key names, the keys in what the terminal sends, keymaps (`data-keys`), the `prefix` action, and the actions on a field's text |
 | deltas | `src/delta.ts` | SPEC §6, §6.1: a delta body checked whole, then its ops and morph; a failure names the first failing op (`i`) |
 | menus | `src/menu.ts` | SPEC §10.7: reading a program's `a=menu` body, the level a sequence reaches, and the entries a page's own palette lists |
+| touch | `src/touch.ts` | SPEC §9, §9.1, §9.6: a finger's drag as wheel events and its fling, a tap, a drag a surface claims, and reading the areas a program names in the cells |
 | reveal and view | `src/view.ts` | SPEC §6.1, §9.5: the boxes that hold an element, scrolling it into view in them, and whether some of it is shown |
 | resources | `src/resources.ts`, `src/resolver.ts` | `cid:` as `blob:` URLs; sanitizing everything before it reaches a live document |
 | host stylesheet | `src/hostcss.ts` | §8 from `term.options` (theme, font, cell size), in a cascade layer: the palette, `--hotty-accent`, and controls, focus, links and selection in the terminal's colours |
@@ -328,6 +329,24 @@ runs programs for whoever connects.
   sends nothing, for a disabled item, an unknown name, or no menu. Both
   follow the active screen and the last `a=menu`, so a page reads
   `menuItems()` each time its palette opens.
+- **Touch in the cells** (SPEC §9.6): `a=touch` names cells of the screen
+  where a finger drags, `{"areas": [{"c", "r", "w", "h", "drag"}]}`, kept
+  per screen as `a=edit` is: leaving the alternate screen drops its areas,
+  RIS both, and `a=touch` with no body leaves none. While the program reads
+  the mouse (`term.modes.mouseTrackingMode` is not `none`) and the terminal
+  shows the screen, not its scrollback, a touch that begins in an area
+  without Alt, and whose first move past 8 px goes a way the area drags (the
+  larger delta; a tie pans), is the mouse's primary button. The addon
+  replays it on the cells as a mouse's press, moves and release, as it
+  replays a press with Alt on a surface, so xterm.js reports them in the
+  program's own mode and encoding, with Ctrl, Alt and Meta as held, never
+  Shift (with a press, xterm.js would select instead). A tap there is a
+  click, as on any cell; a long press never drags; a second finger, or a
+  touch the browser loses, releases on the last cell. Areas do nothing with
+  `touch: false`, with `scroll: "page"`, where the cells' touches are the
+  browser's, or with xterm.js's `mouseEventsRequireAlt`. In Chromium, a
+  touch that lands within about 10 px of a surface is the surface's: the
+  browser's touch adjustment gives it to the frame.
 - **Commands in the cells** (SPEC §10.6): `a=edit` is kept per screen, and
   a key of a command taken goes to the program as `command`, after the
   cells' selection is copied (`copyKeys`). A paste brings the text of the

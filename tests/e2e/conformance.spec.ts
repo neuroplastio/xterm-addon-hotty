@@ -5,7 +5,7 @@ import { expect, test, type CDPSession, type Page } from "@playwright/test";
 import { readVectors } from "../hotty.ts";
 import { Writer, type Body } from "../../src/msgpack.ts";
 import { mistyped, show, type Type } from "../msgpack.ts";
-import { cmd, open, take, write, type Msg } from "./helpers.ts";
+import { cmd, collapseMoves, mouseReports, open, screenPoint, take, write, type Msg, type Report } from "./helpers.ts";
 
 type Expected = Record<string, unknown>;
 type Step = {
@@ -27,6 +27,10 @@ type Step = {
   name?: string;
   count?: number;
   terminal?: boolean;
+  /** What the terminal reported of the mouse's primary button (§9.6). */
+  mouse?: Report[];
+  /** Bytes the program writes to the terminal, not HOTTY's. */
+  write?: string;
   events?: Expected[];
 };
 const vectors = readVectors() as {
@@ -155,7 +159,8 @@ class Mouse {
  * The vectors' finger (touch steps), in the page's coordinates, through
  * CDP: Chromium only. A move is one move, straight to its cell: it passes
  * the slop in its own direction (conformance README), and an element it
- * reaches is reached at that cell, as a pointer step's move reaches it.
+ * reaches is reached at that cell, as a pointer step's move reaches it. A
+ * step without `s` touches the screen's cells (SPEC §9.6).
  */
 class Finger {
   x = 0;
@@ -171,11 +176,12 @@ class Finger {
     this.cdp ??= await this.page.context().newCDPSession(this.page);
     const cdp = this.cdp;
     const send = (type: string, points: { x: number; y: number }[]) => cdp.send("Input.dispatchTouchEvent", { type: type as "touchStart", touchPoints: points, modifiers });
+    const at = () => (step.s === undefined ? screenPoint(this.page, step.at as [number, number]) : point(this.page, step.s, step.at!));
     if (step.touch === "down") {
-      [this.x, this.y] = await point(this.page, step.s!, step.at!);
+      [this.x, this.y] = await at();
       await send("touchStart", [{ x: this.x, y: this.y }]);
     } else if (step.touch === "move") {
-      [this.x, this.y] = await point(this.page, step.s!, step.at!);
+      [this.x, this.y] = await at();
       await send("touchMove", [{ x: this.x, y: this.y }]);
     } else {
       await send("touchEnd", []);
@@ -259,11 +265,12 @@ async function point(page: Page, s: string, at: string | [number, number]): Prom
 // What the vectors may require (conformance/README.md) that this addon has:
 // the features `count` and `menu` (SPEC §4), all a 0.4 host does (`scroll`,
 // `steps`, `drop`, `view`), a history in its fields (`undo`), edit commands
-// (`commands`, §10.6), and `touch` (§9.1, §16) where this runner can touch
-// it, in Chromium, through CDP: Playwright gives Firefox no touch moves. It
-// does not let the pointer through surfaces (§9.3, `passthrough`), and
-// sends no `hover` (§9.4).
-const reported = (browser: string) => new Set<string>(["scroll", "steps", "drop", "view", "count", "menu", "undo", "commands", "pressed", ...(browser === "chromium" ? ["touch"] : [])]);
+// (`commands`, §10.6), a terminal that reports the mouse (`mouse`, §9.6),
+// and `touch` (§9.1, §16) where this runner can touch it, in Chromium,
+// through CDP: Playwright gives Firefox no touch moves. It does not let the
+// pointer through surfaces (§9.3, `passthrough`), and sends no `hover`
+// (§9.4).
+const reported = (browser: string) => new Set<string>(["scroll", "steps", "drop", "view", "count", "menu", "undo", "commands", "pressed", "mouse", ...(browser === "chromium" ? ["touch"] : [])]);
 
 const needs = (v: { requires?: string | string[] }) => (v.requires === undefined ? [] : [v.requires].flat());
 
@@ -294,8 +301,10 @@ function define(vector: { name: string; requires?: string | string[]; steps: Ste
         await terminalWheels(page);
         await finger.step(step);
         await frames(page, 2);
-        checkEvents(where, (await take(page)).msgs, step.events);
+        const { msgs, raw } = await take(page);
+        checkEvents(where, msgs, step.events);
         if (step.terminal !== undefined) expect((await terminalWheels(page)) > 0, `${where}: the terminal got the touch`).toBe(step.terminal);
+        if (step.mouse !== undefined) expect(collapseMoves(mouseReports(raw)), `${where}: the mouse reported (${JSON.stringify(raw)})`).toEqual(collapseMoves(step.mouse));
       } else if (step.pointer) {
         await take(page);
         await terminalWheels(page);
@@ -350,6 +359,10 @@ function define(vector: { name: string; requires?: string | string[]; steps: Ste
           } else if (v === null) expect(k === "code" || k === "detail" ? body[k] : got.get(k), `${where}: ${k} is absent`).toBeUndefined();
           else expect(k === "code" || k === "detail" ? body[k] : got.get(k), `${where}: ${k}`).toBe(v);
         }
+      } else if (step.write !== undefined) {
+        // The program's own bytes (§9.6: mouse reporting, the alternate
+        // screen), parsed before the next step.
+        await write(page, step.write);
       } else if (step.menu === "shown") {
         // The level the host shows (SPEC §10.7), as the program sent it.
         const got = await page.evaluate(() => (window.hotty as unknown as { addon: { shownMenu(): unknown } }).addon.shownMenu());

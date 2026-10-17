@@ -4,7 +4,10 @@
 // its drags into wheel events at the finger, for the terminal. On the cells it
 // also turns a tap into a click. On a surface, a drag its host claims as one
 // (SPEC §9.1: an element whose touch-action allows no pan its way) is the
-// host's to the lift instead.
+// host's to the lift instead, and on the cells one in an area the program
+// named (§9.6), which the host gives the program as its mouse.
+
+import { read } from "./msgpack.ts";
 
 /** How far a touch moves, in CSS pixels, before it is a drag, not a tap. */
 const DRAG_SLOP = 8;
@@ -33,6 +36,69 @@ export function panBlocked(pans: { x: boolean; y: boolean }, dx: number, dy: num
   const ax = Math.abs(dx), ay = Math.abs(dy);
   return ax > ay ? !pans.x : ay > ax ? !pans.y : false;
 }
+
+/** Cells of the screen where a finger drags as the mouse (SPEC §9.6):
+ * columns `c` to `c + w - 1` and rows `r` to `r + h - 1`, from 0 at the
+ * screen's top left, and the ways it drags. */
+export interface TouchArea {
+  c: number;
+  r: number;
+  w: number;
+  h: number;
+  x: boolean;
+  y: boolean;
+}
+
+/** The most areas one `a=touch` names (SPEC §9.6). */
+export const MAX_TOUCH_AREAS = 256;
+
+/**
+ * The areas of an `a=touch` body (SPEC §9.6): `{"areas": [{"c", "r", "w",
+ * "h", "drag"}]}`, none for no body. Throws on a body that does not decode,
+ * or is no such map: no `areas`, an area without a field or with one of
+ * another type, `c` or `r` under 0, `w` or `h` under 1, a `drag` that is
+ * not `x`, `y` or `xy`, or more than `MAX_TOUCH_AREAS`. Fields it does not
+ * know are left alone.
+ */
+export function readTouchAreas(bytes: Uint8Array): TouchArea[] {
+  if (!bytes.length) return [];
+  const v = read(bytes);
+  if (!isMap(v)) throw new Error("a=touch's body is a map");
+  const areas = v.areas;
+  if (!Array.isArray(areas)) throw new Error("areas are an array");
+  if (areas.length > MAX_TOUCH_AREAS) throw new Error(`at most ${MAX_TOUCH_AREAS} areas`);
+  return areas.map((a): TouchArea => {
+    if (!isMap(a)) throw new Error("an area is a map");
+    const int = (k: string, least: number): number => {
+      const n = a[k];
+      if (typeof n !== "number" || !Number.isInteger(n)) throw new Error(`an area's ${k} is an int`);
+      if (n < least) throw new Error(`an area's ${k} is at least ${least}`);
+      return n;
+    };
+    const drag = a.drag;
+    if (drag !== "x" && drag !== "y" && drag !== "xy") throw new Error("an area's drag is x, y or xy");
+    return { c: int("c", 0), r: int("r", 0), w: int("w", 1), h: int("h", 1), x: drag !== "y", y: drag !== "x" };
+  });
+}
+
+/** The area that decides at a cell of the screen (SPEC §9.6): of those that
+ * cover it, the last listed; null where none does. */
+export function areaAt(areas: readonly TouchArea[], col: number, row: number): TouchArea | null {
+  for (let i = areas.length - 1; i >= 0; i--) {
+    const a = areas[i]!;
+    if (col >= a.c && col - a.c < a.w && row >= a.r && row - a.r < a.h) return a;
+  }
+  return null;
+}
+
+/** Whether a touch whose first move past the slop is dx, dy goes a way the
+ * area drags (SPEC §9.6): as on a surface (§9.1), its way is the larger
+ * delta, and a tie counts as a pan. */
+export function areaDrags(area: TouchArea, dx: number, dy: number): boolean {
+  return panBlocked({ x: !area.x, y: !area.y }, dx, dy);
+}
+
+const isMap = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x) && Object.getPrototypeOf(x) === null;
 
 export interface TouchHost {
   /** Scroll by dx, dy pixels, at a point in the page (a wheel event for the
