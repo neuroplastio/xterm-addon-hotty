@@ -21,7 +21,7 @@ import type { Body, Value } from "./msgpack.ts";
 import { cspSources, intersect, parse, type Policy } from "./network.ts";
 import { NO_BASE, type Store } from "./resources.ts";
 import { edited, type FieldState, History, type Run, runOf, stateOf, step } from "./history.ts";
-import { chars, elementKeymap, INSERT, inputKeys, isBreak, isSpace, type InputKey, type Keymap, keyText, MULTILINE_ACTIONS, NOT_KEYS, type Platform, plan, pressNames, resolve, ROW_ACTIONS, type Rows, Taps, type Text } from "./keys.ts";
+import { chars, elementKeymap, INSERT, inputKeys, isBreak, isSpace, type InputKey, type Keymap, keyText, MULTILINE_ACTIONS, NOT_KEYS, type Platform, plan, pressNames, resolve, ROW_ACTIONS, type Rows, type Text } from "./keys.ts";
 
 /** A surface's CSP: nothing from the network but what the host grants. The
  * `<base>` is the addon's own (a document's is read, then dropped), so any
@@ -357,8 +357,6 @@ export class Surface {
   private css = "";
   /** Keys whose keydown went to the program, so their keyup follows. */
   private forwarded = new Set<string>();
-  /** Modifier keys tapped (SPEC §10.4), named on their release. */
-  private readonly taps = new Taps();
   /** A run of row moves in a field (SPEC §10.2): the caret it left, and the
    * place along the row it keeps. Anything else that moves the caret ends
    * it. */
@@ -1183,7 +1181,6 @@ export class Surface {
   }
 
   private onKey(e: KeyboardEvent) {
-    this.taps.feed(e);
     if (e.isComposing || e.defaultPrevented) return;
     // The program's menu hides on Escape and on a key it does not list.
     this.host.typed(e);
@@ -1689,21 +1686,9 @@ export class Surface {
     this.host.key(e);
   }
 
-  /** A modifier key tapped, named as its sided key and as the modifier key
-   * (SPEC §10.4): one bound to `prefix` begins one (§10.5). The program
-   * has the key as the terminal sends it, like any other. */
-  private tapped(names: string[]) {
-    if (!this.keyboard || this.prefix) return;
-    const keymap = elementKeymap(this.host.keys.platform, ...keysValues(this.focusedControl() ?? this.doc.body));
-    const named = names.find((n) => keymap.binds(n));
-    if (named !== undefined && keymap.prefix(named)) this.prefix = true;
-  }
-
   /** The release of a key the program had: the program hears it too, if it
    *  asked the terminal for releases (SPEC §10.3). */
   private onKeyUp(e: KeyboardEvent) {
-    const tap = this.taps.feed(e);
-    if (tap.length) this.tapped(tap);
     if (!this.forwarded.delete(e.code)) return;
     e.preventDefault();
     e.stopPropagation();
