@@ -188,10 +188,23 @@ export class HottyAddon implements ITerminalAddon {
   private readonly writer = new Writer();
   private readonly disposables: IDisposable[] = [];
   private layer: HTMLDivElement | null = null;
-  /** The terminal's element, whose presses drop the surfaces' selections. */
+  /** The terminal's element, whose presses drop the surfaces' selections,
+   * and whose focus moves an `a=focus` that waits (`watch`). */
   private pressed: HTMLElement | null = null;
   private readonly dropSelections = () => {
     for (const s of this.surfaces.values()) s.clearSelection();
+  };
+  /** A press on the cells drops the surfaces' selections. A click (SPEC
+   * §10.1: the primary button, without Alt) also ends an `a=focus` that
+   * waits: the keyboard comes back to the terminal. */
+  private readonly cellsPressed = (e: MouseEvent) => {
+    this.dropSelections();
+    if (e.button === 0 && !e.altKey) for (const s of this.surfaces.values()) s.dropWait(true);
+  };
+  /** Focus comes into the terminal, and not by a click (Tab, or the page
+   * focusing it): an `a=focus` that waited moves now. */
+  private readonly focusIn = () => {
+    for (const s of this.surfaces.values()) s.takeFocus();
   };
   /** Commands held while synchronized output is on (PROTOCOL §5). */
   private held: Command[] = [];
@@ -341,8 +354,7 @@ export class HottyAddon implements ITerminalAddon {
     this.disposables.length = 0;
     this.layer?.remove();
     this.layer = null;
-    this.pressed?.removeEventListener("mousedown", this.dropSelections, true);
-    this.pressed = null;
+    this.unwatch();
   }
 
   /**
@@ -528,11 +540,19 @@ export class HottyAddon implements ITerminalAddon {
       case "focus": {
         const s = this.existing(c);
         if (s.detached) throw new Failure("EDETACHED", `surface ${s.name} is detached`);
+        // a=focus moves the keyboard within the terminal (§10.1). From a
+        // control of the page around the terminal it takes no focus, as a
+        // native terminal's takes none from another window: the surface has
+        // the keyboard, and the page's focus once the terminal has it.
+        const now = this.focusInside();
         try {
-          s.focus(c.get("t"));
+          s.focus(c.get("t"), now);
         } catch (e) {
           throw new Failure("ENOTARGET", (e as Error).message);
         }
+        // The keyboard is this surface's: one that waited elsewhere moved.
+        for (const o of this.surfaces.values()) if (o !== s) o.dropWait(false);
+        if (!now) this.watch();
         return;
       }
       case "blur":
@@ -805,6 +825,9 @@ export class HottyAddon implements ITerminalAddon {
       focusTerminal: () => {
         if (this.forwarding) this.focusAfter = true;
         else this.term.focus();
+      },
+      clicked: (name) => {
+        for (const [n, s] of this.surfaces) if (n !== name) s.dropWait(true);
       },
       policy: this.policy,
       pageScrolls: this.pageScrolls,
@@ -1126,15 +1149,37 @@ export class HottyAddon implements ITerminalAddon {
     Object.assign(layer.style, { position: "absolute", inset: "0", overflow: "hidden", zIndex: "6", pointerEvents: "none" });
     screen.append(layer);
     this.layer = layer;
-    // A press on the cells drops a surface's selection: there is one (SPEC
-    // §11). A press in a surface stays in its frame.
-    const el = this.term.element!;
-    if (this.pressed !== el) {
-      this.pressed?.removeEventListener("mousedown", this.dropSelections, true);
-      el.addEventListener("mousedown", this.dropSelections, true);
-      this.pressed = el;
-    }
+    this.watch();
     return layer;
+  }
+
+  /** Binds the terminal's element. A press on the cells drops a surface's
+   * selection: there is one (SPEC §11). A press in a surface stays in its
+   * frame. Focus coming into the element moves an `a=focus` that waits. */
+  private watch() {
+    const el = this.term.element;
+    if (!el || this.pressed === el) return;
+    this.unwatch();
+    el.addEventListener("mousedown", this.cellsPressed, true);
+    el.addEventListener("focusin", this.focusIn, true);
+    this.pressed = el;
+  }
+
+  private unwatch() {
+    this.pressed?.removeEventListener("mousedown", this.cellsPressed, true);
+    this.pressed?.removeEventListener("focusin", this.focusIn, true);
+    this.pressed = null;
+  }
+
+  /** Whether the page's focus is in the terminal, or nowhere: where
+   * `a=focus` may move it. */
+  private focusInside(): boolean {
+    const el = this.term.element;
+    if (!el) return true;
+    const doc = el.ownerDocument;
+    let a = doc.activeElement;
+    while (a?.shadowRoot?.activeElement) a = a.shadowRoot.activeElement;
+    return !a || a === doc.body || a === doc.documentElement || el.contains(a);
   }
 
   // --- Commands in the cells and the menu (SPEC §10.6) -----------------

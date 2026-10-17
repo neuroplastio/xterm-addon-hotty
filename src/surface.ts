@@ -101,6 +101,9 @@ export interface SurfaceHost {
   pressed(keep: string | null): void;
   /** Gives the keyboard back to the terminal. */
   focusTerminal(): void;
+  /** A click (SPEC §10.1) in surface `name`: an `a=focus` that waits in
+   *  another surface ends, and the keyboard goes back. */
+  clicked(name: string): void;
   /** The host's half of the network policy (SPEC §7.2). */
   policy: Policy;
   /** The page scrolls, not the terminal (the `scroll` option): wheels and
@@ -318,6 +321,11 @@ export class Surface {
   /** The document's base URL (SPEC §7.3). */
   private base = NO_BASE;
   private keyboard = false;
+  /** `a=focus` came while the page's focus was outside the terminal: the
+   * surface has the keyboard, and takes the browser's focus, at this
+   * element id ("" for none), once the terminal has it. Null when nothing
+   * waits. */
+  private waiting: string | null = null;
   /** The element the program knows has focus: the last `focus` named it,
    * or the program's `a=focus` gave it (SPEC §10.1). */
   private told: Element | null = null;
@@ -558,9 +566,10 @@ export class Surface {
     if (!this.detachedState) {
       this.detachedState = true; // from here on, emit() sends nothing
       this.dropDrag(); // it ends with nothing more reported (SPEC §9.1)
-      const had = this.keyboard || this.frameFocused();
+      const had = (this.keyboard && this.waiting === null) || this.frameFocused();
       this.prefix = false;
       this.keyboard = false;
+      this.waiting = null;
       this.told = null;
       this.focusedControl()?.blur();
       if (had) this.giveBack();
@@ -939,7 +948,9 @@ export class Surface {
     this.dropAlt();
     if (this.settling) clearTimeout(this.settling);
     this.prefix = false;
-    if (this.keyboard || this.frameFocused()) this.host.focusTerminal();
+    // A focus that waits leaves the page's focus where it is.
+    if ((this.keyboard && this.waiting === null) || this.frameFocused()) this.host.focusTerminal();
+    this.waiting = null;
     this.box.remove();
   }
 
@@ -995,12 +1006,21 @@ export class Surface {
     if (sel && sel.rangeCount > 0) sel.removeAllRanges();
   }
 
-  /** `a=focus`: the surface takes the keyboard, at `target` if given. */
-  focus(target?: string) {
+  /** `a=focus`: the surface takes the keyboard, at `target` if given. With
+   * `now` false, the page's focus is outside the terminal, and stays there:
+   * the surface has the keyboard, and takes the browser's focus when the
+   * terminal does (`takeFocus`). */
+  focus(target?: string, now = true) {
     const el = target ? this.doc.getElementById(target) : null;
     if (target && !el) throw new Error(target);
     // The program takes the keys back (SPEC §10.5), whether or not focus moves.
     this.prefix = false;
+    this.waiting = null;
+    if (!now) {
+      this.keyboard = true;
+      this.waiting = target ?? "";
+      return;
+    }
     this.programFocus = true;
     try {
       // Focusing the frame while focus is in it would blur its window:
@@ -1025,8 +1045,34 @@ export class Surface {
     // keyboard left after it (Tab past the last element, or `a=blur`).
     this.pressed = null;
     this.prefix = false;
+    // A focus that waits had no control focused, so none commits: the
+    // keyboard leaves with `blur`, and the page's focus stays.
+    if (this.dropWait(true)) return;
     this.commit();
     if (this.keyboard) this.giveBack();
+  }
+
+  /** The terminal has the page's focus, and not by a click: the focus that
+   * waited moves now, as the program's (no echo). Its element may have gone
+   * meanwhile; the surface takes the focus all the same. */
+  takeFocus() {
+    if (this.waiting === null) return;
+    const target = this.waiting;
+    this.waiting = null;
+    const el = target ? this.doc.getElementById(target) : null;
+    this.focus(el ? target : undefined);
+  }
+
+  /** A focus that waits ends without moving: a click elsewhere gives the
+   * keyboard back (SPEC §10.1), and says so with `blur` when `say`;
+   * another `a=focus` moves it, and the program knows. Whether one waited. */
+  dropWait(say: boolean): boolean {
+    if (this.waiting === null) return false;
+    this.waiting = null;
+    this.keyboard = false;
+    this.told = null;
+    if (say) this.emit("blur", "");
+    return true;
   }
 
   /** The browser's focus goes from the frame to the terminal. The frame lets
@@ -1078,7 +1124,16 @@ export class Surface {
     // A press that focuses an element ends a prefix (SPEC §10.5), and one
     // that takes the keyboard from the surface does.
     this.prefix = false;
+    // A focus that waits elsewhere ends: this is a click elsewhere.
+    this.host.clicked(this.name);
     const el = this.detachedState ? null : focusTargetAt(e, this.hyper);
+    // One that waits here ends too. On an element that takes focus, the
+    // focus is the user's, and reported; on anything else, the keyboard the
+    // surface had goes back, as below.
+    if (this.waiting !== null) {
+      this.waiting = null;
+      if (el) this.keyboard = false;
+    }
     if (el) {
       this.pressed = el;
       this.settle();

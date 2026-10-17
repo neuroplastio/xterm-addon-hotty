@@ -1,9 +1,9 @@
 // Interaction (PROTOCOL §8, Q-0005's lean): the browser does hover, focus and
 // editing; the program hears events, and the keys a surface does not use.
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { readFileSync, rmSync } from "node:fs";
-import { open, sansArea, send, surface, take, write } from "./helpers.ts";
+import { open, sansArea, screenPoint, send, surface, take, write } from "./helpers.ts";
 
 const evs = (msgs: Awaited<ReturnType<typeof take>>["msgs"]) =>
   msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("e"), m.get("t") ?? "", sansArea(m.body)]);
@@ -140,7 +140,64 @@ test.describe("without a pty", () => {
     await page.keyboard.press("z");
     expect((await take(page)).raw).toBe("z");
   });
+
+  // a=focus moves the keyboard within the terminal (SPEC §10.1). It takes no
+  // focus from outside it, as a native terminal's takes none from another
+  // window: from a control of the page around the terminal, the surface has
+  // the keyboard, and the browser's focus once the terminal has it.
+  test("a=focus waits while the page's focus is outside the terminal, and takes it when the terminal does", async ({ page }) => {
+    await focusOutside(page);
+    await send(page, { a: "focus", s: "ui", t: "b", q: "2" });
+    await expect(page.locator("#outside")).toBeFocused();
+    await page.evaluate(() => window.hotty.term.focus());
+    await expect(surface(page, "ui").locator("#b")).toBeFocused();
+    // The program gave the focus: no echo, though it waited.
+    expect(evs((await take(page)).msgs)).toEqual([]);
+  });
+
+  test("a click on the cells while a=focus waits gives the keyboard back to the terminal", async ({ page }) => {
+    await focusOutside(page);
+    await send(page, { a: "focus", s: "ui", t: "b", q: "2" });
+    const rows = await page.evaluate(() => window.hotty.term.rows);
+    const [x, y] = await screenPoint(page, [1, rows - 1]);
+    await page.mouse.click(x, y);
+    await expect.poll(() => page.evaluate(() => document.activeElement?.className)).toContain("xterm-helper-textarea");
+    expect(evs((await take(page)).msgs)).toEqual([["blur", "", null]]);
+  });
+
+  test("a=blur while a=focus waits ends in blur, and the page keeps its focus", async ({ page }) => {
+    await focusOutside(page);
+    await send(page, { a: "focus", s: "ui", t: "b", q: "2" });
+    await send(page, { a: "blur", s: "ui", q: "2" });
+    await expect(page.locator("#outside")).toBeFocused();
+    expect(evs((await take(page)).msgs)).toEqual([["blur", "", null]]);
+    // Nothing waits any more: the terminal's focus is the cells'.
+    await page.evaluate(() => window.hotty.term.focus());
+    await expect.poll(() => page.evaluate(() => document.activeElement?.className)).toContain("xterm-helper-textarea");
+    await page.keyboard.press("z");
+    expect((await take(page)).raw).toBe("z");
+  });
+
+  test("a click in the surface while a=focus waits is the user's focus", async ({ page }) => {
+    await focusOutside(page);
+    await send(page, { a: "focus", s: "ui", t: "b", q: "2" });
+    await surface(page, "ui").locator("#t").click();
+    await expect(surface(page, "ui").locator("#t")).toBeFocused();
+    expect(evs((await take(page)).msgs)).toEqual([["focus", "t", null]]);
+  });
 });
+
+/** A control of the page around the terminal, focused. */
+async function focusOutside(page: Page) {
+  await page.evaluate(() => {
+    const b = document.createElement("button");
+    b.id = "outside";
+    b.textContent = "outside";
+    b.style.cssText = "position: fixed; right: 0; bottom: 0";
+    document.body.append(b);
+    b.focus();
+  });
+}
 
 test("p=1: every press in the window is reported, first; it belongs to the surface, and holds until p=0", async ({ page }) => {
   await open(page, "?pty=0&record-links");
