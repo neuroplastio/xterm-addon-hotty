@@ -1,4 +1,4 @@
-// HOTTY for xterm.js: the addon.
+// hotty for xterm.js: the addon.
 //
 //   const term = new Terminal();
 //   term.loadAddon(new HottyAddon());
@@ -121,7 +121,7 @@ export interface Inspected {
  * milliseconds: a wheel's notches, or a touchpad's scroll and its momentum. */
 const GESTURE_MS = 150;
 
-/** The HOTTY versions the addon speaks (SPEC §4), highest first. */
+/** The hotty versions the addon speaks (SPEC §4), highest first. */
 const SPEAKS = ["0.4"];
 
 /**

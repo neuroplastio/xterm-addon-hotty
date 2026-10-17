@@ -1,4 +1,4 @@
-// The demo page: xterm.js, the HOTTY addon, and a WebSocket to serve.py's pty.
+// The demo page: xterm.js, the hotty addon, and a WebSocket to serve.py's pty.
 // Tests reach everything through `window.hotty`.
 
 import { Terminal } from "@xterm/xterm";
@@ -10,7 +10,7 @@ const term = new Terminal({
   fontFamily: params.get("font") ?? '"MesloLGS Nerd Font Mono", "DejaVu Sans Mono", monospace',
   fontSize: Number(params.get("size") ?? 15),
   cursorBlink: false,
-  // Key releases for games (HOTTY SPEC §10.3); xterm.js 6.1+.
+  // Key releases for games (hotty SPEC §10.3); xterm.js 6.1+.
   vtExtensions: { kittyKeyboard: true },
   theme: {
     background: "#1d1f21",

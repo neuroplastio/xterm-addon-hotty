@@ -1,4 +1,4 @@
-// Drives the demo page as a program would: HOTTY commands written to the
+// Drives the demo page as a program would: hotty commands written to the
 // terminal, replies and events read back from what it sends to the program.
 
 import type { FrameLocator, Page } from "@playwright/test";

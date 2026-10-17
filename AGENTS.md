@@ -1,10 +1,10 @@
 # For agents
 
-xterm-addon-hotty is a HOTTY host for xterm.js: the browser renders each
+xterm-addon-hotty is a hotty host for xterm.js: the browser renders each
 surface in a sandboxed iframe. The protocol is `SPEC.md` in
 neuroplastio/hotty; this repository implements it and must not grow it.
 
-- **Tests need the HOTTY repository** (vectors, examples, reference client):
+- **Tests need the hotty repository** (vectors, examples, reference client):
   `HOTTY_DIR`, or a checkout next to this one. `npm run check` is the gate:
   typecheck, build, unit, Playwright.
 - **Bodies are msgpack** (SPEC §3.3, `src/msgpack.ts`), each field as the

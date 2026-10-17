@@ -1,7 +1,7 @@
 {
   "name": "@neuroplastio/xterm-addon-hotty",
   "version": "0.1.0-next.20",
-  "description": "HOTTY (HTML Over The TTY) for xterm.js: surfaces rendered by the browser, each in a sandboxed iframe",
+  "description": "hotty (HTML over the TTY) for xterm.js: surfaces rendered by the browser, each in a sandboxed iframe",
   "type": "module",
   "license": "Apache-2.0",
   "exports": {

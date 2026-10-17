@@ -14,7 +14,7 @@ test("sources are origins or https:", () => {
   }
 });
 
-test("a document's request parses CSP syntax, keeping only what HOTTY allows", () => {
+test("a document's request parses CSP syntax, keeping only what hotty allows", () => {
   assert.deepEqual(parse("img-src https://a.com https:; font-src https://f.org; script-src *; img-src https://b.com"), {
     "img-src": ["https://a.com", "https:", "https://b.com"],
     "font-src": ["https://f.org"],

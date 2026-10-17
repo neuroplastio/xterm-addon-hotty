@@ -13,7 +13,7 @@ export const DIRECTIVES: readonly Directive[] = ["img-src", "media-src", "font-s
 /** Directive → sources: origins (`https://example.com`) or `https:`. */
 export type Policy = Partial<Record<Directive, string[]>>;
 
-/** A source in canonical form, or null if it is not one HOTTY allows. */
+/** A source in canonical form, or null if it is not one hotty allows. */
 export function source(s: string): string | null {
   const v = s.trim().toLowerCase();
   if (v === "https:") return v;

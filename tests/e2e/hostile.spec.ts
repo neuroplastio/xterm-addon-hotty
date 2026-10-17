@@ -78,7 +78,7 @@ test("script, requests, navigation, popups and focus theft all fail", async ({ p
   await d.locator("#go").click();
   await page.waitForTimeout(1500);
 
-  expect(await page.title()).toBe("HOTTY in xterm.js");
+  expect(await page.title()).toBe("hotty in xterm.js");
   expect(context.pages()).toHaveLength(1);
   const got = (await leaks(page)).slice(before.length).filter((p) => p.startsWith("/leak/hostile/"));
   expect(got).toEqual([]);

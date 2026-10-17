@@ -29,7 +29,7 @@ type Step = {
   terminal?: boolean;
   /** What the terminal reported of the mouse's primary button (§9.6). */
   mouse?: Report[];
-  /** Bytes the program writes to the terminal, not HOTTY's. */
+  /** Bytes the program writes to the terminal, not hotty's. */
   write?: string;
   events?: Expected[];
 };

@@ -63,7 +63,7 @@ export interface Window {
 export interface SurfaceHost {
   layer: HTMLElement;
   store: Store;
-  /** Sends a HOTTY message (an event) to the program, with its detail
+  /** Sends a hotty message (an event) to the program, with its detail
    *  (SPEC §9), if it has one. */
   event(surface: string, kind: string, target: string, detail?: Body): void;
   /** A key the surface does not use (a keydown or its keyup), for the
@@ -437,7 +437,7 @@ export class Surface {
     });
     this.frame = document.createElement("iframe");
     this.frame.setAttribute("sandbox", "allow-same-origin allow-forms");
-    this.frame.setAttribute("title", `HOTTY surface ${name}`);
+    this.frame.setAttribute("title", `hotty surface ${name}`);
     // The document is the whole surface; the box shows its window (SPEC §5.2).
     // The frame's colour scheme is the document's (the host stylesheet's,
     // from the theme): were they to differ, the browser would paint the

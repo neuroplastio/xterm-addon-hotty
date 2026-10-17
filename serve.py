@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""serve.py — xterm.js with the HOTTY addon, over a pty, in a browser tab.
+"""serve.py — xterm.js with the hotty addon, over a pty, in a browser tab.
 
     python3 serve.py -- python3 ../hotty/examples/dash.py
     python3 serve.py --examples          # /?run=card, /?run=grid&args=--cells+4096
 
-`--examples` runs the HOTTY repository's example programs (HOTTY_DIR, or a
+`--examples` runs the hotty repository's example programs (HOTTY_DIR, or a
 checkout of neuroplastio/hotty next to this one).
 
 Serves dist/ (build it with `npm run build`) and a WebSocket at /ws. Each
@@ -42,7 +42,7 @@ DIST = os.path.join(HERE, "dist")
 
 
 def hotty_dir():
-    """The HOTTY repository (its examples): HOTTY_DIR, or a checkout next to
+    """The hotty repository (its examples): HOTTY_DIR, or a checkout next to
     this one (../hotty, or ../../hotty/main in the worktree layout)."""
     if os.environ.get("HOTTY_DIR"):
         return os.path.abspath(os.environ["HOTTY_DIR"])
@@ -58,7 +58,7 @@ TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".m
 
 # Page policies for `?csp=<name>`. "strict" breaks xterm.js itself (its DOM
 # renderer sets inline styles); "recommended" is what an embedder needs for
-# xterm.js plus HOTTY (README.md).
+# xterm.js plus hotty (README.md).
 POLICIES = {
     "strict": "default-src 'self'; connect-src 'self' ws:; style-src 'self'",
     "recommended": "default-src 'self'; connect-src 'self' ws:; style-src 'self' 'unsafe-inline'; "

@@ -1,4 +1,4 @@
-// Where the HOTTY repository is: its conformance vectors, examples and
+// Where the hotty repository is: its conformance vectors, examples and
 // reference client are this addon's test material. HOTTY_DIR, or a checkout
 // next to this one (a plain clone at ../hotty, or the worktree layout at
 // ../../hotty/main).
@@ -14,7 +14,7 @@ export const HOTTY_DIR = ((): string => {
   for (const c of [resolve(root, "../hotty"), resolve(root, "../../hotty/main")]) {
     if (existsSync(join(c, "SPEC.md"))) return c;
   }
-  throw new Error("no HOTTY checkout: set HOTTY_DIR, or clone neuroplastio/hotty next to this repository");
+  throw new Error("no hotty checkout: set HOTTY_DIR, or clone neuroplastio/hotty next to this repository");
 })();
 
 /**

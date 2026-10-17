@@ -1,4 +1,4 @@
-// The HOTTY envelope (PROTOCOL §2): OSC 7279 ; <control> ; <base64 payload> ST.
+// The hotty envelope (PROTOCOL §2): OSC 7279 ; <control> ; <base64 payload> ST.
 //
 // xterm.js hands an OSC handler everything after `7279;`, so this module sees
 // `<control>[;<payload>]` strings. It parses controls, reassembles chunked
