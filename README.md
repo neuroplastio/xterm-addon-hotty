@@ -1,9 +1,9 @@
-# xterm-addon-hotty: HOTTY for xterm.js
+# xterm-addon-hotty: hotty for xterm.js
 
-A [HOTTY](https://github.com/neuroplastio/hotty) host as an addon for
+A [hotty](https://github.com/neuroplastio/hotty) host as an addon for
 xterm.js, where the **browser is the engine**. Every surface is a real
 document in a sandboxed iframe. It shares no code with hotty-blitz, the
-other implementation, and passes the same conformance vectors. The HOTTY
+other implementation, and passes the same conformance vectors. The hotty
 repository's example programs run unchanged in a browser tab.
 
 ```
@@ -15,7 +15,7 @@ The package is an ES module with its TypeScript declarations, for xterm.js
 (`github:neuroplastio/xterm-addon-hotty#<commit>`): npm builds it as it
 installs it (`prepare`).
 
-It implements HOTTY 0.3, whose bodies are msgpack maps (SPEC §3.3). A
+It implements hotty 0.3, whose bodies are msgpack maps (SPEC §3.3). A
 program's query names the versions it speaks (`a=q:n=1:v=0.3`, SPEC §4):
 the addon answers a query that lists 0.3 with its capabilities (`v`,
 `cellcss`, `scale`, `scheme`, `mod`, `features`, `limits`, `net`, `edit`,
@@ -491,7 +491,7 @@ stops everything. `position: fixed` stays inside the surface's own viewport.
 **The embedding page's CSP applies inside the surfaces too** (about:blank
 iframes inherit it, and it can only be narrowed). A page that embeds xterm.js
 already has to allow inline styles, because xterm's DOM renderer sets them.
-For HOTTY it must also allow `data:` and `blob:` images, fonts and media, and
+For hotty it must also allow `data:` and `blob:` images, fonts and media, and
 whatever origins it grants in `network`. This is the recommended policy (with
 no network grant), and `tests/e2e/embedder.spec.ts` checks it:
 
