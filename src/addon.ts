@@ -1071,16 +1071,16 @@ export class HottyAddon implements ITerminalAddon {
   private command(e: KeyboardEvent): boolean {
     const taken = this.taken[this.term.buffer.active.type];
     if (taken.size === 0) return false;
-    // A press has two names, looked up physical first (§10.4).
+    // A press has two names, looked up physical first (§10.4). The command
+    // carries the one its bytes would have, the character's where it has
+    // one: `ctrl+c`, never `ctrl+key_c` (§10.6).
+    const names = pressNames(e);
     let name: string | null = null;
-    let k = "";
-    for (const key of pressNames(e)) {
+    for (const key of names) {
       name = editAction(this.keys.platform, key);
-      if (name !== null) {
-        k = key;
-        break;
-      }
+      if (name !== null) break;
     }
+    const k = names[names.length - 1] ?? "";
     if (name === null || !taken.has(name)) return false;
     this.commandCodes.add(e.code);
     if (name !== "paste") {
