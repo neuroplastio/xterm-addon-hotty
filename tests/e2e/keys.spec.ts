@@ -407,3 +407,29 @@ test("a pick of paste sends the clipboard's text, and of copy with text selected
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("selected");
   expect((await take(page)).msgs).toHaveLength(0);
 });
+
+// A press given to the program as pressed stays the program's as bytes
+// (SPEC §10.4): by the physical name, in a field that selects all with ctrl+a.
+
+test("ctrl+key_a bound to program or prefix sends ctrl+a to the program; a prefix then gives it x", async ({ page }) => {
+  await open(page, "?pty=0");
+  await page.evaluate(() => window.hotty.term.focus());
+  await send(page, { a: "doc", s: "x", q: "2" }, `<input id=a data-on=input value=ab data-keys="ctrl+key_a=program"><input id=b data-on=input data-keys="ctrl+key_a=prefix">`);
+  await send(page, { a: "place", s: "x", c: "20", r: "3", q: "2" });
+  await send(page, { a: "focus", s: "x", t: "a", q: "2" });
+  await take(page);
+  await page.keyboard.press("Control+a");
+  expect((await take(page)).raw).toBe("\x01");
+  // The field did not select all: typing appends.
+  await page.keyboard.press("End");
+  await page.keyboard.press("c");
+  expect(evs((await take(page)).msgs)).toEqual([["input", "x", "a"]]);
+  await send(page, { a: "focus", s: "x", t: "b", q: "2" });
+  await take(page);
+  await page.keyboard.press("Control+a");
+  expect((await take(page)).raw).toBe("\x01");
+  await page.keyboard.press("x");
+  const { raw, msgs } = await take(page);
+  expect(raw).toBe("x");
+  expect(evs(msgs)).toEqual([]);
+});
