@@ -11,9 +11,10 @@ npm install @neuroplastio/xterm-addon-hotty @xterm/xterm
 ```
 
 The package is an ES module with its TypeScript declarations, for xterm.js
-6, and has no dependencies. A commit not yet released installs from git
-(`github:neuroplastio/xterm-addon-hotty#<commit>`): npm builds it as it
-installs it (`prepare`).
+6, and has no dependencies. A release also installs from git by its tag
+(`github:neuroplastio/xterm-addon-hotty#v0.4.0`), and a commit not yet
+released by its hash (`#<commit>`): npm builds it as it installs it
+(`prepare`).
 
 It implements hotty 0.4, whose bodies are msgpack maps (SPEC §3.3) and
 whose keys are named by myelin key names 0.1 (§10.4). A
@@ -24,6 +25,8 @@ the addon answers a query that lists 0.4 with its capabilities (`v`,
 finds no host and falls back to text. A command that asks for a reply (`n`)
 gets one; a query always does, and every other command is quiet unless it
 carries `n`.
+
+0.4.x speaks hotty 0.4; the patch number is this repository's own.
 
 ```ts
 import { Terminal } from "@xterm/xterm";

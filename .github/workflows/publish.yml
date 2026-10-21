@@ -4,7 +4,7 @@
 # this workflow is the one thing that can publish without a person's 2FA.
 # npm takes GitHub's hosted runners only; this repository is public.
 #
-# Bump the version on main, then:
+# Bump the version on main (npm version X.Y.Z --no-git-tag-version), then:
 #   gh workflow run publish.yml -R neuroplastio/xterm-addon-hotty
 name: publish
 
@@ -34,19 +34,28 @@ jobs:
           path: .hotty
       # Node and npm as mise.toml pins them.
       - uses: jdx/mise-action@v4
-      # No public version above 0.1.0 until the maintainer's versioning
-      # scheme: releases are 0.1.0-next.N under the next dist-tag.
+      # gov P-5 rule 6: X.Y is the hotty version the addon speaks, the
+      # first of SPEAKS. A release, X.Y.Z, goes to latest; a prerelease,
+      # X.Y.Z-next.N, under next, and latest stays the last release.
       - name: version
+        id: version
         run: |
           v=$(node -p 'require("./package.json").version')
-          case "$v" in
-            0.1.0-next.[0-9]*) ;;
-            *) echo "::error::$v: only 0.1.0-next.N goes to npm for now"; exit 1 ;;
-          esac
+          spec=$(node --input-type=module -e 'import { SPEAKS } from "./src/addon.ts"; console.log(SPEAKS[0])')
+          n='(0|[1-9][0-9]*)'
+          xy=${spec//./\\.}
+          if [[ $v =~ ^${xy}\.${n}$ ]]; then
+            tag=latest
+          elif [[ $v =~ ^${xy}\.${n}-next\.${n}$ ]]; then
+            tag=next
+          else
+            echo "::error::$v: a version is $spec.Z or $spec.Z-next.N, since the addon speaks hotty $spec"; exit 1
+          fi
           if [ -n "$(npm view "@neuroplastio/xterm-addon-hotty@$v" version 2>/dev/null)" ]; then
             echo "::error::$v is on npm already: bump the version"; exit 1
           fi
-          echo "publishing $v under next"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "publishing $v under $tag"
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - name: gate
@@ -54,4 +63,4 @@ jobs:
         env:
           HOTTY_BROWSERS: chromium
       - name: publish
-        run: npm publish --tag next
+        run: npm publish --tag ${{ steps.version.outputs.tag }}
