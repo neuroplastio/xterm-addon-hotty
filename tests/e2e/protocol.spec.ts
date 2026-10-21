@@ -206,6 +206,76 @@ test("synchronized output holds a batch until it ends", async ({ page }) => {
   await expect(p).toHaveText("1");
 });
 
+test("a place in synchronized output is at the cursor's cell as it comes, and moves the cursor then: only its drawing waits for the batch", async ({ page }) => {
+  const { w, h } = await cell(page);
+  const screen = (await page.locator(".xterm-screen").boundingBox())!;
+  const box = (name: string) => page.locator(`.hotty-surface[data-surface="${name}"]`);
+  const at = async (name: string) => {
+    const bb = (await box(name).boundingBox())!;
+    return [Math.round((bb.x - screen.x) / w), Math.round((bb.y - screen.y) / h)];
+  };
+  const cursor = () => page.evaluate(() => [window.hotty.term.buffer.active.cursorX, window.hotty.term.buffer.active.cursorY]);
+  type Line = { translateToString(trim: boolean): string };
+  const line = (y: number) => page.evaluate((y) => (window.hotty.term.buffer.active as unknown as { getLine(y: number): Line }).getLine(y).translateToString(true), y);
+
+  // As a full-screen program places one (SDK.md §3.4, PlaceAt): the cursor
+  // saved, moved, the surface placed with C=1, the cursor restored.
+  const placeAt = (x: number, y: number) => `\x1b7\x1b[${y + 1};${x + 1}H` + cmd({ a: "place", s: "x", c: "10", r: "1", C: "1", q: "2" }) + "\x1b8";
+  await send(page, { a: "doc", s: "x", q: "2" }, "<p>x</p>");
+  await write(page, "\x1b[2;3H\x1b[?2026h" + placeAt(9, 4));
+  await expect(box("x")).toBeHidden();
+  await write(page, "\x1b[?2026l");
+  await expect(box("x")).toBeVisible();
+  expect(await at("x")).toEqual([9, 4]);
+  expect(await cursor()).toEqual([2, 1]);
+  // Moved, it is drawn where it was until the batch ends.
+  await write(page, "\x1b[?2026h" + placeAt(19, 7));
+  expect(await at("x")).toEqual([9, 4]);
+  await write(page, "\x1b[?2026l");
+  expect(await at("x")).toEqual([19, 7]);
+  expect(await cursor()).toEqual([2, 1]);
+
+  // Without C=1 the cursor moves below it as it comes: what the batch
+  // writes next is below it. A place that fails moves nothing.
+  await write(
+    page,
+    "\x1b[?2026h" +
+      cmd({ a: "doc", s: "y", q: "2" }, "<p>y</p>") +
+      "\x1b[10;1H" +
+      cmd({ a: "place", s: "y", c: "10", r: "2", q: "2" }) +
+      cmd({ a: "place", s: "nope", c: "10", r: "2", q: "2" }) +
+      "after\x1b[?2026l",
+  );
+  expect(await at("y")).toEqual([0, 9]);
+  expect(await line(11)).toBe("after");
+  expect(await cursor()).toEqual([5, 11]);
+  // With r=auto, by the rows its document needs, as the batch has it so far.
+  const rows = Math.ceil(40 / h);
+  await write(
+    page,
+    "\x1b[?2026h" +
+      cmd({ a: "doc", s: "z", q: "2" }, "<div style='height: 40px'>z</div>") +
+      "\x1b[13;1H" +
+      cmd({ a: "place", s: "z", c: "10", q: "2" }) +
+      "after\x1b[?2026l",
+  );
+  expect(await at("z")).toEqual([0, 12]);
+  expect(await line(12 + rows)).toBe("after");
+  // Placed again, it is measured as it comes and drawn where it was until
+  // the batch ends.
+  await write(page, "\x1b[?2026h\x1b[20;5H" + cmd({ a: "place", s: "z", c: "10", q: "2" }));
+  await expect(box("z")).toBeVisible();
+  expect(await at("z")).toEqual([0, 12]);
+  expect(await cursor()).toEqual([0, 19 + rows]);
+  await write(page, "\x1b[?2026l");
+  expect(await at("z")).toEqual([4, 19]);
+
+  // On the alternate screen, left in the same batch: it dies with it.
+  await write(page, "\x1b[?1049h" + cmd({ a: "doc", s: "alt", q: "2" }, "<p>alt</p>"));
+  await write(page, "\x1b[?2026h\x1b[3;3H" + cmd({ a: "place", s: "alt", c: "10", r: "2", C: "1", q: "2" }) + "\x1b[?1049l\x1b[?2026l");
+  await expect(box("alt")).toHaveCount(0);
+});
+
 test("place puts the surface at the cursor and moves the cursor below it, unless C=1", async ({ page }) => {
   const { w, h } = await cell(page);
   await write(page, "\x1b[3;5H");

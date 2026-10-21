@@ -144,6 +144,20 @@ const LABEL_CHARS = 32;
 /** The most items a column of a menu holds. */
 const COLUMN_ITEMS = 10;
 
+/** Where a placement goes (SPEC §5.2): the cursor's cell when its command
+ * came. On the normal buffer a marker holds its line; on the alternate,
+ * fixed cells. */
+interface Spot {
+  kind: "normal" | "alt";
+  col: number;
+  row: number;
+  marker?: IMarker;
+  /** On the alternate screen, which one (`altScreens`). */
+  alt?: number;
+  /** Held in a batch (`hold`): the rows it measured as it came. */
+  rows?: number;
+}
+
 interface Placement {
   surface: Surface;
   kind: "normal" | "alt";
@@ -151,6 +165,13 @@ interface Placement {
   row: number;
   marker?: IMarker;
   disposables: IDisposable[];
+}
+
+/** A command held while synchronized output is on, and for `a=place`,
+ * where it came (`hold`). */
+interface Held {
+  cmd: Command;
+  at?: Spot;
 }
 
 class Failure extends Error {
@@ -208,7 +229,10 @@ export class HottyAddon implements ITerminalAddon {
     for (const s of this.surfaces.values()) s.takeFocus();
   };
   /** Commands held while synchronized output is on (PROTOCOL §5). */
-  private held: Command[] = [];
+  private held: Held[] = [];
+  /** How many times the alternate screen was entered: a placement held on
+   * one that has gone since goes with it. */
+  private altScreens = 0;
   private heldTimer: ReturnType<typeof setTimeout> | null = null;
   private css = "";
   private readonly policy: Policy;
@@ -398,12 +422,43 @@ export class HottyAddon implements ITerminalAddon {
 
   private submit(cmd: Command): void | Promise<void> {
     if (this.term.modes.synchronizedOutputMode && cmd.control.get("a") !== "q") {
-      this.held.push(cmd);
+      const at = cmd.control.get("a") === "place" ? this.hold(cmd.control) : undefined;
+      this.held.push({ cmd, at });
       // xterm gives up on a batch that never ends after a second; so do we.
       this.heldTimer ??= setTimeout(() => this.release(), 1000);
       return;
     }
-    return this.apply([cmd]);
+    return this.apply([{ cmd }]);
+  }
+
+  /**
+   * A placement held in a batch is drawn when the batch ends (SPEC §6.3),
+   * but it goes where the cursor is as it comes, and unless `C=1` it moves
+   * the cursor below it then (§5.2), so what the batch writes next is below
+   * it. How far is its rows: for `r=auto` only the document can tell, so
+   * what the batch held before it is applied first (and may be drawn
+   * before the batch ends). A place that will fail moves nothing.
+   */
+  private hold(c: Control): Spot {
+    const at = this.cursorSpot();
+    if (c.get("C") === "1") return at;
+    const r = c.get("r");
+    if (r === undefined || r === "auto") this.release();
+    try {
+      // A surface the batch creates before it is placed too.
+      const name = this.surfaceName(c);
+      if (!this.surfaces.has(name) && !this.held.some((h) => h.cmd.control.get("a") === "doc" && h.cmd.control.get("s") === name)) return at;
+      const { cellW, cellH } = this.cell();
+      const { rows, win } = this.measure(c, (cols) => this.existing(c).contentRows(cols, cellW, cellH));
+      at.rows = rows;
+      this.moveCursorBelow(win.h);
+      // Laid out unseen, it shows as it was placed until the batch ends.
+      const p = this.placements.get(name);
+      if (p) this.position(p);
+    } catch {
+      // It fails as it is applied.
+    }
+    return at;
   }
 
   private release() {
@@ -414,16 +469,16 @@ export class HottyAddon implements ITerminalAddon {
     if (batch.length) void this.apply(batch);
   }
 
-  private apply(batch: Command[]): void | Promise<void> {
+  private apply(batch: Held[]): void | Promise<void> {
     const t0 = performance.now();
     let chain: Promise<void> | undefined;
-    for (const cmd of batch) chain = sequence(chain, () => this.handle(cmd));
+    for (const { cmd, at } of batch) chain = sequence(chain, () => this.handle(cmd, at));
     const done = () => this.opts.onFrame?.({ commands: batch.length, applyMs: performance.now() - t0 });
     if (chain) return chain.then(done);
     done();
   }
 
-  private handle(cmd: Command): void | Promise<void> {
+  private handle(cmd: Command, at?: Spot): void | Promise<void> {
     const action = cmd.control.get("a") ?? "";
     // Only errors, unless asked (SPEC §3.5): a query and a command with `n`
     // are answered, any other command only when it fails.
@@ -439,7 +494,7 @@ export class HottyAddon implements ITerminalAddon {
       if (quiet < 2) this.reply("err", cmd, { extra, body: { code, detail } });
     };
     try {
-      const r = this.dispatch(action, cmd);
+      const r = this.dispatch(action, cmd, at);
       if (r instanceof Promise) return r.then(ok, fail);
       ok(r);
     } catch (e) {
@@ -464,7 +519,7 @@ export class HottyAddon implements ITerminalAddon {
 
   // --- Commands (PROTOCOL §3-§6) -------------------------------------------
 
-  private dispatch(action: string, cmd: Command): Reply | void | Promise<Reply | void> {
+  private dispatch(action: string, cmd: Command, at?: Spot): Reply | void | Promise<Reply | void> {
     const c = cmd.control;
     switch (action) {
       case "q":
@@ -490,7 +545,12 @@ export class HottyAddon implements ITerminalAddon {
         return;
       }
       case "place":
-        return this.place(this.existing(c), c);
+        try {
+          return this.place(this.existing(c), c, at);
+        } catch (e) {
+          at?.marker?.dispose();
+          throw e;
+        }
       case "hide": {
         // The document stays; the keyboard goes back to the terminal (§5.4),
         // and a drag under way ends (§9.1).
@@ -629,14 +689,53 @@ export class HottyAddon implements ITerminalAddon {
     return s;
   }
 
-  private place(s: Surface, c: Control): Reply {
+  /** `at`: where it was held in a batch (`hold`), not where the cursor is
+   * now; the cursor moved then. */
+  private place(s: Surface, c: Control, at?: Spot): Reply {
+    const { cellW, cellH } = this.cell();
+    const { cols, rows, auto, win, z } = this.measure(c, (cols) => at?.rows ?? s.contentRows(cols, cellW, cellH));
+    s.autoRows = auto;
+    s.setSize(cols, rows, cellW, cellH, win);
+    s.setZ(z);
+    this.unplace(s.name);
+    // What the program hears (SPEC §5.2): `p`, `f` and `v` belong to the
+    // surface, 1 on and 0 off, held until sent again; anything else is as
+    // if absent. (Hover is not sent: `v` has nothing to turn on.)
+    const flag = (k: string) => (c.get(k) === "1" ? true : c.get(k) === "0" ? false : undefined);
+    s.presses = flag("p") ?? s.presses;
+    s.fits = flag("f") ?? s.fits;
+    // Fit counts from the placement's own rows. The placement keeps its
+    // size: re-placing is the program's to do.
+    s.setFit(s.fits ? rows : null);
+    // View (SPEC §9.5): its first goes out once drawn, if it differs from
+    // what the program last heard.
+    s.beginPlacement();
+
+    const spot = at ?? this.cursorSpot();
+    const p: Placement = { surface: s, kind: spot.kind, col: spot.col, row: spot.row, marker: spot.marker, disposables: [] };
+    // Scrolled out of the scrollback: the placement dies (PROTOCOL §4).
+    if (p.marker) p.disposables.push(p.marker.onDispose(() => this.unplace(s.name)));
+    this.placements.set(s.name, p);
+    const buf = this.term.buffer.active;
+    // Held in a batch, its line or its screen may have gone before the
+    // batch ended, and it with them.
+    if (p.marker?.isDisposed) this.unplace(s.name);
+    else if (spot.alt !== undefined && (buf.type !== "alternate" || spot.alt !== this.altScreens)) this.remove(s.name);
+    else this.position(p);
+
+    if (!at && c.get("C") !== "1") this.moveCursorBelow(win.h);
+    return { extra: [["c", String(cols)], ["r", String(rows)]] };
+  }
+
+  /** A placement's size, window and z (SPEC §5.2), as its command gives
+   * them; `contentRows` lays the document out for `r=auto`. */
+  private measure(c: Control, contentRows: (cols: number) => number) {
     const cols = Number(c.get("c"));
     if (c.get("c") === undefined || !Number.isInteger(cols)) throw new Failure("EINVAL", "place needs c=<cols>");
     if (cols < 1 || cols > 1000) throw new Failure("EINVAL", "c out of range");
-    const { cellW, cellH } = this.cell();
     const r = c.get("r");
     const auto = r === undefined || r === "auto";
-    const rows = auto ? s.contentRows(cols, cellW, cellH) : Number(r);
+    const rows = auto ? contentRows(cols) : Number(r);
     if (!Number.isInteger(rows) || rows < 1 || rows > 1000) throw new Failure("EINVAL", "r out of range");
     // The window: the part of the surface the placement shows (§5.2).
     const cell = (k: string, d: number) => {
@@ -656,42 +755,20 @@ export class HottyAddon implements ITerminalAddon {
     // which is the boxes' order in the layer.
     const z = c.get("z") === undefined ? 0 : Number(c.get("z"));
     if (!Number.isInteger(z) || z < -1000 || z > 1000) throw new Failure("EINVAL", "z is an integer from -1000 to 1000");
-    s.autoRows = auto;
-    s.setSize(cols, rows, cellW, cellH, win);
-    s.setZ(z);
-    this.unplace(s.name);
-    // What the program hears (SPEC §5.2): `p`, `f` and `v` belong to the
-    // surface, 1 on and 0 off, held until sent again; anything else is as
-    // if absent. (Hover is not sent: `v` has nothing to turn on.)
-    const flag = (k: string) => (c.get(k) === "1" ? true : c.get(k) === "0" ? false : undefined);
-    s.presses = flag("p") ?? s.presses;
-    s.fits = flag("f") ?? s.fits;
-    // Fit counts from the placement's own rows. The placement keeps its
-    // size: re-placing is the program's to do.
-    s.setFit(s.fits ? rows : null);
-    // View (SPEC §9.5): its first goes out once drawn, if it differs from
-    // what the program last heard.
-    s.beginPlacement();
+    return { cols, rows, auto, win, z };
+  }
 
+  /** The cursor's cell now, where a placement goes. */
+  private cursorSpot(): Spot {
     const buf = this.term.buffer.active;
-    const col = buf.cursorX;
-    const row = buf.cursorY;
-    const p: Placement = { surface: s, kind: buf.type === "normal" ? "normal" : "alt", col, row, disposables: [] };
-    if (p.kind === "normal") {
+    const at: Spot = { kind: buf.type === "normal" ? "normal" : "alt", col: buf.cursorX, row: buf.cursorY };
+    if (buf.type === "alternate") at.alt = this.altScreens;
+    if (at.kind === "normal") {
       const marker = this.term.registerMarker(0);
-      if (marker) {
-        p.marker = marker;
-        // Scrolled out of the scrollback: the placement dies (PROTOCOL §4).
-        p.disposables.push(marker.onDispose(() => this.unplace(s.name)));
-      } else {
-        p.kind = "alt";
-      }
+      if (marker) at.marker = marker;
+      else at.kind = "alt";
     }
-    this.placements.set(s.name, p);
-    this.position(p);
-
-    if (c.get("C") !== "1") this.moveCursorBelow(win.h);
-    return { extra: [["c", String(cols)], ["r", String(rows)]] };
+    return at;
   }
 
   /** As the native host: index `rows` times, then carriage return. */
@@ -749,10 +826,12 @@ export class HottyAddon implements ITerminalAddon {
 
   private reset() {
     for (const name of Array.from(this.surfaces.keys())) this.remove(name);
+    for (const h of this.held) h.at?.marker?.dispose();
     this.held = [];
   }
 
   private onBufferChange(type: "normal" | "alternate") {
+    if (type === "alternate") this.altScreens++;
     for (const p of Array.from(this.placements.values())) {
       // Surfaces placed on the alternate screen die with it (PROTOCOL §4).
       if (p.kind === "alt" && type === "normal") this.remove(p.surface.name);

@@ -481,6 +481,12 @@ runs programs for whoever connects.
 - **Cursor.** After `a=place` the cursor moves below the surface, as in the
   native host. xterm.js has no public API for that, so the addon uses the same
   private calls as the official image addon.
+- **Synchronized output** (SPEC §6.3): the addon holds a batch's commands
+  until it ends. A placement in it still goes where the cursor is as it
+  comes, and moves the cursor then; only its drawing waits. One with
+  `r=auto` that moves the cursor needs its document laid out as it comes,
+  so the commands held before it are applied then, and may be drawn before
+  the batch ends.
 - **What xterm.js sends for a key** a text field names (SPEC §10.4) is read
   from its core service's `triggerDataEvent`, also private, which the addon
   holds back while the key goes through xterm.js's keyboard handling.
