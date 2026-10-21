@@ -453,6 +453,37 @@ test("zlib payloads and chunked commands decode", async ({ page }) => {
   expect((await surface(page, "z").locator("#p").textContent())!.length).toBe(5 * 4000);
 });
 
+test("a batch's zlib documents show in the frame that draws its cells", async ({ page }) => {
+  const { deflateSync } = await import("node:zlib");
+  // Nine boxes, as hotty.neuroplast.io's tour draws, each document zlib.
+  let batch = "\x1b[?2026h\x1b[H\x1b[2J";
+  for (let i = 0; i < 9; i++) {
+    const html = `<p id=p>box ${i} ` + "filler ".repeat(3000) + "</p>";
+    batch += `\x1b[${i + 1};1H` + encode(new Control([["a", "doc"], ["s", `b${i}`], ["o", "z"], ["q", "2"]]), deflateSync(Buffer.from(html)));
+    batch += cmd({ a: "place", s: `b${i}`, c: "20", r: "1", C: "1", q: "2" });
+  }
+  batch += "\x1b[12;1Hcells of the batch\x1b[?2026l";
+  // Whenever xterm draws the batch's cells, every box is shown already:
+  // the page paints both in one frame.
+  const frames = await page.evaluate(async (data) => {
+    const term = window.hotty.term as unknown as { onRender(f: () => void): { dispose(): void }; element: HTMLElement };
+    const seen: { cells: boolean; boxes: number }[] = [];
+    const sub = term.onRender(() => {
+      const cells = term.element.querySelector(".xterm-rows")!.textContent!.includes("cells of the batch");
+      const boxes = Array.from(document.querySelectorAll<HTMLElement>(".hotty-surface")).filter((b) => b.style.visibility === "visible").length;
+      seen.push({ cells, boxes });
+    });
+    await window.hotty.write(data);
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    sub.dispose();
+    return seen;
+  }, batch);
+  const drawn = frames.filter((f) => f.cells);
+  expect(drawn.length).toBeGreaterThan(0);
+  expect(drawn.map((f) => f.boxes)).toEqual(drawn.map(() => 9));
+  for (let i = 0; i < 9; i++) expect(await surface(page, `b${i}`).locator("#p").textContent()).toMatch(new RegExp(`^box ${i} `));
+});
+
 /** The cell the addon lays surfaces out with, in CSS pixels. */
 const cssCell = (page: Page) =>
   page.evaluate(() => {

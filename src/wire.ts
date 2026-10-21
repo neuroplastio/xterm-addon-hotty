@@ -181,9 +181,18 @@ export function toBase64(bytes: Uint8Array): string {
 /**
  * zlib (RFC 1950), which `DecompressionStream` calls "deflate". More than max
  * bytes out is refused, and inflating stops there.
+ *
+ * The bytes are written into the stream, not read from a Blob: Chromium
+ * reads a Blob through the browser process, which made a batch of nine
+ * documents take ~17 ms instead of under 1.
  */
 export async function inflate(bytes: Uint8Array, max = MAX_COMMAND): Promise<Uint8Array> {
-  const reader = new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream("deflate")).getReader();
+  const ds = new DecompressionStream("deflate");
+  const writer = ds.writable.getWriter();
+  // Their failures are the reader's too (bad data, or cancelled at max).
+  writer.write(bytes as BufferSource).catch(() => {});
+  writer.close().catch(() => {});
+  const reader = ds.readable.getReader();
   const parts: Uint8Array[] = [];
   let size = 0;
   for (;;) {
