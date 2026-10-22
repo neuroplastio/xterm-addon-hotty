@@ -72,6 +72,27 @@ new HottyAddon({
   `allowNonHttpProtocols`. The program hears nothing of them.
 - The page's own CSP must allow the granted origins too (below).
 
+### The font hosts ship
+
+hotty hosts ship one font, AdwaitaMono Nerd Font Propo (Regular and Bold),
+so that Nerd Font icons and symbols draw without an installed font. It is
+not in the spec: a document can't count on it on another host. The package
+carries it in `fonts/`; serve that directory and name it:
+
+```ts
+new HottyAddon({ fonts: "/static/xterm-addon-hotty/fonts/" });
+```
+
+- The URL resolves against the page. Each surface's CSP allows that
+  directory for fonts, and the page's own CSP must too (below).
+- The font goes into the host stylesheet's `--hotty-font` (SPEC §8): the
+  terminal's `fontFamily`, then ours, then `monospace`. What the terminal's
+  font lacks draws from it. A document's own `font-family: monospace`
+  stays the browser's.
+- The browser fetches a face (about 1.35 MB) the first time a surface draws
+  text in it, once for every surface, and caches it as any other file.
+- Without the option, surfaces use the terminal's fonts and `monospace`.
+
 ## Try it
 
 Clone [neuroplastio/hotty](https://github.com/neuroplastio/hotty) next to
@@ -554,8 +575,9 @@ stops everything. `position: fixed` stays inside the surface's own viewport.
 **The embedding page's CSP applies inside the surfaces too** (about:blank
 iframes inherit it, and it can only be narrowed). A page that embeds xterm.js
 already has to allow inline styles, because xterm's DOM renderer sets them.
-For hotty it must also allow `data:` and `blob:` images, fonts and media, and
-whatever origins it grants in `network`. This is the recommended policy (with
+For hotty it must also allow `data:` and `blob:` images, fonts and media,
+whatever origins it grants in `network`, and the `fonts` directory (`'self'`
+covers one on the page's own origin). This is the recommended policy (with
 no network grant), and `tests/e2e/embedder.spec.ts` checks it:
 
 ```
@@ -624,3 +646,8 @@ Measured 2026-09-29 in headless Chromium 153 (`bench/`):
 ## Licence
 
 Apache-2.0 ([LICENSE](LICENSE)). xterm.js itself is MIT.
+
+The font in `fonts/` is OFL-1.1 ([fonts/OFL.txt](fonts/OFL.txt)). Its Nerd
+Fonts icon sets keep their own licences, listed with their texts in
+[fonts/NOTICE.txt](fonts/NOTICE.txt). A page that serves the font serves both
+files beside it.

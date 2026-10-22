@@ -11,5 +11,5 @@ test("prepare builds what the package exports, for npm and for git", () => {
   const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
   assert.equal(pkg.scripts.prepare, "npm run build && npm run types");
   assert.equal(pkg.scripts.prepack, undefined);
-  assert.deepEqual(pkg.files, ["dist/hotty-xterm.js", "dist/hotty-xterm.js.map", "dist/types"]);
+  assert.deepEqual(pkg.files, ["dist/hotty-xterm.js", "dist/hotty-xterm.js.map", "dist/types", "fonts"]);
 });

@@ -71,6 +71,8 @@ const hotty = new HottyAddon({
   browserKeys: pageKey ? (e) => browserKeys(e) || (e.ctrlKey && e.key === pageKey) : undefined,
   scroll: pageScrolls ? "page" : undefined,
   copyKeys: noCopy ? () => false : undefined,
+  // The font hosts ship, which the build copies into dist/fonts/.
+  fonts: "fonts/",
 });
 const fit = new FitAddon();
 term.loadAddon(fit);

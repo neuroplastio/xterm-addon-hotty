@@ -54,7 +54,7 @@ def hotty_dir():
 
 ROOT = hotty_dir()
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".map": "application/json"}
+TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".map": "application/json", ".woff2": "font/woff2"}
 
 # Page policies for `?csp=<name>`. "strict" breaks xterm.js itself (its DOM
 # renderer sets inline styles); "recommended" is what an embedder needs for

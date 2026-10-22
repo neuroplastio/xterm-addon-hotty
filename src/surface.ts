@@ -24,20 +24,26 @@ import { edited, type FieldState, History, type Run, runOf, stateOf, step } from
 import { byteAt, clusterStart, type FieldChange, FieldError, readField, type Sel, unitAt, wireSel } from "./field.ts";
 import { chars, elementKeymap, INSERT, inputKeys, isBreak, isSpace, type InputKey, type Keymap, keyText, MULTILINE_ACTIONS, NOT_KEYS, type Platform, plan, pressNames, resolve, ROW_ACTIONS, type Rows, type Text } from "./keys.ts";
 
-/** A surface's CSP: nothing from the network but what the host grants. The
- * `<base>` is the addon's own (a document's is read, then dropped), so any
- * http(s) base is allowed. */
-export function csp(host: Policy): string {
+/** A surface's CSP: nothing from the network but what the host grants, and
+ * the host's font (`fonts`, a directory, or ""). The `<base>` is the addon's
+ * own (a document's is read, then dropped), so any http(s) base is allowed. */
+export function csp(host: Policy, fonts = ""): string {
   const with_ = (fixed: string, d: keyof Policy) => [fixed, cspSources(host, d)].filter(Boolean).join(" ");
   return [
     "default-src 'none'",
     with_("img-src data: blob:", "img-src"),
     with_("media-src data: blob:", "media-src"),
-    with_("font-src data: blob:", "font-src"),
+    with_(["font-src data: blob:", cspPath(fonts)].filter(Boolean).join(" "), "font-src"),
     with_("style-src 'unsafe-inline' blob:", "style-src"),
     "form-action 'none'",
     "base-uri http: https:",
   ].join("; ");
+}
+
+/** A URL as a CSP source: what CSP takes as a delimiter is escaped (a
+ * space, `;`, `,`), so it stays one source and can't add a directive. */
+function cspPath(url: string): string {
+  return url.replace(/[\s;,]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0"));
 }
 
 /** A document's base URL (SPEC §7.3): its first <base href>, if absolute http(s). */
@@ -107,6 +113,8 @@ export interface SurfaceHost {
   clicked(name: string): void;
   /** The host's half of the network policy (SPEC §7.2). */
   policy: Policy;
+  /** The directory of the host's font (the `fonts` option), or "". */
+  fonts: string;
   /** The page scrolls, not the terminal (the `scroll` option): wheels and
    *  touch drags over the surface are left to the browser. */
   pageScrolls: boolean;
@@ -500,7 +508,7 @@ export class Surface {
     doc.open();
     doc.write(
       `<!doctype html><html><head><meta charset="utf-8">` +
-        `<meta http-equiv="Content-Security-Policy" content="${csp(host.policy)}">` +
+        `<meta http-equiv="Content-Security-Policy" content="${csp(host.policy, host.fonts)}">` +
         `<base href="${NO_BASE}"><style id="hotty-host"></style></head><body></body></html>`,
     );
     doc.close();

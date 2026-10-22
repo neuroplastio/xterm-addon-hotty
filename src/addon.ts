@@ -81,6 +81,15 @@ export interface HottyOptions {
    * default, whatever this says.
    */
   copyKeys?: (e: KeyboardEvent) => boolean;
+  /**
+   * The URL of the package's `fonts/` directory, as the embedding page
+   * serves it: AdwaitaMono Nerd Font Propo, the font hotty hosts ship. The
+   * surfaces take it as their monospace font, just before `monospace`, so
+   * Nerd Font icons draw without an installed font. Each surface's CSP
+   * allows that directory for fonts; an embedder's own CSP must too. Not in
+   * the spec: a document can't count on it. Default: none.
+   */
+  fonts?: string;
 }
 
 const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -98,6 +107,21 @@ export function browserKeys(e: KeyboardEvent): boolean {
   if (mod && ["=", "+", "-", "0"].includes(e.key)) return true;
   if (e.ctrlKey && e.shiftKey && ["i", "j", "c"].includes(k)) return true;
   return false;
+}
+
+/** The `fonts` option as a surface uses it: absolute, against the page,
+ * since a surface's base is its document's, and ending in a slash, so a
+ * CSP source allows the files in it. "" without it, or when it is no URL. */
+function fontsUrl(fonts: string | undefined): string {
+  if (!fonts) return "";
+  try {
+    const u = new URL(fonts, document.baseURI);
+    if (!u.pathname.endsWith("/")) u.pathname += "/";
+    u.search = u.hash = "";
+    return u.href;
+  } catch {
+    return "";
+  }
 }
 
 /** The copy keys (the default for `copyKeys`): Ctrl+C, and Cmd+C (Meta). */
@@ -237,6 +261,8 @@ export class HottyAddon implements ITerminalAddon {
   private heldTimer: ReturnType<typeof setTimeout> | null = null;
   private css = "";
   private readonly policy: Policy;
+  /** The `fonts` option, absolute, ending in a slash; "" without it. */
+  private readonly fonts: string;
   private metrics = { cellW: 0, cellH: 0, key: "" };
   /** The capabilities the program last heard (SPEC §4), from its query or a
    * `caps` event; null while it has asked for none. */
@@ -285,6 +311,7 @@ export class HottyAddon implements ITerminalAddon {
     const platform: Platform = { mod: mac ? "super" : "ctrl" };
     this.keys = { platform };
     this.policy = clean(options.network);
+    this.fonts = fontsUrl(options.fonts);
     this.store = new Store(this.opts.resourceQuota);
     this.store.onChange = (names) => {
       for (const s of this.surfaces.values()) s.refresh(names);
@@ -916,6 +943,7 @@ export class HottyAddon implements ITerminalAddon {
         for (const [n, s] of this.surfaces) if (n !== name) s.dropWait(true);
       },
       policy: this.policy,
+      fonts: this.fonts,
       pageScrolls: this.pageScrolls,
       scrollPage: (dx, dy) => this.scrollPage(dx, dy),
       wheelGesture: (surface, decide) => {
@@ -1551,7 +1579,7 @@ export class HottyAddon implements ITerminalAddon {
   private hostCss(): string {
     const { cellW, cellH } = this.cell();
     const o = this.term.options;
-    this.css = hostCss(o.theme, { cellW, cellH, px: this.px(), fontFamily: o.fontFamily ?? "monospace", fontSize: o.fontSize ?? 15 });
+    this.css = hostCss(o.theme, { cellW, cellH, px: this.px(), fontFamily: o.fontFamily ?? "monospace", fontSize: o.fontSize ?? 15, fonts: this.fonts });
     return this.css;
   }
 

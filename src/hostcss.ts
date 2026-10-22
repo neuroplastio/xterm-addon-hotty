@@ -12,6 +12,26 @@ export interface Metrics {
   px: number;
   fontFamily: string;
   fontSize: number;
+  /** The directory of the font hosts ship (the `fonts` option), or "". */
+  fonts?: string;
+}
+
+/** The font hotty hosts ship, Regular and Bold (the package's `fonts/`). */
+export const FONT_FAMILY = "AdwaitaMono Nerd Font Propo";
+const FONT_FACES = [
+  ["AdwaitaMonoNerdFontPropo-Regular.woff2", 400],
+  ["AdwaitaMonoNerdFontPropo-Bold.woff2", 700],
+] as const;
+
+/** The font's faces, from the directory `fonts`: none without it. The
+ * browser fetches a face when a surface first draws text in it, once for
+ * every surface. */
+export function fontFaces(fonts: string): string[] {
+  if (!fonts) return [];
+  return FONT_FACES.map(
+    ([file, weight]) =>
+      `@font-face { font-family: "${FONT_FAMILY}"; src: url("${fonts}${file}") format("woff2"); font-weight: ${weight}; font-style: normal; font-display: swap; }`,
+  );
 }
 
 // xterm.js's own defaults (src/browser/services/ThemeService.ts:23-24,
@@ -43,6 +63,7 @@ export function boxBackground(p: ReturnType<typeof palette>): string {
 export function hostCss(theme: ITheme | undefined, m: Metrics): string {
   const p = palette(theme);
   const lines = [
+    ...fontFaces(m.fonts ?? ""),
     "@layer hotty-host {",
     ":root {",
     `  color-scheme: ${p.dark ? "dark" : "light"};`,
@@ -54,7 +75,7 @@ export function hostCss(theme: ITheme | undefined, m: Metrics): string {
     `  --hotty-cell-w: ${m.cellW}px;`,
     `  --hotty-cell-h: ${m.cellH}px;`,
     `  --hotty-px: ${m.px}px;`,
-    `  --hotty-font: ${fontStack(m.fontFamily)};`,
+    `  --hotty-font: ${fontStack(m.fontFamily, !!m.fonts)};`,
     "  font-family: var(--hotty-font);",
     `  font-size: ${m.fontSize}px;`,
     // An explicit line-height, so that `1rlh` is one terminal row.
@@ -155,11 +176,12 @@ export function rootTouchAction(axes: number, pageScrolls: boolean): string {
   return axes === 3 ? "pan-x pan-y" : axes === 1 ? "pan-y" : axes === 2 ? "pan-x" : "none";
 }
 
-function fontStack(family: string): string {
-  const f = family.trim();
-  if (!f) return "monospace";
-  // xterm's fontFamily is already a CSS font-family list.
-  return /monospace\s*$/.test(f) ? f : `${f}, monospace`;
+/** The terminal's font list, ending in `monospace`, with the font hosts
+ * ship just before it when there is one (`ours`): what the terminal's fonts
+ * lack, such as a Nerd Font icon, draws from it. */
+export function fontStack(family: string, ours = false): string {
+  const f = family.trim().replace(/(^|,)\s*monospace\s*$/, "");
+  return [f, ours ? `"${FONT_FAMILY}"` : "", "monospace"].filter(Boolean).join(", ");
 }
 
 /** Relative luminance of a `#rrggbb` (or `#rgb`) colour; 0 for anything else. */

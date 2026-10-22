@@ -14,7 +14,8 @@
   "files": [
     "dist/hotty-xterm.js",
     "dist/hotty-xterm.js.map",
-    "dist/types"
+    "dist/types",
+    "fonts"
   ],
   "sideEffects": false,
   "scripts": {

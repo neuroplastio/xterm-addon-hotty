@@ -75,11 +75,11 @@ function rgbOf(hex: string): string {
   return /^#[0-9a-f]{6}$/i.test(hex) ? rgb(hex) : hex;
 }
 
-async function setup(page: Page, html = CONTROLS) {
+async function setup(page: Page, html = CONTROLS, shown = "#t") {
   await open(page);
   await send(page, { a: "doc", s: "x", q: "2" }, html);
   await send(page, { a: "place", s: "x", c: "60", r: "4", q: "2" });
-  await expect(surface(page, "x").locator("#t")).toBeVisible();
+  await expect(surface(page, "x").locator(shown)).toBeVisible();
 }
 
 test("controls, focus, links and selected text take the terminal's palette: dark", async ({ page }) => {
@@ -115,4 +115,24 @@ test("a document that styles its own controls wins over the host's palette", asy
   });
   expect((await style(page, "l", ["color"])).color).toBe("rgb(7, 8, 9)");
   expect((await style(page, "c", ["accent-color"]))["accent-color"]).toBe("rgb(10, 11, 12)");
+});
+
+test("a surface's monospace takes the font hosts ship, from the `fonts` directory, under its CSP", async ({ page }) => {
+  await setup(page, `<p id=p>&#xf0633; a</p>`, "#p");
+  const got = await surface(page, "x")
+    .locator("html")
+    .evaluate(async (el) => {
+      const d = el.ownerDocument;
+      const csp = d.querySelector<HTMLMetaElement>('meta[http-equiv="Content-Security-Policy"]')!.content;
+      const stack = getComputedStyle(el).getPropertyValue("--hotty-font").trim();
+      // md-apple_keyboard_command, a Nerd Font icon.
+      const faces = await d.fonts.load('16px "AdwaitaMono Nerd Font Propo"', "\u{F0633}");
+      return { csp, stack, loaded: faces.map((f) => f.status), check: d.fonts.check('16px "AdwaitaMono Nerd Font Propo"', "\u{F0633}") };
+    });
+  // The demo passes `fonts: "fonts/"`, against the page.
+  const dir = new URL("fonts/", page.url()).href;
+  expect(got.csp).toContain(`font-src data: blob: ${dir}`);
+  expect(got.stack).toMatch(/"AdwaitaMono Nerd Font Propo", monospace$/);
+  expect(got.loaded).toEqual(["loaded"]);
+  expect(got.check).toBe(true);
 });

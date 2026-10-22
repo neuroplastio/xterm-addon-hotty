@@ -11,3 +11,4 @@ await esbuild.build({ ...common, entryPoints: ["src/index.ts"], outfile: "dist/h
 await esbuild.build({ ...common, entryPoints: ["demo/main.ts"], outfile: "dist/demo.js" });
 cpSync("node_modules/@xterm/xterm/css/xterm.css", "dist/xterm.css");
 cpSync("demo/index.html", "dist/index.html");
+cpSync("fonts", "dist/fonts", { recursive: true });
