@@ -123,7 +123,7 @@ const GESTURE_MS = 150;
 
 /** The hotty versions the addon speaks (SPEC §4), highest first. The first
  * is VERSION's MAJOR.MINOR (gov P-5 rule 6). */
-export const SPEAKS = ["0.4"];
+export const SPEAKS = ["0.5"];
 
 /**
  * The version a query is answered in (SPEC §4): the highest the addon

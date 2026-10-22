@@ -305,7 +305,7 @@ test("a paste command brings the clipboard's text, from the browser's paste; wit
 
 test("the capabilities report the key settings and the menu", async ({ page }) => {
   await open(page, "?pty=0");
-  await send(page, { a: "q", v: "0.4" });
+  await send(page, { a: "q", v: "0.5" });
   const caps = (await take(page)).msgs[0]!.body as Record<string, unknown>;
   expect(caps.mod).toBe("ctrl");
   expect(caps.edit).toEqual({ "select-all": ["ctrl+a"], copy: ["ctrl+c"], cut: ["ctrl+x"], paste: ["ctrl+v"], undo: ["ctrl+z"], redo: ["ctrl+shift+z", "ctrl+y"] });
