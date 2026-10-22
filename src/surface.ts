@@ -2782,7 +2782,9 @@ export class Surface {
    * checked whole before anything changes: the error is the first of
    * `EDETACHED`, `ENOTARGET` (no element `target`), `EINVAL` and `ESTALE`
    * (the user changed it since, or an input method composes in it) that
-   * holds, as a `FieldError`.
+   * holds, as a `FieldError`. Positions come last, `EINVAL` past the end
+   * or inside a code point only when the command is not stale: they count
+   * bytes of the value the program heard.
    */
   field(target: string | undefined, body: Uint8Array) {
     if (this.detachedState) throw new FieldError("EDETACHED", `surface ${this.name} is detached`);
@@ -2818,11 +2820,14 @@ export class Surface {
     else c.value = change.value!; // sanitized as its type says
   }
 
-  /** `a=field` in a text field (SPEC §6.4): positions checked against its
-   * value, `sel` against the new one, then the edit made as one of its
-   * history, and the selection set, or kept while it is not focused. */
+  /** `a=field` in a text field (SPEC §6.4): if it is not stale, positions
+   * checked against its value, `sel` against the new one, then the edit
+   * made as one of its history, and the selection set, or kept while it is
+   * not focused. */
   private fieldText(f: HTMLInputElement | HTMLTextAreaElement, change: FieldChange, stale: () => void) {
     const invalid = (why: string) => new FieldError("EINVAL", why);
+    // Positions come last (§6.4): a stale command is ESTALE whatever they are.
+    stale();
     const now = f.value;
     const sel = this.selectionOf(f);
     let value = now;
@@ -2853,7 +2858,6 @@ export class Surface {
       const [anchor, caret] = [clusterStart(value, a), clusterStart(value, c)];
       after = { start: Math.min(anchor, caret), end: Math.max(anchor, caret), backward: anchor > caret };
     }
-    stale();
     const focused = this.doc.activeElement === f;
     this.applying = true;
     try {
