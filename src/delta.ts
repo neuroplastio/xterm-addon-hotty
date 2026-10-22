@@ -86,11 +86,21 @@ export class Deltas {
   private readonly resolver: Resolver;
   /** Scrolls an element into view: the surface's to do (`reveal`). */
   private readonly revealer: (el: Element, where: Reveal) => void;
+  /** Hears that the delta set a control's value: the surface puts a text
+   * field's caret at the end (SPEC §6.2). */
+  private readonly valued: (el: Element) => void;
 
-  constructor(doc: Document, resolver: Resolver, revealer: (el: Element, where: Reveal) => void) {
+  constructor(doc: Document, resolver: Resolver, revealer: (el: Element, where: Reveal) => void, valued: (el: Element) => void = () => {}) {
     this.doc = doc;
     this.resolver = resolver;
     this.revealer = revealer;
+    this.valued = valued;
+  }
+
+  /** A changed attribute's property, as `syncProperty`, told to `valued`
+   * when it set the value. */
+  private sync(el: Element, name: string, value: string | null, focused: boolean) {
+    if (syncProperty(el, name, value, focused)) this.valued(el);
   }
 
   /** Parses a fragment inert, cleaned and resolved. */
@@ -186,14 +196,14 @@ export class Deltas {
         const t = find();
         const name = key!;
         this.resolver.set(t, name, payload);
-        syncProperty(t, name, payload, this.doc.activeElement === t);
+        this.sync(t, name, payload, this.doc.activeElement === t);
         return;
       }
       case "unattr": {
         const t = find();
         const name = key!;
         this.resolver.remove(t, name);
-        syncProperty(t, name, null, this.doc.activeElement === t);
+        this.sync(t, name, null, this.doc.activeElement === t);
         return;
       }
       case "text": {
@@ -259,13 +269,13 @@ export class Deltas {
       const had = oldAttrs.find(([n]) => n === name);
       if (!had || had[1] !== value) {
         this.resolver.set(old, name, value);
-        syncProperty(old, name, value, focused);
+        this.sync(old, name, value, focused);
       }
     }
     for (const [name] of oldAttrs) {
       if (!newAttrs.some(([n]) => n === name)) {
         this.resolver.remove(old, name);
-        syncProperty(old, name, null, focused);
+        this.sync(old, name, null, focused);
       }
     }
   }
@@ -332,16 +342,19 @@ function move(parent: Node, node: Node, before: Node | null) {
 
 /**
  * Attributes that only set a control's *default*: the program's value is the
- * live one unless the user is editing that control (SPEC §6.2).
+ * live one unless the user is editing that control (SPEC §6.2). Whether it
+ * set the value.
  */
-function syncProperty(el: Element, name: string, value: string | null, focused: boolean) {
-  if (focused) return;
+function syncProperty(el: Element, name: string, value: string | null, focused: boolean): boolean {
+  if (focused) return false;
   const n = name.toLowerCase();
   if (n === "value" && "value" in el && (el.localName === "input" || el.localName === "textarea" || el.localName === "select")) {
     (el as HTMLInputElement).value = value ?? "";
+    return true;
   } else if (n === "checked" && el.localName === "input") {
     (el as HTMLInputElement).checked = value !== null;
   } else if (n === "selected" && el.localName === "option") {
     (el as HTMLOptionElement).selected = value !== null;
   }
+  return false;
 }

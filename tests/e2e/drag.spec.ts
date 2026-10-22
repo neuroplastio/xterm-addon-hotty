@@ -555,7 +555,7 @@ test.describe("§9.2: a press with Alt is the program's", () => {
     const { msgs, raw } = await take(page);
     // The edited field commits, as it does whenever the keyboard leaves.
     expect(evs(msgs)).toEqual([
-      ["f", "change", "name", { value: "xz" }],
+      ["f", "change", "name", { value: "xz", rev: 1 }],
       ["f", "blur", "", null],
     ]);
     expect(raw).toMatch(/\x1b\[<8;\d+;\d+M/);

@@ -188,7 +188,7 @@ for (const v of vectors.decode.filter((v: { bodies?: unknown; requires?: string[
       // What an SDK fills from a body (SDK.md §3.9): these from any event's,
       // and a view's areas only from a view's. A message that lists none of
       // them (a click's, read for a view) says nothing of the body.
-      const event = ["value", "checked", "fields", "link", "size", "fit_rows", "drag", "hover", "area", ...(e === "view" ? ["view"] : [])];
+      const event = ["value", "checked", "rev", "sel", "fields", "link", "size", "fit_rows", "drag", "hover", "area", ...(e === "view" ? ["view"] : [])];
       const listed = event.filter((k) => m.event !== undefined && k in m.event);
       if (m.caps === undefined && m.reply === undefined && listed.length === 0) return;
       const filled = m.caps != null || m.reply?.code != null || m.reply?.detail != null || listed.some((k) => m.event[k] != null);

@@ -21,6 +21,7 @@ import type { Body, Value } from "./msgpack.ts";
 import { cspSources, intersect, parse, type Policy } from "./network.ts";
 import { NO_BASE, type Store } from "./resources.ts";
 import { edited, type FieldState, History, type Run, runOf, stateOf, step } from "./history.ts";
+import { byteAt, clusterStart, type FieldChange, FieldError, readField, type Sel, unitAt, wireSel } from "./field.ts";
 import { chars, elementKeymap, INSERT, inputKeys, isBreak, isSpace, type InputKey, type Keymap, keyText, MULTILINE_ACTIONS, NOT_KEYS, type Platform, plan, pressNames, resolve, ROW_ACTIONS, type Rows, type Text } from "./keys.ts";
 
 /** A surface's CSP: nothing from the network but what the host grants. The
@@ -378,6 +379,33 @@ export class Surface {
   private editing = false;
   /** The field shown as `text` while focused (`NO_CARET`). */
   private masked: HTMLInputElement | null = null;
+  /** Each control's `rev` (SPEC §6.4): the changes the user made to it
+   * since it entered the document. A radio group's is its buttons'
+   * highest (`revOf`). */
+  private revs = new WeakMap<Element, number>();
+  /** Text fields the user edited since they were focused or last sent
+   * `change`: focus leaving commits only theirs (SPEC §6.4, no echo). */
+  private dirty = new WeakSet<Element>();
+  /** Controls whose `input` counted a pick or a value, which the `change`
+   * after it carries without counting it again. */
+  private picked = new WeakSet<Element>();
+  /** A text field's selection while it is not focused (SPEC §10.2), which
+   * `a=focus` gives back; none is the caret at the end of its value. */
+  private kept = new WeakMap<Element, Sel>();
+  /** What the program last heard of a field with `data-on~=caret`: its
+   * selection, in bytes, and its `rev` (SPEC §9, `caret`). None is the
+   * caret at the end and `rev` 0, as the field entered the document. */
+  private heard = new WeakMap<Element, { sel: [number, number]; rev: number }>();
+  /** The field whose selection the next frame checks (`caret`), and that
+   * frame. */
+  private caretField: Element | null = null;
+  private caretFrame = 0;
+  /** The field an input method composes text in: `a=field` is stale
+   * meanwhile (SPEC §6.4). */
+  private composing: Element | null = null;
+  /** `a=field` is changing a control: the events that fire are not the
+   * user's. */
+  private applying = false;
   /** Tab is moving focus: the field it reaches selects its text. */
   private tabbing = false;
   /** A prefix is on (SPEC §10.5): every key reaches the program, whatever is
@@ -481,7 +509,7 @@ export class Surface {
     this.css = hostCss;
     this.restyle();
     this.resolver = new Resolver(host.store);
-    this.deltas = new Deltas(doc, this.resolver, (el, where) => this.reveal(el, where));
+    this.deltas = new Deltas(doc, this.resolver, (el, where) => this.reveal(el, where), (el) => this.valueSet(el));
     this.listen();
   }
 
@@ -947,6 +975,7 @@ export class Surface {
     this.dropDrag();
     this.dropAlt();
     if (this.settling) clearTimeout(this.settling);
+    if (this.caretFrame) this.frame.ownerDocument.defaultView?.cancelAnimationFrame(this.caretFrame);
     this.prefix = false;
     // A focus that waits leaves the page's focus where it is.
     if ((this.keyboard && this.waiting === null) || this.frameFocused()) this.host.focusTerminal();
@@ -1029,11 +1058,14 @@ export class Surface {
         this.frame.focus();
         this.frame.contentWindow?.focus();
       }
+      const had = this.focusedControl();
       if (el) (el as HTMLElement).focus();
-      else if (!this.focusedControl()) this.tabbable()[0]?.focus();
+      else if (!had) this.tabbable()[0]?.focus();
       this.keyboard = true;
       // No echo (SPEC §10.1): the program knows where it put focus.
       this.told = this.focusedControl();
+      // A text field it moves to has its selection back (§10.2).
+      if (this.told && this.told !== had && this.isTextField(this.told)) this.restoreSelection(this.told);
     } finally {
       setTimeout(() => (this.programFocus = false), 0);
     }
@@ -1517,6 +1549,7 @@ export class Surface {
    * caret after it, as typing does: an edit in the `run` for the field's
    * history (SPEC §10.2, undo). */
   private replace(el: HTMLInputElement | HTMLTextAreaElement, from: number, to: number, text: string, run: Run) {
+    this.flushCaret(el);
     const before = stateOf(el);
     el.setSelectionRange(from, to);
     if (from === to && !text) return;
@@ -2195,12 +2228,32 @@ export class Surface {
       true,
     );
     d.addEventListener("focusin", (e) => {
+      // A focus of its own: what the user edits from here on, focus
+      // leaving commits (SPEC §6.4).
+      if (isElement(e.target as EventTarget)) this.dirty.delete(e.target as Element);
       this.maskField(e.target, true);
       this.onFocusIn(e);
+      this.noteCaret();
     }, true);
     d.addEventListener("focusout", (e) => {
+      // The field keeps its selection while it is not focused (SPEC §10.2),
+      // read while it is still shown as it was focused (`NO_CARET`).
+      const el = e.target as Element;
+      if (isElement(el) && this.isTextField(el)) {
+        this.kept.set(el, fieldSel(el as HTMLInputElement | HTMLTextAreaElement));
+        this.flushCaret(el);
+      }
       if (e.target === this.masked) this.unmaskField();
     }, true);
+    // The user moving a field's selection (SPEC §9, `caret`): the browser
+    // tells some moves, and every key and press may make one.
+    d.addEventListener("selectionchange", () => this.noteCaret(), true);
+    d.addEventListener("pointerup", () => this.noteCaret(), true);
+    d.addEventListener("mouseup", () => this.noteCaret(), true);
+    d.addEventListener("keyup", () => this.noteCaret(), true);
+    // An input method composing text: `a=field` waits for it (SPEC §6.4).
+    d.addEventListener("compositionstart", (e) => (this.composing = e.target as Element), true);
+    d.addEventListener("compositionend", () => (this.composing = null), true);
     d.addEventListener("click", (e) => this.onClick(e), true);
     d.addEventListener("auxclick", (e) => this.onAuxClick(e), true);
     d.addEventListener("mouseover", (e) => this.onOver(e), true);
@@ -2209,7 +2262,10 @@ export class Surface {
     d.addEventListener("change", (e) => this.onChange(e), true);
     d.addEventListener("beforeinput", (e) => this.onBeforeInput(e as InputEvent), true);
     d.addEventListener("input", (e) => this.onInput(e), true);
-    d.addEventListener("keydown", (e) => this.onKey(e), true);
+    d.addEventListener("keydown", (e) => {
+      this.onKey(e);
+      this.noteCaret();
+    }, true);
     d.addEventListener("keyup", (e) => this.onKeyUp(e), true);
     d.addEventListener("dragstart", (e) => e.preventDefault(), true);
     d.addEventListener("wheel", (e) => this.onWheel(e), { capture: true, passive: false });
@@ -2595,24 +2651,36 @@ export class Surface {
     this.emit("submit", id, { fields });
   }
 
+  /** A control's value committed (SPEC §9): a toggle, a check or a pick at
+   * once, a text field's edits as focus leaves it. Each toggle and check is
+   * one more `rev`, and so is a pick that no `input` counted (§6.4). */
   private onChange(e: Event) {
+    if (this.applying) return;
     const el = e.target as HTMLInputElement;
-    const id = el.getAttribute?.("id");
+    if (!isElement(el) || !isControl(el)) return;
+    const check = el.localName === "input" && (el.type === "checkbox" || el.type === "radio");
+    if (check) this.bump(el);
+    else if (this.isTextField(el)) {
+      // Only the user's edits are committed: a field that only a=field
+      // changed sends none (§6.4).
+      if (!this.dirty.has(el)) return;
+      this.dirty.delete(el);
+    } else if (!this.picked.delete(el)) this.bump(el);
+    this.flushCaret(el);
+    const id = el.getAttribute("id");
     if (!id) return;
-    const type = (el.getAttribute("type") ?? "").toLowerCase();
-    if (el.localName === "input" && (type === "checkbox" || type === "radio")) {
-      // The program's value; none, and left out, without a value attribute.
-      this.emit("change", id, { checked: el.checked, value: this.resolver.get(el, "value") });
-    } else if ("value" in el) {
-      this.emit("change", id, { value: el.value });
-    }
+    const rev = this.revOf(el);
+    this.emit("change", id, check ? { checked: el.checked, value: el.value, rev } : { value: el.value, rev });
   }
 
   /** An edit the browser makes (typing, a paste): what the field was, for
-   *  its history (SPEC §10.2, undo). */
+   *  its history (SPEC §10.2, undo). A move of the caret before it is
+   *  heard before it (`caret`). */
   private onBeforeInput(e: InputEvent) {
     const el = e.target as HTMLInputElement;
-    if (this.editing || !isValueField(el) || e.inputType.startsWith("history")) return;
+    if (this.applying || this.editing) return;
+    if (isElement(el)) this.flushCaret(el);
+    if (!isValueField(el) || e.inputType.startsWith("history")) return;
     this.pending = { el, before: stateOf(el), run: runOf(e.inputType) };
   }
 
@@ -2641,6 +2709,7 @@ export class Surface {
     const h = this.histories.get(el);
     const s = h ? step(h, stateOf(el), redo) : null;
     if (!s) return;
+    this.flushCaret(el);
     el.value = s.value;
     el.setSelectionRange(s.start, s.end, s.backward ? "backward" : "forward");
     const win = this.frame.contentWindow as unknown as typeof globalThis;
@@ -2677,17 +2746,285 @@ export class Surface {
     });
   }
 
+  /** An edit of a control's value, or a pick (SPEC §9): one more `rev`
+   * (§6.4), and `input` with `data-on~=input`, its selection with it in a
+   * text field with `data-on~=caret`; without `input`, that field's
+   * `caret` says the edit. A toggle and a check count at their `change`;
+   * a change of a=field's is none of these. */
   private onInput(e: Event) {
+    if (this.applying) return;
     this.record(e);
     const el = e.target as HTMLInputElement;
-    const id = el.getAttribute?.("id");
-    if (!id) return;
-    const type = (el.getAttribute("type") ?? "").toLowerCase();
-    if (type === "checkbox" || type === "radio") return; // reported as `change`
-    if ((el.getAttribute("data-on") ?? "").split(/\s+/).includes("input") && "value" in el) {
-      this.emit("input", id, { value: el.value });
+    if (!isElement(el) || !isControl(el)) return;
+    if (el.localName === "input" && (el.type === "checkbox" || el.type === "radio")) return; // reported as `change`
+    this.bump(el);
+    const text = this.isTextField(el);
+    if (text) this.dirty.add(el);
+    else this.picked.add(el);
+    const id = el.getAttribute("id");
+    if (!id || !listens(el, "input")) {
+      this.noteCaret(el);
+      return;
     }
+    const rev = this.revOf(el);
+    if (text && listens(el, "caret")) {
+      const sel = wireSel(el.value, this.selectionOf(el));
+      this.heard.set(el, { sel, rev });
+      this.emit("input", id, { value: el.value, rev, sel });
+    } else this.emit("input", id, { value: el.value, rev });
   }
+
+  // --- Fields (SPEC §6.4) ---------------------------------------------------
+
+  /**
+   * `a=field`: changes a control as the program says, focused or not, if
+   * the user has not changed it since `rev`, and sends nothing back. It is
+   * checked whole before anything changes: the error is the first of
+   * `EDETACHED`, `ENOTARGET` (no element `target`), `EINVAL` and `ESTALE`
+   * (the user changed it since, or an input method composes in it) that
+   * holds, as a `FieldError`.
+   */
+  field(target: string | undefined, body: Uint8Array) {
+    if (this.detachedState) throw new FieldError("EDETACHED", `surface ${this.name} is detached`);
+    if (!target) throw new FieldError("EINVAL", "a=field needs t");
+    const el = this.doc.getElementById(target);
+    if (!el) throw new FieldError("ENOTARGET", target);
+    const change = readField(body);
+    const invalid = (why: string) => new FieldError("EINVAL", why);
+    const kind = this.fieldKind(el);
+    if (kind === null) throw invalid(`${target} is not a control`);
+    if (kind !== "text" && (change.text !== undefined || change.sel !== undefined)) throw invalid("text, from, to and sel are for text fields");
+    if (kind === "check" && change.value !== undefined) throw invalid("value is not for checkboxes and radio buttons");
+    if (kind !== "check" && change.checked !== undefined) throw invalid("checked is for checkboxes and radio buttons");
+    const stale = () => {
+      const rev = this.revOf(el);
+      if (change.rev !== rev || this.composing === el) throw new FieldError("ESTALE", String(rev));
+    };
+    if (kind === "text") {
+      this.fieldText(el as HTMLInputElement | HTMLTextAreaElement, change, stale);
+      return;
+    }
+    if (kind === "select") {
+      const s = el as HTMLSelectElement;
+      const i = Array.from(s.options).findIndex((o) => o.value === change.value);
+      if (i < 0) throw invalid(`${target} has no option ${JSON.stringify(change.value)}`);
+      stale();
+      s.selectedIndex = i; // disabled or not
+      return;
+    }
+    stale();
+    const c = el as HTMLInputElement;
+    if (kind === "check") c.checked = change.checked!; // unchecks the rest of a radio group
+    else c.value = change.value!; // sanitized as its type says
+  }
+
+  /** `a=field` in a text field (SPEC §6.4): positions checked against its
+   * value, `sel` against the new one, then the edit made as one of its
+   * history, and the selection set, or kept while it is not focused. */
+  private fieldText(f: HTMLInputElement | HTMLTextAreaElement, change: FieldChange, stale: () => void) {
+    const invalid = (why: string) => new FieldError("EINVAL", why);
+    const now = f.value;
+    const sel = this.selectionOf(f);
+    let value = now;
+    let edit: { from: number; to: number; text: string } | null = null;
+    let after: Sel = sel;
+    if (change.value !== undefined) {
+      value = this.sanitized(f, change.value);
+      edit = { from: 0, to: now.length, text: value };
+      after = { start: value.length, end: value.length, backward: false };
+    } else if (change.text !== undefined) {
+      let [from, to] = [sel.start, sel.end];
+      if (change.from !== undefined) {
+        const a = unitAt(now, change.from);
+        const b = unitAt(now, change.to!);
+        if (a === null || b === null) throw invalid("from or to is past the end of the value, or inside a code point");
+        [from, to] = [a, b];
+      }
+      // As a paste (§10.2): an input drops its line breaks.
+      const text = f.localName === "textarea" ? change.text.replace(/\r\n?/g, "\n") : change.text.replace(/[\r\n]/g, "");
+      value = now.slice(0, from) + text + now.slice(to);
+      edit = { from, to, text };
+      after = { start: from + text.length, end: from + text.length, backward: false };
+    }
+    if (change.sel !== undefined) {
+      const [a, c] = change.sel.map((b) => unitAt(value, b));
+      if (a == null || c == null) throw invalid("sel is past the end of the value, or inside a code point");
+      // An end inside a character moves to its start.
+      const [anchor, caret] = [clusterStart(value, a), clusterStart(value, c)];
+      after = { start: Math.min(anchor, caret), end: Math.max(anchor, caret), backward: anchor > caret };
+    }
+    stale();
+    const focused = this.doc.activeElement === f;
+    this.applying = true;
+    try {
+      if (edit && focused) this.insert(f, edit.from, edit.to, edit.text, value);
+      else if (edit) f.value = value;
+      if (focused) f.setSelectionRange(after.start, after.end, after.backward ? "backward" : "forward");
+      else this.kept.set(f, after);
+    } finally {
+      this.applying = false;
+    }
+    // One edit of the field's history, which ends a run of typing; `sel`
+    // alone edits nothing, and ends it too (§10.2).
+    let h = this.histories.get(f);
+    if (!h) this.histories.set(f, (h = new History()));
+    edited(h, { value: now, ...sel }, { value, ...after }, null);
+    if (this.pending?.el === f) this.pending = null;
+    if (this.goal?.el === f) this.goal = null;
+    // The program knows where it put the selection.
+    if (this.caretField === f) this.caretField = null;
+    if (listens(f, "caret")) this.heard.set(f, { sel: wireSel(value, after), rev: this.revOf(f) });
+  }
+
+  /** Puts `text` in place of code units `from` to `to` of a focused field
+   * as a paste does, the editing command's events the field's own
+   * (`applying`): the browser commits it with the user's edits as focus
+   * leaves. Its value is then `value`, as the command left it or as set
+   * where the command does not (a `maxlength`, a read-only field). */
+  private insert(f: HTMLInputElement | HTMLTextAreaElement, from: number, to: number, text: string, value: string) {
+    f.setSelectionRange(from, to);
+    if (text) this.doc.execCommand("insertText", false, text);
+    else if (from !== to) this.doc.execCommand("delete", false);
+    if (f.value !== value) f.setRangeText(value, 0, f.value.length, "end");
+  }
+
+  /** `value` as `f` takes it from a script (SPEC §6.4): sanitized as its
+   * type says, the program's for a field shown as `text` (`NO_CARET`). */
+  private sanitized(f: HTMLInputElement | HTMLTextAreaElement, value: string): string {
+    if (f.localName === "textarea") return value.replace(/\r\n?/g, "\n");
+    const probe = f.cloneNode(false) as HTMLInputElement;
+    if (f === this.masked) probe.setAttribute("type", this.resolver.get(f, "type") ?? "text");
+    probe.value = value;
+    return probe.value;
+  }
+
+  /** What `a=field` takes `el` for (SPEC §6.4): a text field, a checkbox
+   * or a radio button, a select, another control; null for what is none. */
+  private fieldKind(el: Element): "text" | "check" | "select" | "other" | null {
+    if (el.localName === "textarea") return "text";
+    if (el.localName === "select") return "select";
+    if (el.localName !== "input") return null;
+    const type = this.inputType(el as HTMLInputElement);
+    if (FIELD_TYPES.has(type)) return "text";
+    if (type === "checkbox" || type === "radio") return "check";
+    return NOT_CONTROLS.has(type) ? null : "other";
+  }
+
+  /** A text field of §10.2: an input of a text type, or a textarea. */
+  private isTextField(el: Element): el is HTMLInputElement | HTMLTextAreaElement {
+    return this.fieldKind(el) === "text";
+  }
+
+  /** A control's `rev` (SPEC §6.4); a radio button's is its group's. */
+  private revOf(el: Element): number {
+    const group = radioGroup(el);
+    return group ? Math.max(0, ...group.map((b) => this.revs.get(b) ?? 0)) : (this.revs.get(el) ?? 0);
+  }
+
+  /** One more change of the user's to `el`: to its whole group, for a
+   * radio button. */
+  private bump(el: Element) {
+    const rev = this.revOf(el) + 1;
+    for (const b of radioGroup(el) ?? [el]) this.revs.set(b, rev);
+  }
+
+  /** A text field's selection: its own while focused, the one it keeps
+   * otherwise (SPEC §10.2), the caret at the end of the value if none. */
+  private selectionOf(f: HTMLInputElement | HTMLTextAreaElement): Sel {
+    return this.doc.activeElement === f ? fieldSel(f) : this.keptSel(f);
+  }
+
+  /** The selection a field keeps while it is not focused. */
+  private keptSel(f: HTMLInputElement | HTMLTextAreaElement): Sel {
+    const n = f.value.length;
+    const k = this.kept.get(f);
+    return k ? { start: Math.min(k.start, n), end: Math.min(k.end, n), backward: k.backward } : { start: n, end: n, backward: false };
+  }
+
+  /** `a=focus` gives a field its selection back as it was (SPEC §10.1). */
+  private restoreSelection(f: HTMLInputElement | HTMLTextAreaElement) {
+    const s = this.keptSel(f);
+    f.setSelectionRange(s.start, s.end, s.backward ? "backward" : "forward");
+    if (this.caretField === f) this.caretField = null;
+    if (listens(f, "caret")) this.heard.set(f, { sel: wireSel(f.value, s), rev: this.revOf(f) });
+  }
+
+  /** A delta set a field's value (SPEC §6.2): its caret goes to the end,
+   * where the program knows it is. */
+  private valueSet(el: Element) {
+    if (!this.isTextField(el)) return;
+    this.kept.delete(el);
+    if (this.doc.activeElement === el) el.setSelectionRange(el.value.length, el.value.length);
+    if (this.caretField === el) this.caretField = null;
+    const end = byteAt(el.value, el.value.length);
+    if (listens(el, "caret")) this.heard.set(el, { sel: [end, end], rev: this.revOf(el) });
+  }
+
+  /** The user may have moved the selection of the focused field, or `el`
+   * (SPEC §9, `caret`): the next frame checks it, once however often it
+   * moved meanwhile. Another field's check, waiting, is made first. */
+  private noteCaret(el: Element | null = this.focusedControl()) {
+    if (!el || this.detachedState || !this.isTextField(el) || !listens(el, "caret")) return;
+    if (this.caretField && this.caretField !== el) this.flushCaret(this.caretField);
+    this.caretField = el;
+    if (this.caretFrame) return;
+    this.caretFrame = this.frame.ownerDocument.defaultView!.requestAnimationFrame(() => {
+      this.caretFrame = 0;
+      const f = this.caretField;
+      this.caretField = null;
+      if (f) this.checkCaret(f);
+    });
+  }
+
+  /** Makes `el`'s check now, if one waits: before another event of the
+   * field (SPEC §9). */
+  private flushCaret(el: Element) {
+    if (this.caretField !== el) return;
+    this.caretField = null;
+    this.checkCaret(el);
+  }
+
+  /** `caret`, if the field's selection or its `rev` is not what the program
+   * last heard: the user moved it, or edited a field that sends no
+   * `input`. */
+  private checkCaret(el: Element) {
+    if (!el.isConnected || this.detachedState || !this.isTextField(el) || !listens(el, "caret")) return;
+    const sel = wireSel(el.value, this.selectionOf(el));
+    const rev = this.revOf(el);
+    const end = byteAt(el.value, el.value.length);
+    const h = this.heard.get(el) ?? { sel: [end, end], rev: 0 };
+    if (h.sel[0] === sel[0] && h.sel[1] === sel[1] && h.rev === rev) return;
+    this.heard.set(el, { sel, rev });
+    const id = el.getAttribute("id");
+    if (id) this.emit("caret", id, { sel, rev });
+  }
+}
+
+/** The input types that are no control (SPEC §6.4). */
+const NOT_CONTROLS = new Set(["hidden", "button", "submit", "reset", "image", "file"]);
+
+/** An element whose value the user changes: an `input`, a `textarea`, a
+ * `select`. */
+function isControl(el: Element): el is HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement {
+  const n = el.localName;
+  return n === "input" || n === "textarea" || n === "select";
+}
+
+/** The radio buttons of `el`'s group, `el` among them (HTML's: one name,
+ * in one form, in one document); null for any other element, and for a
+ * radio button with no name, which is in none. */
+function radioGroup(el: Element): HTMLInputElement[] | null {
+  const b = el as HTMLInputElement;
+  if (b.localName !== "input" || b.type !== "radio") return null;
+  const name = b.getAttribute("name");
+  if (!name || !b.isConnected) return null;
+  return Array.from(b.ownerDocument.querySelectorAll<HTMLInputElement>("input")).filter((r) => r.type === "radio" && r.getAttribute("name") === name && r.form === b.form);
+}
+
+/** A focused text field's selection, as the browser has it. */
+function fieldSel(f: HTMLInputElement | HTMLTextAreaElement): Sel {
+  const n = f.value.length;
+  return { start: f.selectionStart ?? n, end: f.selectionEnd ?? n, backward: f.selectionDirection === "backward" };
 }
 
 /** An `input` or a `textarea`, whose value a history keeps. */

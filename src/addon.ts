@@ -16,6 +16,7 @@
 import type { IBufferRange, IDisposable, IMarker, ITerminalAddon, Terminal } from "@xterm/xterm";
 import { boxBackground, hostCss, palette } from "./hostcss.ts";
 import { DeltaError, readDelta } from "./delta.ts";
+import { FieldError } from "./field.ts";
 import { Float, float, Writer, type Body, type Value } from "./msgpack.ts";
 import { clean, type Policy } from "./network.ts";
 import { Store } from "./resources.ts";
@@ -487,7 +488,7 @@ export class HottyAddon implements ITerminalAddon {
       if (quiet === 0) this.reply("ok", cmd, r ?? {});
     };
     const fail = (e: unknown) => {
-      const code = e instanceof Failure || e instanceof DeltaError ? e.code : "EINVAL";
+      const code = e instanceof Failure || e instanceof DeltaError || e instanceof FieldError ? e.code : "EINVAL";
       const detail = e instanceof Error ? e.message : String(e);
       // A delta's error names the op at fault by its index (SPEC §6.1).
       const extra: [string, string][] = e instanceof DeltaError && e.i !== undefined ? [["i", String(e.i)]] : [];
@@ -618,6 +619,11 @@ export class HottyAddon implements ITerminalAddon {
       }
       case "blur":
         this.existing(c).blur();
+        return;
+      case "field":
+        // Checked whole, then applied, whether the control is focused or
+        // not, with nothing sent back (SPEC §6.4).
+        this.existing(c).field(c.get("t"), cmd.payload);
         return;
       case "edit": {
         // The commands the program on this screen takes (SPEC §10.6); a

@@ -181,8 +181,9 @@ export const CAPS: Type = {
 export const DETAIL: Record<string, Type> = {
   click: { href: "str", url: "str", value: "str", area: AREA, mods: "int", count: "int" },
   press: { area: AREA, mods: "int" },
-  change: { checked: "bool", value: "str" },
-  input: { value: "str" },
+  change: { checked: "bool", value: "str", rev: "int" },
+  input: { value: "str", rev: "int", sel: ["int"] },
+  caret: { sel: ["int"], rev: "int" },
   submit: { fields: [["str"]] },
   dragstart: DRAG,
   drag: DRAG,

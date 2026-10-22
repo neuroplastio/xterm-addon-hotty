@@ -77,7 +77,7 @@ test.describe("§10.1: a click takes the keyboard only through an element that t
     await terminalHasKeyboard(page);
     await page.keyboard.press("y");
     const { msgs, raw } = await take(page);
-    expect(evs(msgs)).toEqual([["change", "i", { value: "Ada" }], ["blur", "", null]]);
+    expect(evs(msgs)).toEqual([["change", "i", { value: "Ada", rev: 3 }], ["blur", "", null]]);
     expect(raw).toBe("y");
   });
 
@@ -96,7 +96,7 @@ test.describe("§10.1: a click takes the keyboard only through an element that t
     await page.keyboard.type("x");
     await d.locator("#hyper").click();
     await terminalHasKeyboard(page);
-    expect(evs((await take(page)).msgs)).toEqual([["focus", "i", null], ["change", "i", { value: "x" }], ["blur", "", null]]);
+    expect(evs((await take(page)).msgs)).toEqual([["focus", "i", null], ["change", "i", { value: "x", rev: 1 }], ["blur", "", null]]);
     expect(await opened(page)).toEqual(["https://example.com/x", "https://example.com/x"]);
   });
 
@@ -180,8 +180,9 @@ test.describe("§5.5: a detached surface", () => {
     const { msgs, raw } = await take(page);
     expect(msgs.map((m) => [m.get("a"), m.get("re") ?? m.get("e")])).toEqual([["ok", "detach"]]);
     expect(raw).toBe("z");
-    // What the user typed stays in the document.
-    await expect(surface(page, "x").locator("#t")).toHaveValue("!old");
+    // What the user typed stays in the document, after the value, where the
+    // caret starts (SPEC §10.2).
+    await expect(surface(page, "x").locator("#t")).toHaveValue("old!");
   });
 
   test("its controls are disabled, those deltas add too, and the document reports the program's attributes", async ({ page }) => {

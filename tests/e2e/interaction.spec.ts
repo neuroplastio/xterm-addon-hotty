@@ -28,13 +28,14 @@ test("form.py runs unchanged: typing, Tab, Space, a click, Esc, q", async ({ pag
   const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
   const got = lines.filter((l) => l.kind === "event").map((l) => [l.e, l.t ?? "", sansArea(l.detail)]);
   // The program focused #name itself: no echo (SPEC §10.1). Each Tab and
-  // the click name where focus went, after the change they commit.
+  // the click name where focus went, after the change they commit. Each
+  // character typed is one more rev of its field (SPEC §6.4).
   expect(got).toEqual([
-    ["change", "name", { value: "Ada Lovelace" }],
+    ["change", "name", { value: "Ada Lovelace", rev: 12 }],
     ["focus", "email", null],
-    ["change", "email", { value: "ada@example.com" }],
+    ["change", "email", { value: "ada@example.com", rev: 15 }],
     ["focus", "notify", null],
-    ["change", "notify", { checked: true, value: "yes" }],
+    ["change", "notify", { checked: true, value: "yes", rev: 1 }],
     ["focus", "save", null],
     ["click", "save", null],
     ["submit", "settings", { fields: [["name", "Ada Lovelace"], ["email", "ada@example.com"], ["notify", "yes"], ["theme", "dark"]] }],
@@ -84,11 +85,11 @@ test.describe("without a pty", () => {
       ["focus", "sum", null],
       ["click", "sum", null],
       ["focus", "c", null],
-      ["change", "c", { checked: true, value: "yes" }],
+      ["change", "c", { checked: true, value: "yes", rev: 1 }],
       ["focus", "t", null],
-      ["input", "t", { value: "h" }],
-      ["input", "t", { value: "hi" }],
-      ["change", "t", { value: "hi" }], // committed as focus leaves it
+      ["input", "t", { value: "h", rev: 1 }],
+      ["input", "t", { value: "hi", rev: 2 }],
+      ["change", "t", { value: "hi", rev: 2 }], // committed as focus leaves it
       ["focus", "go", null],
       ["click", "go", { value: "now" }],
       ["submit", "f", { fields: [["q", "1"], ["go", "now"]] }],
@@ -112,7 +113,7 @@ test.describe("without a pty", () => {
     expect(raw).toBe("x\x1b[A\x1bOA\x03\x1b");
     // No `focus` echoes back for focus the program gave; typing in #t, which
     // asks for them (data-on=input), reports `input` events.
-    expect(evs(msgs)).toEqual(["t", "ty", "typ", "type", "typed"].map((v) => ["input", "t", { value: v }]));
+    expect(evs(msgs)).toEqual(["t", "ty", "typ", "type", "typed"].map((v, i) => ["input", "t", { value: v, rev: i + 1 }]));
   });
 
   test("keys reach the program in the encoding it enabled: the kitty keyboard protocol", async ({ page }) => {

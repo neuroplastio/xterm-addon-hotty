@@ -165,7 +165,7 @@ test("morph keeps element identity and what the user typed", async ({ page }) =>
   await send(page, { a: "blur", s: "f", q: "2" });
   const { msgs } = await take(page);
   const evs = msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("e"), m.get("t"), m.body]);
-  expect(evs).toEqual([["change", "name", { value: "Ada" }], ["blur", undefined, null]]);
+  expect(evs).toEqual([["change", "name", { value: "Ada", rev: 3 }], ["blur", undefined, null]]);
 });
 
 test("a stylesheet resource that arrives after the document restyles it", async ({ page }) => {
