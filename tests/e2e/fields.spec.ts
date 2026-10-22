@@ -5,6 +5,7 @@
 // user's selection, and editing hosts.
 import { expect, test, type Page } from "@playwright/test";
 import { open, send, surface, take, write } from "./helpers.ts";
+import { Writer } from "../../src/msgpack.ts";
 
 const STYLE = "<style>body{margin:0}input,textarea,div{font:16px monospace}</style>";
 
@@ -32,6 +33,19 @@ test("with the kitty keyboard protocol on, a field has its keys, and the program
   await page.keyboard.press("Control+e");
   await page.keyboard.press("Escape");
   expect((await take(page)).raw).toBe("\x1b[101;5u\x1b[27u");
+});
+
+test("a=field puts the caret after the text it puts in, so what the user types next follows it (SPEC §6.4)", async ({ page }) => {
+  // A picker's Tab completion (the kit's HottyPicker): what the user typed
+  // replaced, against the rev their keys made.
+  await field(page, `<input id=q data-on=input>`, "q");
+  await page.keyboard.type("sp");
+  expect(await inputs(page)).toEqual(["s", "sp"]);
+  await send(page, { a: "field", s: "f", t: "q", q: "2" }, new Writer().body({ rev: 2, from: 0, to: 2, text: "Split" }));
+  const sel = () => surface(page, "f").locator("#q").evaluate((el: HTMLInputElement) => [el.value, el.selectionStart, el.selectionEnd]);
+  expect(await sel()).toEqual(["Split", 5, 5]);
+  await page.keyboard.type(" ");
+  expect(await inputs(page)).toEqual(["Split "]);
 });
 
 test("an email field is text while focused, so the actions can place its caret; the program sees its own type", async ({ page }) => {
