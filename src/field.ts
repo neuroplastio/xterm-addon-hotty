@@ -44,11 +44,12 @@ const isInt = (x: unknown): x is number => typeof x === "number" && Number.isSaf
 /**
  * The body of `a=field` (SPEC §6.4), checked as far as it can be without
  * the control: `EINVAL` where it does not decode or is not a map; where
- * `rev` is missing; where a field has another type than the table's, or
- * a position is negative; where no field but `rev` is there; where `value`
- * comes with `text`, `from` or `to`; where `from` or `to` comes without
- * the other, or without `text`; and where `from` is past `to`. A field the
- * table does not have is ignored.
+ * `rev` is missing; where a field has another type than the table's;
+ * where no field but `rev` is there; where `value` comes with `text`,
+ * `from` or `to`; where `from` or `to` comes without the other, or without
+ * `text`; and where `from` is past `to`. A field the table does not have
+ * is ignored. A position, negative too, is checked last, against the
+ * control's value and only when the command is not stale (`unitAt`).
  */
 export function readField(bytes: Uint8Array): FieldChange {
   let body: unknown;
@@ -65,10 +66,8 @@ export function readField(bytes: Uint8Array): FieldChange {
   if (text !== undefined && typeof text !== "string") throw invalid("text is not a str");
   for (const [name, x] of [["from", from], ["to", to]] as const) {
     if (x !== undefined && !isInt(x)) throw invalid(`${name} is not an int`);
-    if (x !== undefined && (x as number) < 0) throw invalid(`${name} is before the value`);
   }
   if (sel !== undefined && !(Array.isArray(sel) && sel.length === 2 && sel.every(isInt))) throw invalid("sel is not two ints");
-  if (sel !== undefined && (sel as number[]).some((p) => p < 0)) throw invalid("sel is before the value");
   if (checked !== undefined && typeof checked !== "boolean") throw invalid("checked is not a bool");
   if ([value, text, from, to, sel, checked].every((x) => x === undefined)) throw invalid("no field but rev");
   if (value !== undefined && (text !== undefined || from !== undefined || to !== undefined)) throw invalid("value comes with text, from or to");
@@ -88,9 +87,10 @@ export function readField(bytes: Uint8Array): FieldChange {
  * as it is sent. */
 const utf8Length = (c: number) => (c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4);
 
-/** The code unit of `s` at UTF-8 byte `b`; null when `b` is past the end of
- * `s`, or inside a code point. */
+/** The code unit of `s` at UTF-8 byte `b`; null when `b` is negative, past
+ * the end of `s`, or inside a code point. */
 export function unitAt(s: string, b: number): number | null {
+  if (b < 0) return null;
   let bytes = 0;
   let i = 0;
   while (bytes < b) {

@@ -2842,7 +2842,7 @@ export class Surface {
       if (change.from !== undefined) {
         const a = unitAt(now, change.from);
         const b = unitAt(now, change.to!);
-        if (a === null || b === null) throw invalid("from or to is past the end of the value, or inside a code point");
+        if (a === null || b === null) throw invalid("from or to is negative, past the end of the value, or inside a code point");
         [from, to] = [a, b];
       }
       // As a paste (§10.2): an input drops its line breaks.
@@ -2853,7 +2853,7 @@ export class Surface {
     }
     if (change.sel !== undefined) {
       const [a, c] = change.sel.map((b) => unitAt(value, b));
-      if (a == null || c == null) throw invalid("sel is past the end of the value, or inside a code point");
+      if (a == null || c == null) throw invalid("sel is negative, past the end of the value, or inside a code point");
       // An end inside a character moves to its start.
       const [anchor, caret] = [clusterStart(value, a), clusterStart(value, c)];
       after = { start: Math.min(anchor, caret), end: Math.max(anchor, caret), backward: anchor > caret };

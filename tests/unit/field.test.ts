@@ -24,6 +24,9 @@ test("a=field's body: rev and the fields given, in the table's types; one it doe
   assert.deepEqual(readField(body({ rev: 1, text: "x" })), { rev: 1, text: "x" });
   assert.deepEqual(readField(body({ rev: 1, value: "", sel: [0, 0] })), { rev: 1, value: "", sel: [0, 0] });
   assert.deepEqual(readField(body({ rev: 2, checked: false, later: "x" })), { rev: 2, checked: false });
+  // A negative position is a position: checked against the control, last.
+  assert.deepEqual(readField(body({ rev: 3, from: -1, to: 0, text: "x" })), { rev: 3, from: -1, to: 0, text: "x" });
+  assert.deepEqual(readField(body({ rev: 0, sel: [0, -1] })), { rev: 0, sel: [0, -1] });
 });
 
 test("a=field's body is EINVAL where it is not such a map", () => {
@@ -35,11 +38,9 @@ test("a=field's body is EINVAL where it is not such a map", () => {
     { rev: 1, value: 2 },
     { rev: 1, text: true },
     { rev: 1, from: 0, to: float(1), text: "" },
-    { rev: 1, from: -1, to: 0, text: "" },
     { rev: 1, sel: [0] },
     { rev: 1, sel: [0, 1, 2] },
     { rev: 1, sel: [0, "1"] },
-    { rev: 1, sel: [-1, 0] },
     { rev: 1, checked: 1 },
     { rev: 1, value: "x", text: "y" },
     { rev: 1, value: "x", from: 0, to: 0 },
@@ -57,7 +58,7 @@ test("a=field's body is EINVAL where it is not such a map", () => {
 test("positions: a byte of UTF-8 at a code point boundary is a code unit; past the end or inside a code point, none", () => {
   const s = "aé😀b"; // bytes 1 + 2 + 4 + 1, units 1 + 1 + 2 + 1
   assert.deepEqual([0, 1, 3, 7, 8].map((b) => unitAt(s, b)), [0, 1, 2, 4, 5]);
-  assert.deepEqual([2, 4, 5, 6, 9].map((b) => unitAt(s, b)), [null, null, null, null, null]);
+  assert.deepEqual([-1, 2, 4, 5, 6, 9].map((b) => unitAt(s, b)), [null, null, null, null, null, null]);
   assert.deepEqual([0, 1, 2, 4, 5].map((u) => byteAt(s, u)), [0, 1, 3, 7, 8]);
   assert.equal(unitAt("", 0), 0);
   assert.equal(unitAt("", 1), null);
