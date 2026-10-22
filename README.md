@@ -12,21 +12,22 @@ npm install @neuroplastio/xterm-addon-hotty @xterm/xterm
 
 The package is an ES module with its TypeScript declarations, for xterm.js
 6, and has no dependencies. A release also installs from git by its tag
-(`github:neuroplastio/xterm-addon-hotty#v0.4.2`), and a commit not yet
+(`github:neuroplastio/xterm-addon-hotty#v0.5.0`), and a commit not yet
 released by its hash (`#<commit>`): npm builds it as it installs it
 (`prepare`).
 
-It implements hotty 0.4, whose bodies are msgpack maps (SPEC §3.3) and
-whose keys are named by myelin key names 0.1 (§10.4). A
-program's query names the versions it speaks (`a=q:n=1:v=0.4`, SPEC §4):
-the addon answers a query that lists 0.4 with its capabilities (`v`,
+It implements hotty 0.5, whose bodies are msgpack maps (SPEC §3.3),
+whose keys are named by myelin key names 0.1 (§10.4), and whose programs
+change what the user is changing with `a=field` (§6.4). A
+program's query names the versions it speaks (`a=q:n=1:v=0.5`, SPEC §4):
+the addon answers a query that lists 0.5 with its capabilities (`v`,
 `cellcss`, `scale`, `scheme`, `mod`, `features`, `limits`, `net`, `edit`,
 `host`, `version`), and any other with `EVERSION`, so that such a program
 finds no host and falls back to text. A command that asks for a reply (`n`)
 gets one; a query always does, and every other command is quiet unless it
 carries `n`.
 
-0.4.x speaks hotty 0.4; the patch number is this repository's own.
+0.5.x speaks hotty 0.5; the patch number is this repository's own.
 
 ```ts
 import { Terminal } from "@xterm/xterm";
@@ -96,6 +97,7 @@ runs programs for whoever connects.
 | surface | `src/surface.ts` | one sandboxed iframe per surface; events, focus and key routing |
 | keys | `src/keys.ts` | SPEC §10.2, §10.4: key names, the keys in what the terminal sends, keymaps (`data-keys`), the `prefix` action, and the actions on a field's text |
 | deltas | `src/delta.ts` | SPEC §6, §6.1: a delta body checked whole, then its ops and morph; a failure names the first failing op (`i`) |
+| fields | `src/field.ts` | SPEC §6.4: an `a=field` body checked as far as it can be without the control, and positions between bytes of UTF-8 and the DOM's code units, an end inside a grapheme cluster moved to its start (`Intl.Segmenter`) |
 | menus | `src/menu.ts` | SPEC §10.7: reading a program's `a=menu` body, the level a sequence reaches, and the entries a page's own palette lists |
 | touch | `src/touch.ts` | SPEC §9, §9.1, §9.6: a finger's drag as wheel events and its fling, a tap, a drag a surface claims, and reading the areas a program names in the cells |
 | reveal and view | `src/view.ts` | SPEC §6.1, §9.5: the boxes that hold an element, scrolling it into view in them, and whether some of it is shown |
@@ -181,7 +183,8 @@ runs programs for whoever connects.
   field's keymap leaves scroll actions out, so a field inside a box that
   scrolls with `j` still types `j`.
 - **Selects** (SPEC §10.2) are the browser's own: its keys pick, each pick
-  is heard at once (`input` with `data-on~=input`, then `change`), and its
+  is heard at once (`input` with `data-on~=input`, then `change`, one
+  `rev` for both), and its
   native list opens past the surface. While the list is open it has every
   key: Chromium's keeps them from the document, and where one reaches it
   (`:open`), the addon leaves it to the list.
@@ -297,6 +300,28 @@ runs programs for whoever connects.
   reads `navigator.clipboard`. A cut with nothing selected, or in a password
   field, reaches the program. On a Mac, Cmd keys stay the browser's
   (`browserKeys`), its own cut, paste and undo.
+- **Fields and revisions** (SPEC §6.4, §9, §10.2). Each control counts
+  the user's changes from when it enters the document: each edit of a text
+  field (an undo and a redo too), each toggle, check and pick. A radio
+  group shares one count, and a morph keeps it. `input` and `change` carry
+  it as `rev`; in a text field with `data-on~=caret`, `input` carries the
+  selection too (`sel`, its anchor then its caret, in bytes of UTF-8), and
+  each move of the user's sends `caret` with both, at most one a frame and
+  before the field's other events. A field keeps its selection while it is
+  not focused, `a=focus` gives it back, and the caret starts at the end of
+  the value, as it goes there when a delta sets the value. `a=field`
+  changes a control as the program says, focused or not, if `rev` is still
+  the control's and no input method is composing in it; otherwise it is
+  `ESTALE` with the control's `rev`, and checked whole first in the spec's
+  order (`EDETACHED`, `ENOTARGET`, `EINVAL`, `ESTALE`). In a focused field
+  its text goes in as a paste does (`execCommand("insertText")`), so the
+  browser's undo and its commit on blur see one edit; the addon reports no
+  `input` or `change` for it, and focus leaving a field that only
+  `a=field` changed sends no `change`. It is one edit of the field's
+  history, ending a run of typing. A value goes in as a script sets it
+  (sanitized by the input's type), `checked` checks or unchecks (a radio
+  button unchecks its group), and a select's value picks the first option
+  with it, disabled or not.
 - **Prefix** (SPEC §10.5): a key a keymap binds to `prefix` is the
   program's, and while it is on every key, Tab and Escape included, goes to
   the program. It ends when the program focuses (`a=focus`, with no `t` too)
