@@ -1062,13 +1062,19 @@ export class Surface {
     try {
       // Focusing the frame while focus is in it would blur its window:
       // a blur the surface never had.
+      // Focus scrolls the element into view (SPEC §5.3) as reveal does, the
+      // document only: the browser's own focus scroll would take the page
+      // along.
       if (!this.frameFocused()) {
-        this.frame.focus();
+        this.frame.focus({ preventScroll: true });
         this.frame.contentWindow?.focus();
       }
       const had = this.focusedControl();
-      if (el) (el as HTMLElement).focus();
-      else if (!had) this.tabbable()[0]?.focus();
+      const to = (el as HTMLElement | null) ?? (had ? null : this.tabbable()[0]);
+      if (to) {
+        to.focus({ preventScroll: true });
+        this.reveal(to, "");
+      }
       this.keyboard = true;
       // No echo (SPEC §10.1): the program knows where it put focus.
       this.told = this.focusedControl();
@@ -1204,7 +1210,7 @@ export class Surface {
       this.pressed = null;
       this.pressNothing = false;
       if (el && !this.keyboard && !this.detachedState && el.isConnected && this.doc.activeElement !== el) {
-        this.frame.focus();
+        this.frame.focus({ preventScroll: true });
         el.focus({ preventScroll: true });
       }
       if (!this.keyboard && this.frameFocused()) this.giveBack();

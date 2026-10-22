@@ -62,6 +62,31 @@ test("reveal scrolls only the document: not the box that shows its window, not x
   expect((await take(page)).raw).toBe("");
 });
 
+test("a program's focus scrolls only the document (SPEC §5.3), as reveal does", async ({ page }) => {
+  // The browser's own focus scroll takes every box around the element
+  // along, the page's included: a surface at the top of a page that has
+  // scrolled a little opens under whatever the page fixes there.
+  await open(page, "?pty=0&scroll=page");
+  await write(page, Array.from({ length: 10 }, (_, i) => `line ${i}`).join("\r\n") + "\r\n");
+  await page.evaluate(() => window.scrollTo(0, 40));
+  const buttons =
+    `<style>body{margin:0}button{display:block;height:var(--hotty-cell-h);width:calc(4*var(--hotty-cell-w));padding:0;border:0}</style>` +
+    "abcdefghijkl".split("").map((c) => `<button id=${c}>${c}</button>`).join("");
+  await send(page, { a: "doc", s: "s", scroll: "1", q: "2" }, buttons);
+  await send(page, { a: "place", s: "s", c: "10", r: "6", h: "3", q: "2" });
+  await expect(surface(page, "s").locator("#a")).toBeVisible();
+  const before = await outside(page);
+  const max = await root(page).evaluate((el) => el.scrollHeight - el.clientHeight);
+  await send(page, { a: "focus", s: "s", t: "l", q: "2" });
+  await expect(surface(page, "s").locator("#l")).toBeFocused();
+  await expect.poll(() => root(page).evaluate((el) => el.scrollTop)).toBe(max);
+  expect(await outside(page)).toBe(before);
+  await send(page, { a: "focus", s: "s", t: "a", q: "2" });
+  await expect(surface(page, "s").locator("#a")).toBeFocused();
+  await expect.poll(() => root(page).evaluate((el) => el.scrollTop)).toBe(0);
+  expect(await outside(page)).toBe(before);
+});
+
 test("reveal scrolls neither an overflow: hidden box nor along an axis the document did not ask for", async ({ page }) => {
   await open(page, "?pty=0");
   await send(
