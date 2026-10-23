@@ -221,6 +221,17 @@ export function text(bytes: Uint8Array): string {
   return utf8.decode(bytes);
 }
 
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
+
+/** The bytes as text, or null if they are not UTF-8: a document must be (SPEC §3.3). */
+export function strictText(bytes: Uint8Array): string | null {
+  try {
+    return strictUtf8.decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Encodes one message for the program: base64, chunked at `CHUNK`, each chunk
  * a complete OSC terminated by ST. Replies are small, so they are never

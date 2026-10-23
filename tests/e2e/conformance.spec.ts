@@ -11,6 +11,8 @@ type Expected = Record<string, unknown>;
 type Step = {
   send?: Record<string, string>;
   payload?: string;
+  /** A payload that is not UTF-8, its bytes in base64 (conformance/README.md). */
+  payload_b64?: string;
   /** A msgpack body, as JSON (conformance/README.md): a delta's ops, a menu. */
   body?: unknown;
   reply?: Record<string, string | Type | Expected> | null;
@@ -36,6 +38,14 @@ type Step = {
 const vectors = readVectors() as {
   vectors: { name: string; requires?: string | string[]; steps: Step[] }[];
 };
+
+/** What a send step sends: text, bytes that are not UTF-8, or a msgpack body
+ * written from JSON, a number with a fraction a float. */
+function payload(step: Step): string | Uint8Array {
+  if (step.body !== undefined) return new Writer().body(step.body as Body);
+  if (step.payload_b64 !== undefined) return Uint8Array.from(Buffer.from(step.payload_b64, "base64"));
+  return step.payload ?? "";
+}
 
 /**
  * Every event a step sent, against its `events`, in order and nothing more.
@@ -334,7 +344,7 @@ function define(vector: { name: string; requires?: string | string[]; steps: Ste
         if (step.terminal !== undefined && !(silent && step.terminal)) expect(raw !== "", `${where}: the program got ${JSON.stringify(step.key)} (${JSON.stringify(raw)})`).toBe(step.terminal);
       } else if (step.send) {
         await take(page);
-        await write(page, cmd(step.send, step.body !== undefined ? new Writer().body(step.body as Body) : (step.payload ?? "")));
+        await write(page, cmd(step.send, payload(step)));
         const msgs = await sent(page, step.events);
         checkEvents(where, msgs, step.events);
         const replies = msgs.filter((m) => m.get("a") !== "ev");

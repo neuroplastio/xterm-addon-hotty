@@ -25,7 +25,7 @@ import { entries, find, hides, isGroup, type Menu, type MenuEntry, Menus, readMe
 import { type KeySettings, type Route, type Scheme, Surface, type SurfaceHost } from "./surface.ts";
 import { areaAt, areaDrags, LONG_PRESS_MS, readTouchAreas, Touch, type TouchArea, type TouchBegin } from "./touch.ts";
 import { HOST, VERSION } from "./version.ts";
-import { Assembler, Control, encode, MAX_COMMAND, OSC, text, type Command, type Decoded } from "./wire.ts";
+import { Assembler, Control, encode, MAX_COMMAND, OSC, strictText, type Command, type Decoded } from "./wire.ts";
 
 export interface HottyOptions {
   /** Most surfaces at once (reported under `limits`). Default 64. */
@@ -557,6 +557,9 @@ export class HottyAddon implements ITerminalAddon {
         return { body: this.hear(this.capabilities(answerIn(c.get("v")))) };
       case "doc": {
         const name = this.surfaceName(c);
+        // A document that is not UTF-8 changes nothing (SPEC §3.3).
+        const doc = strictText(cmd.payload);
+        if (doc === null) throw new Failure("EINVAL", "payload is not UTF-8");
         let s = this.surfaces.get(name);
         if (!s) {
           if (this.surfaces.size >= this.opts.maxSurfaces) throw new Failure("EQUOTA", `at most ${this.opts.maxSurfaces} surfaces`);
@@ -569,7 +572,7 @@ export class HottyAddon implements ITerminalAddon {
         // d=1: detached at once, for a document the program only shows (§5.5).
         // scroll: the axes it scrolls along, a bitmask; anything else is none.
         const scroll = c.get("scroll");
-        s.setDocument(text(cmd.payload), c.get("d") === "1", scroll === "1" || scroll === "2" || scroll === "3" ? Number(scroll) : 0);
+        s.setDocument(doc, c.get("d") === "1", scroll === "1" || scroll === "2" || scroll === "3" ? Number(scroll) : 0);
         return;
       }
       case "place":
