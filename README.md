@@ -12,7 +12,7 @@ npm install @neuroplastio/xterm-addon-hotty @xterm/xterm
 
 The package is an ES module with its TypeScript declarations, for xterm.js
 6, and has no dependencies. A release also installs from git by its tag
-(`github:neuroplastio/xterm-addon-hotty#v0.5.2`), and a commit not yet
+(`github:neuroplastio/xterm-addon-hotty#v0.5.3`), and a commit not yet
 released by its hash (`#<commit>`): npm builds it as it installs it
 (`prepare`).
 
