@@ -19,10 +19,11 @@ test("the font goes just before monospace, which ends every stack", () => {
 test("the faces are the package's files, in the directory given; none without one", () => {
   assert.deepEqual(fontFaces(""), []);
   const faces = fontFaces("https://example.com/f/");
-  assert.equal(faces.length, 2);
-  for (const [face, weight] of faces.map((f, i) => [f, [400, 700][i]] as const)) {
+  const want = [[400, "normal"], [700, "normal"], [400, "italic"], [700, "italic"]] as const;
+  assert.equal(faces.length, want.length);
+  for (const [face, [weight, style]] of faces.map((f, i) => [f, want[i]!] as const)) {
     const file = /url\("https:\/\/example\.com\/f\/([^"]+)"\)/.exec(face)![1];
     assert.ok(existsSync(new URL(`../../fonts/${file}`, import.meta.url)), file);
-    assert.match(face, new RegExp(`font-weight: ${weight};`));
+    assert.match(face, new RegExp(`font-weight: ${weight}; font-style: ${style};`));
   }
 });

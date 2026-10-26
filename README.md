@@ -74,10 +74,11 @@ new HottyAddon({
 
 ### The font hosts ship
 
-hotty hosts ship one font, AdwaitaMono Nerd Font Propo (Regular and Bold),
-so that Nerd Font icons and symbols draw without an installed font. It is
-not in the spec: a document can't count on it on another host. The package
-carries it in `fonts/`; serve that directory and name it:
+hotty hosts ship one font, AdwaitaMono Nerd Font Propo (Regular, Bold,
+Italic and Bold Italic), so that Nerd Font icons and symbols draw without an
+installed font, and italic is the font's own rather than Regular slanted. It
+is not in the spec: a document can't count on it on another host. The
+package carries it in `fonts/`; serve that directory and name it:
 
 ```ts
 new HottyAddon({ fonts: "/static/xterm-addon-hotty/fonts/" });

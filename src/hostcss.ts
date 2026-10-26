@@ -16,11 +16,14 @@ export interface Metrics {
   fonts?: string;
 }
 
-/** The font hotty hosts ship, Regular and Bold (the package's `fonts/`). */
+/** The font hotty hosts ship, Regular, Bold, Italic and Bold Italic (the
+ * package's `fonts/`). */
 export const FONT_FAMILY = "AdwaitaMono Nerd Font Propo";
 const FONT_FACES = [
-  ["AdwaitaMonoNerdFontPropo-Regular.woff2", 400],
-  ["AdwaitaMonoNerdFontPropo-Bold.woff2", 700],
+  ["AdwaitaMonoNerdFontPropo-Regular.woff2", 400, "normal"],
+  ["AdwaitaMonoNerdFontPropo-Bold.woff2", 700, "normal"],
+  ["AdwaitaMonoNerdFontPropo-Italic.woff2", 400, "italic"],
+  ["AdwaitaMonoNerdFontPropo-BoldItalic.woff2", 700, "italic"],
 ] as const;
 
 /** The font's faces, from the directory `fonts`: none without it. The
@@ -29,8 +32,8 @@ const FONT_FACES = [
 export function fontFaces(fonts: string): string[] {
   if (!fonts) return [];
   return FONT_FACES.map(
-    ([file, weight]) =>
-      `@font-face { font-family: "${FONT_FAMILY}"; src: url("${fonts}${file}") format("woff2"); font-weight: ${weight}; font-style: normal; font-display: swap; }`,
+    ([file, weight, style]) =>
+      `@font-face { font-family: "${FONT_FAMILY}"; src: url("${fonts}${file}") format("woff2"); font-weight: ${weight}; font-style: ${style}; font-display: swap; }`,
   );
 }
 

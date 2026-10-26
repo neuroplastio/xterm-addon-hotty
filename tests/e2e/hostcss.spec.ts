@@ -127,7 +127,15 @@ test("a surface's monospace takes the font hosts ship, from the `fonts` director
       const stack = getComputedStyle(el).getPropertyValue("--hotty-font").trim();
       // md-apple_keyboard_command, a Nerd Font icon.
       const faces = await d.fonts.load('16px "AdwaitaMono Nerd Font Propo"', "\u{F0633}");
-      return { csp, stack, loaded: faces.map((f) => f.status), check: d.fonts.check('16px "AdwaitaMono Nerd Font Propo"', "\u{F0633}") };
+      // Italic is a face of its own, not Regular slanted.
+      const italic = await d.fonts.load('italic 700 16px "AdwaitaMono Nerd Font Propo"', "a");
+      return {
+        csp,
+        stack,
+        loaded: faces.map((f) => f.status),
+        check: d.fonts.check('16px "AdwaitaMono Nerd Font Propo"', "\u{F0633}"),
+        italic: italic.map((f) => [f.style, f.weight, f.status]),
+      };
     });
   // The demo passes `fonts: "fonts/"`, against the page.
   const dir = new URL("fonts/", page.url()).href;
@@ -135,4 +143,5 @@ test("a surface's monospace takes the font hosts ship, from the `fonts` director
   expect(got.stack).toMatch(/"AdwaitaMono Nerd Font Propo", monospace$/);
   expect(got.loaded).toEqual(["loaded"]);
   expect(got.check).toBe(true);
+  expect(got.italic).toEqual([["italic", "700", "loaded"]]);
 });
