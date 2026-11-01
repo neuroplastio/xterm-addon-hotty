@@ -148,7 +148,7 @@ const GESTURE_MS = 150;
 
 /** The hotty versions the addon speaks (SPEC §4), highest first. The first
  * is VERSION's MAJOR.MINOR (gov P-5 rule 6). */
-export const SPEAKS = ["0.5"];
+export const SPEAKS = ["0.6"];
 
 /**
  * The version a query is answered in (SPEC §4): the highest the addon
@@ -208,7 +208,9 @@ class Failure extends Error {
 }
 
 /** The optional features the addon has (SPEC §4). It lets the pointer pass
- * through no surface (`passthrough`, §9.3) and sends no `hover` (§9.4). */
+ * through no surface (`passthrough`, §9.3), sends no `hover` (§9.4), and
+ * draws no backdrop (`backdrop`, §5.2): it ignores `b`, so a program that
+ * asks for one gets a surface above the cells, as SPEC §4 says. */
 const FEATURES = ["count", "menu"];
 
 type Reply = { extra?: [string, string][]; body?: Body };

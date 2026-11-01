@@ -12,22 +12,23 @@ npm install @neuroplastio/xterm-addon-hotty @xterm/xterm
 
 The package is an ES module with its TypeScript declarations, for xterm.js
 6, and has no dependencies. A release also installs from git by its tag
-(`github:neuroplastio/xterm-addon-hotty#v0.5.4`), and a commit not yet
+(`github:neuroplastio/xterm-addon-hotty#v0.6.0`), and a commit not yet
 released by its hash (`#<commit>`): npm builds it as it installs it
 (`prepare`).
 
-It implements hotty 0.5, whose bodies are msgpack maps (SPEC §3.3),
+It implements hotty 0.6, whose bodies are msgpack maps (SPEC §3.3),
 whose keys are named by myelin key names 0.1 (§10.4), and whose programs
 change what the user is changing with `a=field` (§6.4). A
-program's query names the versions it speaks (`a=q:n=1:v=0.5`, SPEC §4):
-the addon answers a query that lists 0.5 with its capabilities (`v`,
+program's query names the versions it speaks (`a=q:n=1:v=0.6`, SPEC §4):
+the addon answers a query that lists 0.6 with its capabilities (`v`,
 `cellcss`, `scale`, `scheme`, `mod`, `features`, `limits`, `net`, `edit`,
 `host`, `version`), and any other with `EVERSION`, so that such a program
-finds no host and falls back to text. A command that asks for a reply (`n`)
+finds no host and falls back to text: a 0.5 program too, since 0.6
+breaks 0.5 (SPEC §15). A command that asks for a reply (`n`)
 gets one; a query always does, and every other command is quiet unless it
 carries `n`.
 
-0.5.x speaks hotty 0.5; the patch number is this repository's own.
+0.6.x speaks hotty 0.6; the patch number is this repository's own.
 
 ```ts
 import { Terminal } from "@xterm/xterm";
@@ -605,6 +606,11 @@ img-src 'self' data: blob:; font-src 'self' data: blob:; media-src 'self' data: 
     frame would report the nearest id on `pointerover` with no button
     down, and out on leaving the frame, an Alt press, or a release
     outside it.
+  - backdrops (§5.2, `b=1` on `a=place`): `features` does not list
+    `backdrop`, so the addon ignores `b` and draws the surface above the
+    cells, as SPEC §4 says of a host without it, and the vectors that
+    require it are skipped. A program that checks the feature draws in
+    the cells instead. It would take a layer under xterm.js's canvas.
 
 ## Costs
 
