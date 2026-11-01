@@ -124,7 +124,7 @@ runs programs for whoever connects.
 | touch | `src/touch.ts` | SPEC §9, §9.1, §9.6: a finger's drag as wheel events and its fling, a tap, a drag a surface claims, and reading the areas a program names in the cells |
 | reveal and view | `src/view.ts` | SPEC §6.1, §9.5: the boxes that hold an element, scrolling it into view in them, and whether some of it is shown |
 | resources | `src/resources.ts`, `src/resolver.ts` | `cid:` as `blob:` URLs; sanitizing everything before it reaches a live document |
-| host stylesheet | `src/hostcss.ts` | §8 from `term.options` (theme, font, cell size), in a cascade layer: the palette, `--hotty-accent`, and controls, focus, links and selection in the terminal's colours |
+| host stylesheet | `src/hostcss.ts` | §8 from `term.options` (theme, font, cell size), in a cascade layer: the palette, `--hotty-accent`, and controls, their focus ring, links and selection in the terminal's colours; a focused container has no ring, not even the browser's |
 
 - **Placement.** On the normal buffer a surface hangs from a marker, which is
   public API (decorations need `allowProposedApi`). It scrolls with the text,

@@ -117,6 +117,37 @@ test("a document that styles its own controls wins over the host's palette", asy
   expect((await style(page, "c", ["accent-color"]))["accent-color"]).toBe("rgb(10, 11, 12)");
 });
 
+test("the ring is the controls': a focused container has none, not even the browser's own", async ({ page }) => {
+  await setup(
+    page,
+    `<button id=b>b</button><a id=l href=next>link</a><details><summary id=su>s</summary>x</details>` +
+      `<div id=ce contenteditable>edit</div><div id=box tabindex=0>box</div><ul id=list tabindex=0><li>a</li></ul>` +
+      `<div id=sc tabindex=-1 style="overflow: auto; height: 2em"><div style="height: 10em">tall</div></div>`,
+    "#b",
+  );
+  /** The element's ring once the program focuses it, and whether it is
+   * :focus-visible, so that one with none is one the browser would ring. */
+  const ring = async (id: string) => {
+    await send(page, { a: "focus", s: "x", t: id, q: "2" });
+    return surface(page, "x")
+      .locator(`#${id}`)
+      .evaluate((el) => {
+        const s = el.ownerDocument.defaultView!.getComputedStyle(el);
+        return { focused: el.ownerDocument.activeElement === el && el.matches(":focus-visible"), style: s.outlineStyle, width: s.outlineWidth, color: s.outlineColor };
+      });
+  };
+  // The demo's theme: ansi-12 #7aa6da.
+  for (const id of ["b", "l", "su", "ce"]) {
+    await expect.poll(() => ring(id), id).toEqual({ focused: true, style: "solid", width: "1px", color: rgb("#7aa6da") });
+  }
+  for (const id of ["box", "list", "sc"]) {
+    await expect.poll(async () => (({ focused, style }) => ({ focused, style }))(await ring(id)), id).toEqual({ focused: true, style: "none" });
+  }
+  // A document that wants a ring on a container gives it one.
+  await send(page, { a: "doc", s: "x", q: "2" }, `<style>#box:focus-visible { outline: 2px dashed rgb(1, 2, 3) }</style><div id=box tabindex=0>box</div>`);
+  await expect.poll(() => ring("box")).toEqual({ focused: true, style: "dashed", width: "2px", color: "rgb(1, 2, 3)" });
+});
+
 test("a surface's monospace takes the font hosts ship, from the `fonts` directory, under its CSP", async ({ page }) => {
   await setup(page, `<p id=p>&#xf0633; a</p>`, "#p");
   const got = await surface(page, "x")

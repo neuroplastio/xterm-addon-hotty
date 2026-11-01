@@ -102,7 +102,15 @@ export function hostCss(theme: ITheme | undefined, m: Metrics): string {
     "  background: var(--hotty-ansi-8);",
     "}",
     "::placeholder, :disabled { color: var(--hotty-ansi-8); }",
-    ":focus-visible { outline: 1px solid var(--hotty-accent); }",
+    // The ring is the controls' (SPEC §8): links, buttons, fields, selects,
+    // a details element's summary, and an editing host, which is a text
+    // field (§10.2). A focused container (an element with tabindex, a
+    // scrolling region, a list) has none, not even the browser's own, which
+    // its user-agent sheet gives every :focus-visible element.
+    ":focus-visible { outline: none; }",
+    ":is(a[href], button, input, select, textarea, summary, [contenteditable]):focus-visible {",
+    "  outline: 1px solid var(--hotty-accent);",
+    "}",
     ":any-link { color: var(--hotty-accent); }",
     "::selection { color: var(--hotty-bg); background: var(--hotty-accent); }",
     // An element that opts in to drags selects no text, whatever the
