@@ -61,6 +61,35 @@ test("an email field is text while focused, so the actions can place its caret; 
   expect((await attrs()).type).toBe("email");
 });
 
+test("a key bound to submit commits the field, then submits its form if it is in one, as Enter does (SPEC §10.2, §9)", async ({ page }) => {
+  const keys = `data-keys="ctrl+s=submit"`;
+  await field(page, `<input id=lone ${keys}><form id=f><input id=t name=q ${keys}><button>go</button></form><textarea id=ta ${keys}></textarea>`, "lone");
+  const events = async () =>
+    (await take(page)).msgs.filter((m) => m.get("e") === "change" || m.get("e") === "submit").map((m) => [m.get("e"), m.get("t"), m.body]);
+  // In no form: the change alone, once; focus leaving sends no second one.
+  await page.keyboard.type("a");
+  await page.keyboard.press("Control+s");
+  expect(await events()).toEqual([["change", "lone", { value: "a", rev: 1 }]]);
+  await page.keyboard.press("Control+s");
+  await send(page, { a: "focus", s: "f", t: "t", q: "2" });
+  expect(await events()).toEqual([]);
+  // In a form: the change, then the submit with the value committed; once
+  // committed, the submit alone.
+  await page.keyboard.type("b");
+  await page.keyboard.press("Control+s");
+  expect(await events()).toEqual([
+    ["change", "t", { value: "b", rev: 1 }],
+    ["submit", "f", { fields: [["q", "b"]] }],
+  ]);
+  await page.keyboard.press("Control+s");
+  expect(await events()).toEqual([["submit", "f", { fields: [["q", "b"]] }]]);
+  // A textarea commits so too.
+  await send(page, { a: "focus", s: "f", t: "ta", q: "2" });
+  await page.keyboard.type("c");
+  await page.keyboard.press("Control+s");
+  expect(await events()).toEqual([["change", "ta", { value: "c", rev: 1 }]]);
+});
+
 test("a number field types what a number holds, and edits with its keymap", async ({ page }) => {
   await field(page, `<input id=n type=number data-on=input value=12 data-keys="ctrl+a=line-start">`, "n");
   await page.keyboard.press("End");

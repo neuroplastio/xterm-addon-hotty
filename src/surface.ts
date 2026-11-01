@@ -1493,7 +1493,10 @@ export class Surface {
         const text = keyText(k.key!) ?? "";
         if (text && (!number || NUMBER_CHARS.test(text))) this.edit(el, multiline, { kind: "type", text });
       } else if (use === "submit") {
+        // The field committed, then its form submitted, if it is in one
+        // (SPEC §10.2): what Enter does in an `input`.
         this.goal = null;
+        this.commitField(el);
         submitFrom(el);
       } else if (use === "undo" || use === "redo") this.undo(el, use === "redo");
       else if (use === "copy") this.host.writeClipboard(this.selectedText());
@@ -2666,25 +2669,34 @@ export class Surface {
   }
 
   /** A control's value committed (SPEC §9): a toggle, a check or a pick at
-   * once, a text field's edits as focus leaves it. Each toggle and check is
-   * one more `rev`, and so is a pick that no `input` counted (§6.4). */
+   * once, a text field's edits on Enter or as focus leaves it
+   * (`commitField`). Each toggle and check is one more `rev`, and so is a
+   * pick that no `input` counted (§6.4). */
   private onChange(e: Event) {
     if (this.applying) return;
     const el = e.target as HTMLInputElement;
     if (!isElement(el) || !isControl(el)) return;
     const check = el.localName === "input" && (el.type === "checkbox" || el.type === "radio");
     if (check) this.bump(el);
-    else if (this.isTextField(el)) {
-      // Only the user's edits are committed: a field that only a=field
-      // changed sends none (§6.4).
-      if (!this.dirty.has(el)) return;
-      this.dirty.delete(el);
-    } else if (!this.picked.delete(el)) this.bump(el);
+    else if (this.isTextField(el)) return this.commitField(el);
+    else if (!this.picked.delete(el)) this.bump(el);
     this.flushCaret(el);
     const id = el.getAttribute("id");
     if (!id) return;
     const rev = this.revOf(el);
     this.emit("change", id, check ? { checked: el.checked, value: el.value, rev } : { value: el.value, rev });
+  }
+
+  /** A text field's edits committed (SPEC §9 `change`): by Enter in an
+   * `input`, whose `change` the browser fires, by the `submit` action
+   * (§10.2), or by focus leaving it. Only the user's edits, once each: a
+   * field that only a=field changed sends none (§6.4), and one committed
+   * already none again when the browser's own `change` follows. */
+  private commitField(el: Element) {
+    if (!this.dirty.delete(el)) return;
+    this.flushCaret(el);
+    const id = el.getAttribute("id");
+    if (id) this.emit("change", id, { value: (el as HTMLInputElement | HTMLTextAreaElement).value, rev: this.revOf(el) });
   }
 
   /** An edit the browser makes (typing, a paste): what the field was, for

@@ -171,9 +171,12 @@ runs programs for whoever connects.
   text with the editing commands, so the browser sends `input` and
   `change` as for typing; a character, which the browser types; or the
   program's, which gets what xterm.js encoded. Details:
-  - Enter that submits, in an `input`, is the browser's own implicit
-    submission; another key bound to `submit` does the same through the
-    form's default button, or the form.
+  - Enter that submits, in an `input`, is the browser's own: it commits
+    the field (`change`, in a form or not) and then submits its form, if
+    it is in one. Another key bound to `submit`, or Enter bound to it in a
+    textarea, does the same: the addon commits the field, then submits
+    through the form's default button, or the form. A field committed so
+    sends no second `change` as focus leaves it.
   - A textarea's rows are as it wraps them: a hidden copy of its text,
     with the same width and font, measures where each position is.
   - An email or number field, whose caret the browser keeps to itself, is
@@ -339,7 +342,7 @@ runs programs for whoever connects.
   order (`EDETACHED`, `ENOTARGET`, `EINVAL`, `ESTALE`). In a focused field
   its text goes in as a paste does (`execCommand("insertText")`), so the
   browser's undo and its commit on blur see one edit; the addon reports no
-  `input` or `change` for it, and focus leaving a field that only
+  `input` or `change` for it, and Enter or focus leaving a field that only
   `a=field` changed sends no `change`. It is one edit of the field's
   history, ending a run of typing. A value goes in as a script sets it
   (sanitized by the input's type), `checked` checks or unchecks (a radio
