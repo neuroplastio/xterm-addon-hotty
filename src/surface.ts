@@ -394,6 +394,10 @@ export class Surface {
   /** Text fields the user edited since they were focused or last sent
    * `change`: focus leaving commits only theirs (SPEC §6.4, no echo). */
   private dirty = new WeakSet<Element>();
+  /** A text field's value when it last committed, or was focused: a
+   * commit sends `change` only for a value changed since (SPEC §9). The
+   * browser keeps its own, which the `submit` action cannot move. */
+  private committed = new WeakMap<Element, string>();
   /** Controls whose `input` counted a pick or a value, which the `change`
    * after it carries without counting it again. */
   private picked = new WeakSet<Element>();
@@ -2247,7 +2251,9 @@ export class Surface {
     d.addEventListener("focusin", (e) => {
       // A focus of its own: what the user edits from here on, focus
       // leaving commits (SPEC §6.4).
-      if (isElement(e.target as EventTarget)) this.dirty.delete(e.target as Element);
+      const el = e.target as Element;
+      if (isElement(el)) this.dirty.delete(el);
+      if (isElement(el) && this.isTextField(el)) this.committed.set(el, el.value);
       this.maskField(e.target, true);
       this.onFocusIn(e);
       this.noteCaret();
@@ -2259,6 +2265,9 @@ export class Surface {
       if (isElement(el) && this.isTextField(el)) {
         this.kept.set(el, fieldSel(el as HTMLInputElement | HTMLTextAreaElement));
         this.flushCaret(el);
+        // Focus leaving commits (SPEC §9), whether or not the browser's
+        // own `change` came first.
+        this.commitField(el);
       }
       if (e.target === this.masked) this.unmaskField();
     }, true);
@@ -2689,14 +2698,19 @@ export class Surface {
 
   /** A text field's edits committed (SPEC §9 `change`): by Enter in an
    * `input`, whose `change` the browser fires, by the `submit` action
-   * (§10.2), or by focus leaving it. Only the user's edits, once each: a
-   * field that only a=field changed sends none (§6.4), and one committed
-   * already none again when the browser's own `change` follows. */
+   * (§10.2), or by focus leaving it. Only the user's edits, and only a
+   * value changed since the field last committed: a field that only
+   * a=field changed sends none (§6.4), one committed already none again
+   * when the browser's own `change` follows, and one edited back to what
+   * it was none at all. */
   private commitField(el: Element) {
     if (!this.dirty.delete(el)) return;
+    const value = (el as HTMLInputElement | HTMLTextAreaElement).value;
+    if (this.committed.get(el) === value) return;
+    this.committed.set(el, value);
     this.flushCaret(el);
     const id = el.getAttribute("id");
-    if (id) this.emit("change", id, { value: (el as HTMLInputElement | HTMLTextAreaElement).value, rev: this.revOf(el) });
+    if (id) this.emit("change", id, { value, rev: this.revOf(el) });
   }
 
   /** An edit the browser makes (typing, a paste): what the field was, for

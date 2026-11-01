@@ -66,13 +66,17 @@ test("a key bound to submit commits the field, then submits its form if it is in
   await field(page, `<input id=lone ${keys}><form id=f><input id=t name=q ${keys}><button>go</button></form><textarea id=ta ${keys}></textarea>`, "lone");
   const events = async () =>
     (await take(page)).msgs.filter((m) => m.get("e") === "change" || m.get("e") === "submit").map((m) => [m.get("e"), m.get("t"), m.body]);
-  // In no form: the change alone, once; focus leaving sends no second one.
+  // In no form: the change alone, once. Edited back to what the browser
+  // last committed, which is not what the program heard, focus leaving
+  // still commits it.
   await page.keyboard.type("a");
   await page.keyboard.press("Control+s");
   expect(await events()).toEqual([["change", "lone", { value: "a", rev: 1 }]]);
   await page.keyboard.press("Control+s");
-  await send(page, { a: "focus", s: "f", t: "t", q: "2" });
   expect(await events()).toEqual([]);
+  await page.keyboard.press("Backspace");
+  await send(page, { a: "focus", s: "f", t: "t", q: "2" });
+  expect(await events()).toEqual([["change", "lone", { value: "", rev: 2 }]]);
   // In a form: the change, then the submit with the value committed; once
   // committed, the submit alone.
   await page.keyboard.type("b");
@@ -83,11 +87,16 @@ test("a key bound to submit commits the field, then submits its form if it is in
   ]);
   await page.keyboard.press("Control+s");
   expect(await events()).toEqual([["submit", "f", { fields: [["q", "b"]] }]]);
-  // A textarea commits so too.
+  // A textarea commits so too, and focus leaving sends no second change;
+  // nor does a field edited back to what it last committed.
   await send(page, { a: "focus", s: "f", t: "ta", q: "2" });
   await page.keyboard.type("c");
   await page.keyboard.press("Control+s");
   expect(await events()).toEqual([["change", "ta", { value: "c", rev: 1 }]]);
+  await page.keyboard.type("d");
+  await page.keyboard.press("Backspace");
+  await send(page, { a: "focus", s: "f", t: "lone", q: "2" });
+  expect(await events()).toEqual([]);
 });
 
 test("a number field types what a number holds, and edits with its keymap", async ({ page }) => {
