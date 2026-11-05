@@ -75,11 +75,15 @@ new HottyAddon({
 
 ### The font hosts ship
 
-hotty hosts ship one font, AdwaitaMono Nerd Font Propo (Regular, Bold,
-Italic and Bold Italic), so that Nerd Font icons and symbols draw without an
-installed font, and italic is the font's own rather than Regular slanted. It
-is not in the spec: a document can't count on it on another host. The
-package carries it in `fonts/`; serve that directory and name it:
+hotty hosts ship two families. AdwaitaMono Nerd Font Propo (Regular, Bold,
+Italic and Bold Italic) is there so that Nerd Font icons and symbols draw
+without an installed font, and italic is the font's own rather than Regular
+slanted. IBM Plex Sans at 400, 500 and 600 is for the documents that name it:
+hotty-surf's kit draws its Compact and Roomy densities in it, and on a machine
+without Plex they would fall back to another sans. Neither is in the spec: a
+document can't count on them on another host. The package carries both in
+`fonts/` (the same three Plex files hotty-blitz ships, so one directory can
+serve both); serve that directory and name it:
 
 ```ts
 new HottyAddon({ fonts: "/static/xterm-addon-hotty/fonts/" });
@@ -91,8 +95,12 @@ new HottyAddon({ fonts: "/static/xterm-addon-hotty/fonts/" });
   terminal's `fontFamily`, then ours, then `monospace`. What the terminal's
   font lacks draws from it. A document's own `font-family: monospace`
   stays the browser's.
-- The browser fetches a face (about 1.35 MB) the first time a surface draws
-  text in it, once for every surface, and caches it as any other file.
+- Plex Sans is not in `--hotty-font` or the terminal's stack: it is for a
+  document that names it (`font-family: "IBM Plex Sans", sans-serif`), and
+  then it draws in the web font whatever the system has.
+- The browser fetches a face (about 1.35 MB for AdwaitaMono, about 65 KB for
+  each Plex weight) the first time a surface draws text in it, once for every
+  surface, and caches it as any other file.
 - Without the option, surfaces use the terminal's fonts and `monospace`.
 
 ## Try it
@@ -657,7 +665,10 @@ Measured 2026-09-29 in headless Chromium 153 (`bench/`):
 
 Apache-2.0 ([LICENSE](LICENSE)). xterm.js itself is MIT.
 
-The font in `fonts/` is OFL-1.1 ([fonts/OFL.txt](fonts/OFL.txt)). Its Nerd
-Fonts icon sets keep their own licences, listed with their texts in
-[fonts/NOTICE.txt](fonts/NOTICE.txt). A page that serves the font serves both
-files beside it.
+The fonts in `fonts/` are OFL-1.1. AdwaitaMono's licence is
+[fonts/OFL.txt](fonts/OFL.txt); its Nerd Fonts icon sets keep their own
+licences, listed with their texts in [fonts/NOTICE.txt](fonts/NOTICE.txt).
+IBM Plex Sans (v6.4.0, IBM's files unchanged, Reserved Font Name "Plex") has
+[fonts/IBM-Plex-OFL.txt](fonts/IBM-Plex-OFL.txt), and its source and checksums
+are in NOTICE.txt too. A page that serves the fonts serves these files beside
+them.

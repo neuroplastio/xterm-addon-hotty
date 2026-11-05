@@ -176,3 +176,45 @@ test("a surface's monospace takes the font hosts ship, from the `fonts` director
   expect(got.check).toBe(true);
   expect(got.italic).toEqual([["italic", "700", "loaded"]]);
 });
+
+test("a document's IBM Plex Sans at 400, 500 and 600 is drawn in the web font the host ships, not an installed one", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "CSS.getPlatformFontsForNode is the DevTools Protocol's");
+  await setup(
+    page,
+    `<style>p { font: 16px "IBM Plex Sans", sans-serif }</style>` +
+      `<p id=w4 style="font-weight:400">Regular text</p><p id=w5 style="font-weight:500">Medium text</p><p id=w6 style="font-weight:600">Semibold text</p>`,
+    "#w4",
+  );
+  await surface(page, "x").locator("html").evaluate((el) => Promise.all(
+    [400, 500, 600].map((w) => el.ownerDocument.fonts.load(`${w} 16px "IBM Plex Sans"`, "a")),
+  ));
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("DOM.enable");
+  await cdp.send("CSS.enable");
+  const { root } = await cdp.send("DOM.getDocument", { depth: -1, pierce: true });
+  const found: Record<string, unknown> = {};
+  for (const id of ["w4", "w5", "w6"]) {
+    const { nodeId } = await cdp.send("DOM.querySelector", { nodeId: root.nodeId, selector: `#${id}` }).then(async (r) => {
+      if (r.nodeId) return r;
+      // The surface's document is a child frame: find it through the tree.
+      const find = (n: any): number | undefined => {
+        if (n.attributes && n.attributes.includes("id") && n.attributes[n.attributes.indexOf("id") + 1] === id) return n.nodeId;
+        for (const c of [...(n.children ?? []), ...(n.contentDocument ? [n.contentDocument] : [])]) {
+          const f = find(c);
+          if (f) return f;
+        }
+      };
+      return { nodeId: find(root)! };
+    });
+    const { fonts } = await cdp.send("CSS.getPlatformFontsForNode", { nodeId });
+    found[id] = fonts.map((f) => [f.familyName, f.isCustomFont]);
+  }
+  // familyName is the font file's own name: "IBM Plex Sans" for Regular, and
+  // IBM's "Medm" and "SmBld" for the other two. isCustomFont is what says it
+  // came from an @font-face rather than the system.
+  expect(found).toEqual({
+    w4: [["IBM Plex Sans", true]],
+    w5: [["IBM Plex Sans Medm", true]],
+    w6: [["IBM Plex Sans SmBld", true]],
+  });
+});

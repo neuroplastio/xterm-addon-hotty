@@ -16,9 +16,18 @@ export interface Metrics {
   fonts?: string;
 }
 
-/** The font hotty hosts ship, Regular, Bold, Italic and Bold Italic (the
- * package's `fonts/`). */
+/** The monospace font hotty hosts ship, Regular, Bold, Italic and Bold Italic
+ * (the package's `fonts/`). */
 export const FONT_FAMILY = "AdwaitaMono Nerd Font Propo";
+/** The sans hotty hosts ship, IBM Plex Sans at 400, 500 and 600 (the
+ * package's `fonts/`), for the documents that name it, such as hotty-surf's
+ * kit. It is not the terminal's font: `fontStack` leaves it out. */
+export const SANS_FAMILY = "IBM Plex Sans";
+const SANS_FACES = [
+  ["IBMPlexSans-Regular.woff2", 400, "normal"],
+  ["IBMPlexSans-Medium.woff2", 500, "normal"],
+  ["IBMPlexSans-SemiBold.woff2", 600, "normal"],
+] as const;
 const FONT_FACES = [
   ["AdwaitaMonoNerdFontPropo-Regular.woff2", 400, "normal"],
   ["AdwaitaMonoNerdFontPropo-Bold.woff2", 700, "normal"],
@@ -26,14 +35,18 @@ const FONT_FACES = [
   ["AdwaitaMonoNerdFontPropo-BoldItalic.woff2", 700, "italic"],
 ] as const;
 
-/** The font's faces, from the directory `fonts`: none without it. The
+/** The fonts' faces, from the directory `fonts`: none without it. The
  * browser fetches a face when a surface first draws text in it, once for
  * every surface. */
 export function fontFaces(fonts: string): string[] {
   if (!fonts) return [];
-  return FONT_FACES.map(
-    ([file, weight, style]) =>
-      `@font-face { font-family: "${FONT_FAMILY}"; src: url("${fonts}${file}") format("woff2"); font-weight: ${weight}; font-style: ${style}; font-display: swap; }`,
+  const faces = [
+    ...FONT_FACES.map(([file, weight, style]) => [FONT_FAMILY, file, weight, style] as const),
+    ...SANS_FACES.map(([file, weight, style]) => [SANS_FAMILY, file, weight, style] as const),
+  ];
+  return faces.map(
+    ([family, file, weight, style]) =>
+      `@font-face { font-family: "${family}"; src: url("${fonts}${file}") format("woff2"); font-weight: ${weight}; font-style: ${style}; font-display: swap; }`,
   );
 }
 
