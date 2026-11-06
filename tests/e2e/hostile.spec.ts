@@ -115,3 +115,48 @@ test("script, requests, navigation, popups and focus theft all fail", async ({ p
   const link = msgs.find((m) => m.get("e") === "click" && m.get("t") === "link")!;
   expect((link.body as { href: string }).href).toBe(L("nav"));
 });
+
+test("a document that declares secondary gets its own press and nothing beyond it", async ({ page, context, browserName }) => {
+  await open(page, "?pty=0&record-links");
+  const before = await leaks(page);
+  const pages = context.pages().length;
+  await page.evaluate(() => window.hotty.term.focus());
+  // Everything takes a secondary press, a link and a handler of its own
+  // among it (the sanitizer drops the handler).
+  const doc =
+    `<style>body{margin:0}a{display:block;height:var(--hotty-cell-h)}</style>` +
+    `<body data-on=secondary oncontextmenu="parent.document.title='pwned-contextmenu'; fetch('${abs(page, "ctx")}')" style="height:100vh">` +
+    `<a id=l href="${abs(page, "ctx-link")}" target=_blank data-on=secondary ping="${abs(page, "ctx-ping")}">link</a><p id=p>text</p></body>`;
+  await send(page, { a: "doc", s: "x", q: "2" }, doc);
+  await send(page, { a: "place", s: "x", c: "20", r: "4", q: "2" });
+  await take(page);
+  const box = async (id: string) => (await surface(page, "x").locator(`#${id}`).boundingBox())!;
+  const click = async (x: number, y: number) => {
+    if (browserName === "chromium") {
+      const cdp = await page.context().newCDPSession(page);
+      for (const [type, buttons] of [["mouseMoved", 0], ["mousePressed", 2], ["mouseReleased", 0]] as const) {
+        await cdp.send("Input.dispatchMouseEvent", { type, x, y, button: "right", buttons, clickCount: 1 });
+      }
+      await cdp.detach();
+    } else {
+      await page.mouse.move(x, y);
+      await page.mouse.down({ button: "right" });
+      await page.mouse.up({ button: "right" });
+    }
+  };
+  const l = await box("l");
+  await click(l.x + 5, l.y + l.height / 2);
+  const p = await box("p");
+  await click(p.x + 3, p.y + p.height / 2);
+  await page.waitForTimeout(300);
+  // The press, and only the press: no click on the link, no hyperlink for
+  // the terminal, no request, no new page, and the keyboard stayed.
+  const { msgs } = await take(page);
+  expect(msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("e"), m.get("t") ?? ""])).toEqual([["press", "l"], ["press", ""]]);
+  expect(await page.evaluate(() => (window.hotty as unknown as { opened: string[] }).opened)).toEqual([]);
+  expect(await leaks(page)).toEqual(before);
+  expect(context.pages().length).toBe(pages);
+  expect(await page.title()).not.toContain("pwned");
+  expect(await surface(page, "x").locator("body").evaluate((b) => b.hasAttribute("oncontextmenu"))).toBe(false);
+  expect(await page.evaluate(() => document.activeElement?.className)).toContain("xterm-helper-textarea");
+});

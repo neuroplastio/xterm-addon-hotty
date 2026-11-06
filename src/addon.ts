@@ -992,7 +992,7 @@ export class HottyAddon implements ITerminalAddon {
       // Replayed on the terminal's screen, where xterm handles it as its own:
       // scrollback, or mouse reports and arrow keys on the alternate screen.
       wheel: (e, x, y) => this.forwardWheel(e, x, y),
-      cells: (kind, e, x, y) => this.pressCells(kind, e, x, y),
+      cells: (kind, e, x, y, button) => this.pressCells(kind, e, x, y, button),
     };
   }
 
@@ -1230,7 +1230,7 @@ export class HottyAddon implements ITerminalAddon {
    * back to the terminal first, as on a click on the cells (§10.1): a
    * surface that had it sends `blur`.
    */
-  private pressCells(kind: "down" | "move" | "up", e: MouseLike, x: number, y: number) {
+  private pressCells(kind: "down" | "move" | "up", e: MouseLike, x: number, y: number, button = 0) {
     const el = this.term.element;
     if (!el) return;
     const init: MouseEventInit = {
@@ -1238,7 +1238,7 @@ export class HottyAddon implements ITerminalAddon {
       clientY: y,
       screenX: e.screenX,
       screenY: e.screenY,
-      button: 0,
+      button,
       buttons: e.buttons,
       // xterm.js selects on a press whose detail is the click count.
       detail: kind === "down" ? e.detail || 1 : e.detail,

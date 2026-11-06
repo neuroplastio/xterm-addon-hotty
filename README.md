@@ -261,6 +261,15 @@ runs programs for whoever connects.
   the drag and the focus it causes; a tap reports it on the mousedown the
   browser makes for it, and a touch that drags when it becomes a drag. A
   touch that pans presses nothing. A press on a hyperlink is the terminal's.
+- **Secondary presses** (SPEC §9, §9.1, §9.2; hotty 0.7) on an element with
+  `secondary` in its `data-on`, or inside one: a mouse's button 2, a pen's
+  barrel button, or a touch held still for 500 ms. `press` has `t` the
+  nearest such element's id, `button: 2`, its `area` and the pointer's cell
+  `c` and `r`, whatever `p` says; the frame cancels the mousedown and the
+  `contextmenu` (no click, drag, selection or focus change, and a touch's
+  lift scrolls and clicks nothing). Over any other element, or with Shift
+  held, the browser's own menu is left to the embedder; with Alt it is the
+  program's mouse report (`CSI < 10`).
 - **Fit** (SPEC §5.2, §9: `f=1` on `a=place`). The program hears `fit`
   with the rows the document needs at the placement's width whenever they
   differ from the rows it heard last, starting from the placement's own;

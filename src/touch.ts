@@ -10,7 +10,7 @@
 import { read } from "./msgpack.ts";
 
 /** How far a touch moves, in CSS pixels, before it is a drag, not a tap. */
-const DRAG_SLOP = 8;
+export const DRAG_SLOP = 8;
 /** A touch held still this long before it moves is a long press, which
  * never becomes a drag (SPEC §9.1); as long as a tap may last. */
 export const LONG_PRESS_MS = 500;
@@ -197,6 +197,13 @@ export class Touch {
   dispose() {
     this.stopFling();
     for (const f of this.off) f();
+  }
+
+  /** The touch under way is the host's from now to its lift (a long press
+   * it took, SPEC §9.1): it scrolls nothing, and its lift is cancelled, so
+   * the browser makes no click of it. */
+  take() {
+    if (this.touch) this.touch.held = true;
   }
 
   private keep(e: TouchEvent) {

@@ -180,7 +180,7 @@ export const CAPS: Type = {
 /** SPEC §9: each event kind's detail; the kinds not here carry none. */
 export const DETAIL: Record<string, Type> = {
   click: { href: "str", url: "str", value: "str", area: AREA, mods: "int", count: "int" },
-  press: { area: AREA, mods: "int" },
+  press: { button: "int", area: AREA, c: "int", r: "int", mods: "int" },
   change: { checked: "bool", value: "str", rev: "int" },
   input: { value: "str", rev: "int", sel: ["int"] },
   caret: { sel: ["int"], rev: "int" },

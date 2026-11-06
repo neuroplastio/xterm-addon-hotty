@@ -11,7 +11,7 @@
 // The iframe never moves in the DOM (moving an iframe reloads it): it sits
 // in the addon's layer, and placement only changes the position of its box.
 
-import { LONG_PRESS_MS, panBlocked, Touch, type TouchBegin, touchPans } from "./touch.ts";
+import { DRAG_SLOP, LONG_PRESS_MS, panBlocked, Touch, type TouchBegin, touchPans } from "./touch.ts";
 import { parseSteps, stepAt } from "./steps.ts";
 import { CLIP, MEASURE, rootTouchAction, scrollCss, UNCLIPPED } from "./hostcss.ts";
 import { type DeltaError, Deltas, type Op, type Reveal } from "./delta.ts";
@@ -140,7 +140,7 @@ export interface SurfaceHost {
   /** A press with Alt held, a move of the gesture it began, or its release
    *  (SPEC §9.2): the program's, as on the cells beneath, at a point in the
    *  page. */
-  cells(kind: "down" | "move" | "up", e: MouseEvent, pageX: number, pageY: number): void;
+  cells(kind: "down" | "move" | "up", e: MouseEvent, pageX: number, pageY: number, button: number): void;
 }
 
 export interface KeySettings {
@@ -365,6 +365,21 @@ export class Surface {
   /** The pointer of a press with Alt held (SPEC §9.2), until its release:
    * the gesture is the program's. */
   private altPointer: number | null = null;
+  /** Its button: 0, or 2 for a secondary press (§9). */
+  private altButton = 0;
+  private finger: Touch | null = null;
+  /** A touch that may become a long press on an element that takes it
+   * (SPEC §9.1): where and when it began, and the timer that makes it one.
+   * `done` once it has: the touch is the surface's to its lift. */
+  private longPress: { id: number; x: number; y: number; el: Element; mods: number | undefined; timer: ReturnType<typeof setTimeout> | null; done: boolean } | null = null;
+  /** A secondary press (SPEC §9) taken at its pointerdown: the mousedown it
+   * makes is cancelled and the `contextmenu` that follows is the surface's
+   * to cancel. Cleared by the next pointerdown. */
+  private secondaryTaken = false;
+  /** The last thing the user pressed, until a key: what a `contextmenu`
+   * with no secondary pointerdown before it came from. The keyboard's (the
+   * Menu key, Shift+F10) is a key for the program (§10.2), not a press. */
+  private lastDown: { type: string } | null = null;
   /** Such a gesture just ended at a release: the browser's click that
    * follows in the same task is not the surface's. */
   private altReleased = false;
@@ -2121,11 +2136,12 @@ export class Surface {
    * Alt let go later changes nothing.
    */
   private onAltDown(e: PointerEvent): boolean {
-    if (e.pointerType === "touch" || e.button !== 0 || !e.altKey || !e.isPrimary) return false;
+    if (e.pointerType === "touch" || (e.button !== 0 && e.button !== 2) || !e.altKey || (e.button === 0 && !e.isPrimary)) return false;
     this.cancelDrag(); // a drag whose release was lost
     this.dropAlt();
     this.pointerPress = true;
     this.altPointer = e.pointerId;
+    this.altButton = e.button;
     // No longer hovered: a hyperlink under the pointer is left.
     this.onLeave(e);
     try {
@@ -2134,24 +2150,24 @@ export class Surface {
       /* the browser routes a pressed mouse to the frame anyway */
     }
     const [x, y] = this.toPage(e);
-    this.host.cells("down", e, x, y);
+    this.host.cells("down", e, x, y, this.altButton);
     return true;
   }
 
   private onAltMove(e: PointerEvent): boolean {
     if (e.pointerId !== this.altPointer) return false;
     const [x, y] = this.toPage(e);
-    this.host.cells("move", e, x, y);
+    this.host.cells("move", e, x, y, this.altButton);
     return true;
   }
 
   private onAltUp(e: PointerEvent): boolean {
-    if (e.pointerId !== this.altPointer || e.button !== 0) return false;
+    if (e.pointerId !== this.altPointer || e.button !== this.altButton) return false;
     this.dropAlt();
     this.altReleased = true;
     setTimeout(() => (this.altReleased = false), 0);
     const [x, y] = this.toPage(e);
-    this.host.cells("up", e, x, y);
+    this.host.cells("up", e, x, y, this.altButton);
     return true;
   }
 
@@ -2171,6 +2187,135 @@ export class Surface {
   private toPage(e: MouseEvent): [number, number] {
     const r = this.frame.getBoundingClientRect();
     return [r.left + e.clientX, r.top + e.clientY];
+  }
+
+  // --- Secondary presses (SPEC §9) ----------------------------------------
+
+  /** The nearest element on `path` with `secondary` in its `data-on`. */
+  private secondaryIn(path: EventTarget[]): Element | null {
+    for (const n of path) if (isElement(n) && listens(n, "secondary")) return n;
+    return null;
+  }
+
+  /**
+   * A mouse's secondary button or a pen's barrel button, pressed (SPEC
+   * §9). Over an element that takes it, with neither Shift (the terminal's
+   * menu, §9.2) nor Alt (the program's, `onAltDown`) held, it is a `press`
+   * with button 2, and nothing else: the mousedown is cancelled (no focus,
+   * selection or `:active`), the `contextmenu` after it too (`onContextMenu`),
+   * and its moves, release and auxclick report nothing. Anywhere else it is
+   * the browser's, and the terminal's: the embedder's menu or the browser's.
+   */
+  private onSecondaryDown(e: PointerEvent): boolean {
+    // On a Mac the primary button with Control is a context click, with
+    // `ctrl` left out of `mods` (HOST.md §3).
+    const context = mac && e.button === 0 && e.ctrlKey && e.pointerType === "mouse";
+    if (e.pointerType === "touch" || (e.button !== 2 && !context) || e.shiftKey || e.altKey) return false;
+    const el = this.secondaryIn(e.composedPath());
+    if (!el) return false;
+    this.cancelDrag(); // a drag whose release was lost
+    this.secondaryTaken = true;
+    this.reportSecondary(e, el, context);
+    e.preventDefault();
+    return true;
+  }
+
+  /**
+   * `contextmenu` (SPEC §9, HOST.md §3): the browser's menu opens over a
+   * secondary press the surface took, or over one the program owns (Alt),
+   * unless cancelled here. A `contextmenu` with no pointerdown of a
+   * secondary button before it is a touch's long press, or a secondary
+   * button pressed while another was down (no pointerdown comes of that).
+   * Over an element that takes it, it is the same press. A keyboard's menu
+   * is a key (§10.2), and Shift is the terminal's: both are left alone.
+   */
+  private onContextMenu(e: MouseEvent) {
+    if (this.secondaryTaken) {
+      this.secondaryTaken = false;
+      e.preventDefault();
+      return;
+    }
+    if (this.altPointer !== null) {
+      e.preventDefault(); // the program's gesture
+      return;
+    }
+    const down = this.lastDown;
+    const pointer = (e as PointerEvent).pointerType;
+    const touch = pointer === "touch" || (down?.type === "touch" && !pointer);
+    if (this.detachedState || e.shiftKey || e.altKey || !(touch || e.button === 2) || this.drag) return;
+    const el = this.secondaryIn(e.composedPath());
+    if (!el) return;
+    e.preventDefault();
+    if (touch) {
+      // A long press the browser made a `contextmenu` of: the same press.
+      if (this.longPress?.done) return;
+      this.endLongPress();
+      this.finger?.take(); // the touch is the surface's to its lift
+      this.longPress = { id: -1, x: e.clientX, y: e.clientY, el, mods: undefined, timer: null, done: true };
+    }
+    this.reportSecondary(e, el);
+  }
+
+  /**
+   * A touch held still over an element that takes a secondary press, past
+   * the long-press time (SPEC §9.1), is one. The browser's own long press
+   * is a `contextmenu` on mobile and nothing on a desktop's touch screen,
+   * so the surface times it. The touch is then the surface's to its lift:
+   * it scrolls nothing (`Touch.take`) and its lift is cancelled, so the
+   * browser makes no click of it. Shift or Alt held at the touch is the
+   * terminal's (§9.2).
+   */
+  private longPressStart(e: TouchEvent) {
+    this.endLongPress();
+    const t = e.touches.length === 1 ? e.touches[0] : undefined;
+    if (!t || this.detachedState || e.shiftKey || e.altKey) return;
+    const el = this.secondaryIn(e.composedPath());
+    if (!el) return;
+    const lp = { id: t.identifier, x: t.clientX, y: t.clientY, el, mods: modsOf(e), timer: null as ReturnType<typeof setTimeout> | null, done: false };
+    lp.timer = setTimeout(() => {
+      lp.timer = null;
+      if (this.longPress !== lp || this.detachedState || !el.isConnected) return;
+      lp.done = true;
+      this.finger?.take();
+      const [c, r] = this.cellAt(lp.x, lp.y);
+      this.emit("press", el.getAttribute("id") ?? "", { button: 2, area: this.areaOf(el), c, r, mods: lp.mods });
+    }, LONG_PRESS_MS);
+    this.longPress = lp;
+  }
+
+  private longPressMove(e: TouchEvent) {
+    const lp = this.longPress;
+    if (!lp) return;
+    if (lp.done) {
+      if (e.cancelable) e.preventDefault();
+      return;
+    }
+    const t = [...e.touches].find((x) => x.identifier === lp.id);
+    if (e.touches.length !== 1 || !t || Math.hypot(t.clientX - lp.x, t.clientY - lp.y) >= DRAG_SLOP) this.endLongPress();
+  }
+
+  /** The touch lifted or was lost: no long press after this; one that was
+   * made cancels its lift. */
+  private longPressEnd(e: TouchEvent) {
+    const lp = this.longPress;
+    if (!lp) return;
+    if (lp.done && e.type === "touchend" && e.touches.length === 0 && e.cancelable) e.preventDefault();
+    if (e.touches.length === 0 || e.type === "touchcancel") this.endLongPress();
+  }
+
+  private endLongPress() {
+    if (this.longPress?.timer) clearTimeout(this.longPress.timer);
+    this.longPress = null;
+  }
+
+  /** `press` for a secondary press on `el` (SPEC §9): its id (absent when it
+   * has none), button 2, its cells, the pointer's cell and the modifier keys
+   * held; `ctrl` is left out of them where the platform makes it the
+   * gesture (macOS). */
+  private reportSecondary(e: MouseEvent, el: Element, noCtrl = false) {
+    const [c, r] = this.cellOf(e);
+    const mods = modsOf(noCtrl ? { shiftKey: e.shiftKey, ctrlKey: false, altKey: e.altKey, metaKey: e.metaKey } : e);
+    this.emit("press", el.getAttribute("id") ?? "", { button: 2, area: this.areaOf(el), c, r, mods });
   }
 
   /** `press` (SPEC §9), if the surface asked for it (`p`, §5.2): `t` is the
@@ -2216,7 +2361,10 @@ export class Surface {
       "pointerdown",
       (e) => {
         if (e.button === 0 && e.isPrimary) this.host.pressed(e.altKey ? null : this.name);
+        this.secondaryTaken = false;
+        this.lastDown = { type: e.pointerType };
         if (this.onAltDown(e)) return;
+        if (this.onSecondaryDown(e)) return;
         if (e.button === 0) this.maskField(e.target, false);
         this.pointerPress = e.pointerType !== "touch";
         if (this.pointerPress && e.button === 0 && e.isPrimary) this.reportPress(e);
@@ -2232,8 +2380,9 @@ export class Surface {
     d.addEventListener(
       "mousedown",
       (e) => {
-        if (this.altPointer !== null) {
-          // The program's press (SPEC §9.2): no focus, no selection, no drag.
+        if (this.altPointer !== null || this.secondaryTaken) {
+          // The program's press (SPEC §9.2), or a secondary press the
+          // surface took (§9): no focus, no selection, no drag.
           e.preventDefault();
           e.stopImmediatePropagation();
           return;
@@ -2282,6 +2431,11 @@ export class Surface {
     d.addEventListener("compositionend", () => (this.composing = null), true);
     d.addEventListener("click", (e) => this.onClick(e), true);
     d.addEventListener("auxclick", (e) => this.onAuxClick(e), true);
+    d.addEventListener("contextmenu", (e) => this.onContextMenu(e), true);
+    d.addEventListener("touchstart", (e) => this.longPressStart(e), { capture: true, passive: true });
+    d.addEventListener("touchmove", (e) => this.longPressMove(e), { capture: true, passive: false });
+    d.addEventListener("touchend", (e) => this.longPressEnd(e), { capture: true, passive: false });
+    d.addEventListener("touchcancel", (e) => this.longPressEnd(e), { capture: true, passive: true });
     d.addEventListener("mouseover", (e) => this.onOver(e), true);
     d.addEventListener("mouseout", (e) => this.onOut(e), true);
     d.addEventListener("submit", (e) => this.onSubmit(e as SubmitEvent), true);
@@ -2289,6 +2443,7 @@ export class Surface {
     d.addEventListener("beforeinput", (e) => this.onBeforeInput(e as InputEvent), true);
     d.addEventListener("input", (e) => this.onInput(e), true);
     d.addEventListener("keydown", (e) => {
+      this.lastDown = null;
       this.onKey(e);
       this.noteCaret();
     }, true);
@@ -2324,7 +2479,7 @@ export class Surface {
     // touch on an element that opts in to drags, whose touch-action allows
     // no pan its way, is a drag (§9.1); a touch-action that would stop the
     // browser's pan anywhere else does not (`claimTouch`).
-    new Touch(
+    this.finger = new Touch(
       d,
       this.frame.ownerDocument.defaultView!,
       {
