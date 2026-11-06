@@ -270,6 +270,11 @@ export class HottyAddon implements ITerminalAddon {
   /** The capabilities the program last heard (SPEC §4), from its query or a
    * `caps` event; null while it has asked for none. */
   private heard: Body | null = null;
+  /** The hotty version the session speaks (SPEC §4, HOST.md §4.1): the one
+   *  the last query was answered in, until a full reset (RIS). Before a
+   *  query it is the highest the addon speaks. A 0.6 session has no
+   *  secondary press (`Surface.secondary`). */
+  private version = SPEAKS[0]!;
   /** The font and the cell (CSS px) it heard them with: a new cell is owed
    * as `cellcss` when the font changed, or by more than a device pixel's
    * rounding (SPEC §5.3). */
@@ -356,6 +361,7 @@ export class HottyAddon implements ITerminalAddon {
       // RIS: every surface goes (PROTOCOL §4).
       p.registerEscHandler({ final: "c" }, () => {
         this.reset();
+        this.version = SPEAKS[0]!; // the session ends with the reset
         this.taken.normal.clear();
         this.taken.alternate.clear();
         this.touchAreas.normal = [];
@@ -897,6 +903,7 @@ export class HottyAddon implements ITerminalAddon {
     return {
       layer: this.ensureLayer(),
       store: this.store,
+      secondary: () => this.version !== "0.6",
       event: (surface, kind, target, detail) => {
         // `t` is absent where no element is meant, and a detail with no
         // field is no payload (SPEC §9).
@@ -1629,6 +1636,7 @@ export class HottyAddon implements ITerminalAddon {
   private hear(caps: Body): Body {
     const { cellW, cellH } = this.cell();
     this.heard = caps;
+    this.version = String(caps.v);
     this.told = { cellW, cellH, font: this.font() };
     return caps;
   }

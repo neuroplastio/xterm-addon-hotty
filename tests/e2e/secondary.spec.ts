@@ -341,3 +341,77 @@ test.describe("a long press", () => {
     expect((await events(page)).filter((e) => e[2] && "button" in e[2])).toEqual([]);
   });
 });
+
+// A 0.6 session has no secondary press (HOST.md §4.1): the secondary button
+// is the terminal's, as it was before 0.7. The session is the version the
+// last query was answered in.
+test.describe("a 0.6 session", () => {
+  const query = (page: Page, v: string) => send(page, { a: "q", n: "9", v });
+
+  test("a secondary press over an element with it reports nothing, and the browser's menu is not cancelled", async ({ page, browserName }) => {
+    await query(page, "0.6");
+    await place(page, "1");
+    await record(page);
+    const m = new Mouse(page, browserName);
+    // What the pre-0.7 test of the terminal's press asserts (over an element
+    // without `secondary`): no event, and the contextmenu left open.
+    for (const id of ["i", "o", "k"]) {
+      const [x, y] = await centre(page, id);
+      await m.click(x, y);
+      expect(await events(page), id).toEqual([]);
+      expect(await log(page), id).toEqual(["contextmenu:open"]);
+    }
+  });
+
+  test("Alt with the secondary button sends no CSI < 10; a 0.7 session still does", async ({ page, browserName }) => {
+    await write(page, "\x1b[?1002h\x1b[?1006h");
+    await query(page, "0.6");
+    await place(page, "1");
+    const m = new Mouse(page, browserName);
+    const [x, y] = await centre(page, "i");
+    await take(page);
+    await m.down(x, y, { alt: true });
+    await m.up(x, y, { alt: true });
+    const six = await take(page);
+    expect(six.msgs.filter((g) => g.get("a") === "ev")).toEqual([]);
+    expect(six.raw).not.toContain("\x1b[<10;");
+    // The same program queries again in 0.7: the gesture is the program's.
+    await query(page, "0.6,0.7");
+    await take(page);
+    await m.down(x, y, { alt: true });
+    await m.up(x, y, { alt: true });
+    expect((await take(page)).raw).toContain("\x1b[<10;");
+  });
+
+  test("a 0.7 query puts the press back, and a full reset (RIS) ends the 0.6 session", async ({ page, browserName }) => {
+    await query(page, "0.6");
+    await place(page, "0");
+    const m = new Mouse(page, browserName);
+    const [x, y] = await centre(page, "i");
+    await m.click(x, y);
+    expect(await events(page)).toEqual([]);
+    await query(page, "0.7");
+    await take(page);
+    await m.click(x, y);
+    expect((await events(page)).map((e) => [e[0], e[1]])).toEqual([["press", "i"]]);
+    await query(page, "0.6");
+    await write(page, "\x1bc");
+    await place(page, "0");
+    await take(page);
+    await m.click(x, y);
+    expect((await events(page)).map((e) => [e[0], e[1]])).toEqual([["press", "i"]]);
+  });
+
+  test("a long press over an element with it reports nothing", async ({ page, browserName }) => {
+    test.skip(browserName !== "chromium", "Playwright gives Firefox no touch");
+    await query(page, "0.6");
+    await place(page, "0");
+    const [x, y] = await centre(page, "k");
+    const touch = finger(page);
+    await touch("touchStart", x, y);
+    await page.waitForTimeout(900);
+    await touch("touchEnd");
+    await page.waitForTimeout(100);
+    expect((await events(page)).filter((e) => e[2] && "button" in e[2])).toEqual([]);
+  });
+});
