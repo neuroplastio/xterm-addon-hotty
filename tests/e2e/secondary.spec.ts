@@ -292,6 +292,19 @@ test("the keyboard's context menu is a key for the program, not a secondary pres
   expect((await events(page)).filter((e) => e[0] === "press")).toEqual([]);
 });
 
+test("the Menu key, with no Shift, over a focused element that takes it, is a key for the program: no press", async ({ page }) => {
+  await place(page, "1");
+  await surface(page, "x").locator("#i").evaluate((el) => (el as HTMLElement).setAttribute("tabindex", "0"));
+  await surface(page, "x").locator("#i").focus();
+  await record(page);
+  await take(page);
+  await page.keyboard.press("ContextMenu");
+  expect((await events(page)).filter((e) => e[0] === "press")).toEqual([]);
+  // Whether the browser opened its menu is its own: the surface does not
+  // cancel it (the log says what happened).
+  expect((await log(page)).filter((l) => l === "contextmenu:prevented")).toEqual([]);
+});
+
 test.describe("a long press", () => {
   test.use({ hasTouch: true });
 

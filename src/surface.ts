@@ -2239,7 +2239,10 @@ export class Surface {
       e.preventDefault(); // the program's gesture
       return;
     }
+    // Nothing was pressed since the last key: a keyboard's menu, which is a
+    // key for the program (§10.2), whatever button the browser gives it.
     const down = this.lastDown;
+    if (down === null) return;
     const pointer = (e as PointerEvent).pointerType;
     const touch = pointer === "touch" || (down?.type === "touch" && !pointer);
     if (this.detachedState || e.shiftKey || e.altKey || !(touch || e.button === 2) || this.drag) return;
@@ -2360,11 +2363,13 @@ export class Surface {
     d.addEventListener(
       "pointerdown",
       (e) => {
-        if (e.button === 0 && e.isPrimary) this.host.pressed(e.altKey ? null : this.name);
         this.secondaryTaken = false;
         this.lastDown = { type: e.pointerType };
-        if (this.onAltDown(e)) return;
+        // A secondary press clears no selection (a Mac's Control with the
+        // primary button is one), so it comes before `pressed`.
         if (this.onSecondaryDown(e)) return;
+        if (e.button === 0 && e.isPrimary) this.host.pressed(e.altKey ? null : this.name);
+        if (this.onAltDown(e)) return;
         if (e.button === 0) this.maskField(e.target, false);
         this.pointerPress = e.pointerType !== "touch";
         if (this.pointerPress && e.button === 0 && e.isPrimary) this.reportPress(e);
