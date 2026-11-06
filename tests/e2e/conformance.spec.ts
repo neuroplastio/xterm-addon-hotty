@@ -294,11 +294,12 @@ async function point(page: Page, s: string, at: string | [number, number]): Prom
 // the features `count` and `menu` (SPEC §4), all a 0.6 host does (`scroll`,
 // `steps`, `drop`, `view`), a history in its fields (`undo`), edit commands
 // (`commands`, §10.6), a terminal that reports the mouse (`mouse`, §9.6),
-// and `touch` (§9.1, §16) where this runner can touch it, in Chromium,
+// `speaks-0.6` (HOST.md §4: a 0.6 session keeps the secondary button the
+// terminal's), and `touch` (§9.1, §16) where this runner can touch it, in Chromium,
 // through CDP: Playwright gives Firefox no touch moves. It does not let the
 // pointer through surfaces (§9.3, `passthrough`), sends no `hover` (§9.4),
 // and draws no backdrop (§5.2, `backdrop`).
-const reported = (browser: string) => new Set<string>(["scroll", "steps", "drop", "view", "count", "menu", "undo", "commands", "pressed", "mouse", ...(browser === "chromium" ? ["touch"] : [])]);
+const reported = (browser: string) => new Set<string>(["scroll", "steps", "drop", "view", "count", "menu", "undo", "commands", "pressed", "mouse", "speaks-0.6", ...(browser === "chromium" ? ["touch"] : [])]);
 
 const needs = (v: { requires?: string | string[] }) => (v.requires === undefined ? [] : [v.requires].flat());
 

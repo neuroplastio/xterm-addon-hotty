@@ -12,15 +12,15 @@ import { cell, cmd, delta, deltaCmd, open, send, surface, take, write } from "./
 
 test.beforeEach(async ({ page }) => open(page));
 
-test("a=q answers with capabilities: the fields of 0.6, and none of 0.2's", async ({ page }) => {
-  await send(page, { a: "q", v: "0.6" });
+test("a=q answers with capabilities: the fields of 0.7, and none of 0.2's", async ({ page }) => {
+  await send(page, { a: "q", v: "0.7" });
   const { msgs } = await take(page);
   // A query is answered without `n` or `q` (SPEC §3.5).
   expect(msgs).toHaveLength(1);
   expect(msgs[0]!.get("a")).toBe("ok");
   const caps = msgs[0]!.body as Record<string, unknown> & { cellcss: { w: Float; h: Float }; limits: Record<string, number> };
   expect(Object.keys(caps).sort()).toEqual(["cellcss", "edit", "features", "host", "limits", "mod", "net", "scale", "scheme", "v", "version"]);
-  expect(caps.v).toBe("0.6");
+  expect(caps.v).toBe("0.7");
   expect(caps.host).toBe(HOST);
   expect(caps.version).toBe(VERSION);
   // The cell in CSS pixels, and a float even when whole (SPEC §3.3, §4).
@@ -46,7 +46,7 @@ test("the cell in the capabilities is the cell the surfaces are laid out with", 
 });
 
 test("the reference client reads the replies, each field of its type", async ({ page }) => {
-  await send(page, { a: "q", n: "1", v: "0.6" });
+  await send(page, { a: "q", n: "1", v: "0.7" });
   await send(page, { a: "place", s: "gone", c: "1" });
   // A query that names no version, as a 0.1 program's (SPEC §4).
   await send(page, { a: "q", n: "2" });
@@ -70,21 +70,28 @@ for seq in sys.stdin.buffer.read().split(b"\\x1b\\\\"):
 print(json.dumps(out))
 `;
   const out = JSON.parse(execFileSync("python3", ["-c", script], { input: stream, encoding: "utf8" }));
-  expect(out).toEqual([{ v: "0.6", scale: "float", cell: ["float", "float"], features: ["count", "menu"] }, { code: "ENOENT" }, { code: "EVERSION" }]);
+  expect(out).toEqual([{ v: "0.7", scale: "float", cell: ["float", "float"], features: ["count", "menu"] }, { code: "ENOENT" }, { code: "EVERSION" }]);
 });
 
-test("a query lists the versions the program speaks: the addon answers in the highest it shares", async ({ page }) => {
-  await send(page, { a: "q", n: "1", v: "0.5,0.6" });
-  await send(page, { a: "q", n: "2", v: "0.2" });
-  // A 0.5 program finds no host: 0.6 breaks 0.5 (SPEC §15).
-  await send(page, { a: "q", n: "3", v: "0.5" });
-  const { msgs } = await take(page);
-  expect((msgs[0]!.body as { v: string }).v).toBe("0.6");
-  for (const m of msgs.slice(1)) {
-    expect(m.get("a")).toBe("err");
-    expect(m.body).toEqual({ code: "EVERSION", detail: "0.6" });
+test("a query lists the versions the program speaks: the addon answers in the highest it shares, and keeps both (SPEC §4, §15)", async ({ page }) => {
+  const answers = async (v: string) => {
+    await send(page, { a: "q", n: "1", v });
+    const { msgs } = await take(page);
+    expect(msgs).toHaveLength(1);
+    return msgs[0]!;
+  };
+  for (const [v, in_] of [["0.6,0.7", "0.7"], ["0.7,0.6", "0.7"], ["0.6", "0.6"], ["0.7", "0.7"], ["0.5,0.6", "0.6"], ["0.6,99.0", "0.6"]] as const) {
+    const m = await answers(v);
+    expect(m.get("a"), v).toBe("ok");
+    expect((m.body as { v: string }).v, v).toBe(in_);
   }
-  expect(msgs.length).toBe(3);
+  // A 0.5 program finds no host: 0.6 breaks 0.5 (SPEC §15). The detail
+  // lists the versions the addon speaks, lowest first, as a query does.
+  for (const v of ["0.5", "0.2", "0.8"]) {
+    const m = await answers(v);
+    expect(m.get("a"), v).toBe("err");
+    expect(m.body, v).toEqual({ code: "EVERSION", detail: "0.6,0.7" });
+  }
 });
 
 test("r=auto fits the content and reports its rows", async ({ page }) => {

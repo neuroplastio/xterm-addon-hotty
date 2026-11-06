@@ -148,19 +148,20 @@ const GESTURE_MS = 150;
 
 /** The hotty versions the addon speaks (SPEC §4), highest first. The first
  * is VERSION's MAJOR.MINOR (gov P-5 rule 6). */
-export const SPEAKS = ["0.6"];
+export const SPEAKS = ["0.7", "0.6"];
 
 /**
  * The version a query is answered in (SPEC §4): the highest the addon
  * speaks of those its `v` lists, comma-separated. A version has one
  * spelling (`major.minor`, no leading zeros), so an entry is one only
  * exactly: `0.20` is not 0.2. None, as with no `v` at all, is `EVERSION`,
- * its detail the versions the addon speaks (§3.6).
+ * its detail the versions the addon speaks (§3.6), lowest first as a query
+ * lists them (`0.6,0.7`).
  */
 function answerIn(v: string | undefined): string {
   const listed = (v ?? "").split(",");
   const shared = SPEAKS.find((s) => listed.includes(s));
-  if (shared === undefined) throw new Failure("EVERSION", SPEAKS.join(","));
+  if (shared === undefined) throw new Failure("EVERSION", [...SPEAKS].reverse().join(","));
   return shared;
 }
 

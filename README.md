@@ -12,23 +12,28 @@ npm install @neuroplastio/xterm-addon-hotty @xterm/xterm
 
 The package is an ES module with its TypeScript declarations, for xterm.js
 6, and has no dependencies. A release also installs from git by its tag
-(`github:neuroplastio/xterm-addon-hotty#v0.6.0`), and a commit not yet
+(`github:neuroplastio/xterm-addon-hotty#v0.7.0`), and a commit not yet
 released by its hash (`#<commit>`): npm builds it as it installs it
 (`prepare`).
 
-It implements hotty 0.6, whose bodies are msgpack maps (SPEC §3.3),
+It implements hotty 0.7 and speaks 0.6 as well (SPEC §15, HOST.md §4):
+a program that lists only 0.6 meets a host. Its bodies are msgpack maps (SPEC §3.3),
 whose keys are named by myelin key names 0.1 (§10.4), and whose programs
 change what the user is changing with `a=field` (§6.4). A
-program's query names the versions it speaks (`a=q:n=1:v=0.6`, SPEC §4):
-the addon answers a query that lists 0.6 with its capabilities (`v`,
+program's query names the versions it speaks (`a=q:n=1:v=0.6,0.7`, SPEC §4):
+the addon answers a query that lists 0.7 or 0.6 with its capabilities, in the
+highest it shares with the program (`v`, then
 `cellcss`, `scale`, `scheme`, `mod`, `features`, `limits`, `net`, `edit`,
-`host`, `version`), and any other with `EVERSION`, so that such a program
-finds no host and falls back to text: a 0.5 program too, since 0.6
-breaks 0.5 (SPEC §15). A command that asks for a reply (`n`)
+`host`, `version`), and any other with `EVERSION`, its detail `0.6,0.7`, so
+that such a program finds no host and falls back to text: a 0.5 program too,
+since 0.6 breaks 0.5 (SPEC §15). A session is in the version the last query
+was answered in, until a full reset (RIS). In a 0.6 session there is no
+secondary press (HOST.md §4.1): the secondary button, with Alt too, stays the
+terminal's. A command that asks for a reply (`n`)
 gets one; a query always does, and every other command is quiet unless it
 carries `n`.
 
-0.6.x speaks hotty 0.6; the patch number is this repository's own.
+0.7.x speaks hotty 0.7 and 0.6; the patch number is this repository's own.
 
 ```ts
 import { Terminal } from "@xterm/xterm";
@@ -269,7 +274,9 @@ runs programs for whoever connects.
   `contextmenu` (no click, drag, selection or focus change, and a touch's
   lift scrolls and clicks nothing). Over any other element, or with Shift
   held, the browser's own menu is left to the embedder; with Alt it is the
-  program's mouse report (`CSI < 10`).
+  program's mouse report (`CSI < 10`). None of this reaches a 0.6 session
+  (HOST.md §4.1): the secondary button, with Alt too, is the terminal's
+  (`Surface.secondaryIn` and `onAltDown` are the gate).
 - **Fit** (SPEC §5.2, §9: `f=1` on `a=place`). The program hears `fit`
   with the rows the document needs at the placement's width whenever they
   differ from the rows it heard last, starting from the placement's own;
