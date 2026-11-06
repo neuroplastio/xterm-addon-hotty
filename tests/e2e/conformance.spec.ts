@@ -19,7 +19,7 @@ type Step = {
   inspect?: [string, string];
   expect?: Record<string, unknown> | null;
   pointer?: "move" | "down" | "up" | "wheel";
-  touch?: "down" | "move" | "up";
+  touch?: "down" | "move" | "hold" | "up";
   s?: string;
   at?: string | [number, number];
   by?: [number, number];
@@ -28,6 +28,8 @@ type Step = {
   menu?: "shown" | "pick";
   name?: string;
   count?: number;
+  /** The button of a pointer step's down and up, as the DOM numbers it; 0 when absent. */
+  button?: number;
   terminal?: boolean;
   /** What the terminal reported of the mouse's primary button (§9.6). */
   mouse?: Report[];
@@ -113,6 +115,8 @@ class Mouse {
   y = 0;
   s = "";
   down = false;
+  /** The button held is the secondary one. */
+  secondary = false;
   constructor(
     private readonly page: Page,
     private readonly browser: string,
@@ -125,7 +129,7 @@ class Mouse {
     }
     const keys = step.keys ?? [];
     if (this.browser === "chromium") {
-      const bits = { alt: 1, ctrl: 2, meta: 4, shift: 8 } as Record<string, number>;
+      const bits = { alt: 1, ctrl: 2, meta: 4, super: 4, shift: 8 } as Record<string, number>;
       const modifiers = keys.reduce((m, k) => m | (bits[k] ?? 0), 0);
       if (step.pointer === "wheel") {
         // A wheel gesture as the browser has one from a device, latched to
@@ -139,19 +143,25 @@ class Mouse {
         return;
       }
       const type = step.pointer === "move" ? "mouseMoved" : step.pointer === "down" ? "mousePressed" : "mouseReleased";
-      if (step.pointer === "down") this.down = true;
+      if (step.pointer === "down") {
+        this.down = true;
+        this.secondary = step.button === 2;
+      }
+      const secondary = step.pointer === "move" ? this.secondary : step.button === 2;
       if (step.pointer === "up") this.down = false;
       const cdp = await this.page.context().newCDPSession(this.page);
-      await cdp.send("Input.dispatchMouseEvent", { type, x: this.x, y: this.y, button: "left", buttons: this.down ? 1 : 0, clickCount: step.count ?? 1, modifiers });
+      // A secondary button is "right" to the browser: it fires `contextmenu`
+      // for it, which is what a browser host takes the press from.
+      await cdp.send("Input.dispatchMouseEvent", { type, x: this.x, y: this.y, button: secondary ? "right" : "left", buttons: this.down ? (secondary ? 2 : 1) : 0, clickCount: step.count ?? 1, modifiers });
       await cdp.detach();
       return;
     }
     const names = { shift: "Shift", ctrl: "Control", alt: "Alt", super: "Meta" } as Record<string, string>;
     for (const k of keys) await this.page.keyboard.down(names[k]!);
     if (step.pointer === "move") await this.page.mouse.move(this.x, this.y);
-    else if (step.pointer === "down") await this.page.mouse.down({ clickCount: step.count ?? 1 });
+    else if (step.pointer === "down") await this.page.mouse.down({ button: step.button === 2 ? "right" : "left", clickCount: step.count ?? 1 });
     else if (step.pointer === "wheel") for (const [dx, dy] of await this.notches(step.by!)) await this.page.mouse.wheel(dx, dy);
-    else await this.page.mouse.up({ clickCount: step.count ?? 1 });
+    else await this.page.mouse.up({ button: step.button === 2 ? "right" : "left", clickCount: step.count ?? 1 });
     for (const k of [...keys].reverse()) await this.page.keyboard.up(names[k]!);
   }
 
@@ -172,6 +182,10 @@ class Mouse {
  * reaches is reached at that cell, as a pointer step's move reaches it. A
  * step without `s` touches the screen's cells (SPEC §9.6).
  */
+/** How long a "hold" step keeps the finger still: past a long press (the
+ * addon's 500 ms, and the platform's). */
+const LONG_PRESS_WAIT = 800;
+
 class Finger {
   x = 0;
   y = 0;
@@ -181,7 +195,7 @@ class Finger {
   constructor(private readonly page: Page) {}
 
   async step(step: Step) {
-    const bits = { alt: 1, ctrl: 2, meta: 4, shift: 8 } as Record<string, number>;
+    const bits = { alt: 1, ctrl: 2, meta: 4, super: 4, shift: 8 } as Record<string, number>;
     const modifiers = (step.keys ?? []).reduce((m, k) => m | (bits[k] ?? 0), 0);
     this.cdp ??= await this.page.context().newCDPSession(this.page);
     const cdp = this.cdp;
@@ -193,6 +207,10 @@ class Finger {
     } else if (step.touch === "move") {
       [this.x, this.y] = await at();
       await send("touchMove", [{ x: this.x, y: this.y }]);
+    } else if (step.touch === "hold") {
+      // The finger stays where it is, for the long-press time and a good
+      // margin over it: the browser's own gesture, not one told to the host.
+      await this.page.waitForTimeout(LONG_PRESS_WAIT);
     } else {
       await send("touchEnd", []);
     }
