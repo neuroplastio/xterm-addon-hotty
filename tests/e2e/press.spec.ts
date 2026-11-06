@@ -23,7 +23,7 @@ const place = (page: Page, p: string) => send(page, { a: "place", s: "x", c: "20
 test.describe("placing again turns presses on and off", () => {
   test.beforeEach(async ({ page }) => {
     await open(page);
-    await send(page, { a: "doc", s: "x", q: "2" }, `<style>body{margin:0}u{display:block}</style><u id=i>i</u>`);
+    await send(page, { a: "doc", s: "x", q: "2" }, `<style>body{margin:0}u{display:block}</style><u id=i data-on=click>i</u>`);
   });
 
   test("p=0 then p=1: the next click reports a press", async ({ page }) => {
@@ -46,8 +46,17 @@ test.describe("placing again turns presses on and off", () => {
     await place(page, "0");
     [x, y] = await center(page, "x", "#i");
     await click(page, x, y);
-    // A press that was reported would be there by now: the click is.
+    // A press that was reported would be there by now: the click is. Wait
+    // for the click this one makes to reach the program, then count presses.
     await surface(page, "x").locator("#i").click();
-    expect(await presses(page)).toEqual([]);
+    const seen: string[] = [];
+    await expect
+      .poll(async () => {
+        const { msgs } = await take(page);
+        for (const m of msgs) seen.push(`${m.get("e")}`);
+        return seen.includes("click");
+      })
+      .toBe(true);
+    expect(seen.filter((e) => e === "press")).toEqual([]);
   });
 });
