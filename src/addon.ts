@@ -148,7 +148,7 @@ const GESTURE_MS = 150;
 
 /** The hotty versions the addon speaks (SPEC §4), highest first. The first
  * is VERSION's MAJOR.MINOR (gov P-5 rule 6). */
-export const SPEAKS = ["0.7", "0.6"];
+export const SPEAKS = ["0.8", "0.7"];
 
 /**
  * The version a query is answered in (SPEC §4): the highest the addon
@@ -156,7 +156,7 @@ export const SPEAKS = ["0.7", "0.6"];
  * spelling (`major.minor`, no leading zeros), so an entry is one only
  * exactly: `0.20` is not 0.2. None, as with no `v` at all, is `EVERSION`,
  * its detail the versions the addon speaks (§3.6), lowest first as a query
- * lists them (`0.6,0.7`).
+ * lists them (`0.7,0.8`).
  */
 function answerIn(v: string | undefined): string {
   const listed = (v ?? "").split(",");
@@ -270,9 +270,9 @@ export class HottyAddon implements ITerminalAddon {
   /** The capabilities the program last heard (SPEC §4), from its query or a
    * `caps` event; null while it has asked for none. */
   private heard: Body | null = null;
-  /** The hotty version the session speaks (SPEC §4, HOST.md §4.1): the one
+  /** The hotty version the session speaks (SPEC §4, HOST.md §5.1): the one
    *  the last query was answered in, until a full reset (RIS). Before a
-   *  query it is the highest the addon speaks. A 0.6 session has no
+   *  query it is the highest the addon speaks. Both versions have the
    *  secondary press (`Surface.secondary`). */
   private version = SPEAKS[0]!;
   /** The font and the cell (CSS px) it heard them with: a new cell is owed
@@ -918,7 +918,7 @@ export class HottyAddon implements ITerminalAddon {
     return {
       layer: this.ensureLayer(),
       store: this.store,
-      secondary: () => this.version !== "0.6",
+      secondary: () => this.version === "0.7" || this.version === "0.8",
       event: (surface, kind, target, detail) => {
         // `t` is absent where no element is meant, and a detail with no
         // field is no payload (SPEC §9).

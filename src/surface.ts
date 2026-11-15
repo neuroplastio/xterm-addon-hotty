@@ -69,9 +69,8 @@ export interface Window {
 
 export interface SurfaceHost {
   layer: HTMLElement;
-  /** Whether the session has the secondary press (hotty 0.7, SPEC §9);
-   *  a 0.6 session (HOST.md §4.1) does not: the secondary button is the
-   *  terminal's, as it was in 0.6. */
+  /** Whether the session has the secondary press (SPEC §9); both 0.7
+   *  and 0.8 do (HOST.md §5.1). */
   secondary(): boolean;
   store: Store;
   /** Sends a hotty message (an event) to the program, with its detail
@@ -2202,8 +2201,7 @@ export class Surface {
    */
   private onAltDown(e: PointerEvent): boolean {
     if (e.pointerType === "touch" || (e.button !== 0 && e.button !== 2) || !e.altKey || (e.button === 0 && !e.isPrimary)) return false;
-    // Alt with the secondary button is the program's from 0.7 (SPEC §9.2);
-    // in a 0.6 session it stays the terminal's (HOST.md §4.1).
+    // Alt with the secondary button is the program's in both versions (SPEC §9.2).
     if (e.button === 2 && !this.host.secondary()) return false;
     this.cancelDrag(); // a drag whose release was lost
     this.dropAlt();
@@ -2261,9 +2259,6 @@ export class Surface {
 
   /** The nearest element on `path` with `secondary` in its `data-on`. */
   private secondaryIn(path: EventTarget[]): Element | null {
-    // The one gate of a 0.6 session (HOST.md §4.1): with no element that
-    // takes a secondary press, `onSecondaryDown` (and Mac's Control-click),
-    // `onContextMenu` and `longPressStart` all leave the press alone.
     if (!this.host.secondary()) return null;
     for (const n of path) if (isElement(n) && listens(n, "secondary")) return n;
     return null;
