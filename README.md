@@ -199,6 +199,14 @@ runs programs for whoever connects.
     `[type=number]` does not match it while it is focused.
   - An editing host's actions use the selection's moves, a character at a
     time where the words and lines need to see the text.
+- **Tab and default** (hotty 0.8, SPEC §10.2). A text field may give Tab
+  to the program with `tab=program`; Shift+Tab
+  still moves focus back and Escape still reaches the program. A binding to
+  `default` stops a farther binding of that key: a field uses the host's
+  default keymap or types the character, and other elements use the browser's
+  own action, then scrolling, then ordinary terminal input. `tab=default`
+  restores focus traversal inside a container that gives Tab to the program.
+  These keymaps hold in a 0.7 session too.
 - **Keys for the program** (SPEC §10.2). Any focused element has a keymap:
   each `data-keys` from the root to it, over the default only in a text
   field; with nothing focused there is none. A key it binds to `program`

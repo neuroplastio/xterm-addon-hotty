@@ -30,6 +30,7 @@ export const ACTIONS = new Set([
   "submit",
   "program",
   "prefix",
+  "default",
   "copy",
   "cut",
   "paste",
@@ -676,6 +677,8 @@ export class Keymap {
   readonly written = new Map<string, string>();
   readonly multiline: boolean;
   readonly mod: Mod;
+  /** A resolved field keeps the host's keymap for `default`. */
+  defaults: Keymap | null = null;
   constructor(multiline = false, mod: Mod = "ctrl") {
     this.multiline = multiline;
     this.mod = mod;
@@ -700,7 +703,7 @@ export class Keymap {
    * without it (SPEC §10.2). */
   action(name: string): string | undefined {
     const k = parseKey(name);
-    if (k === null || UNBOUND.has(k)) return undefined;
+    if (k === null || (UNBOUND.has(k) && !(k === "tab" && this.defaults))) return undefined;
     const a = this.bindings.get(k);
     if (a !== undefined) return a;
     const { mods, value, kind } = splitKey(k);
@@ -743,7 +746,8 @@ export class Keymap {
   lookup(name: string): string | null {
     const k = parseKey(name);
     if (k === null || UNBOUND.has(k)) return null;
-    const a = this.action(k);
+    let a = this.action(k);
+    if (a === "default") a = this.defaults?.action(k);
     if (a !== undefined) return a === "program" || a === "prefix" || (MULTILINE_ACTIONS.has(a) && !this.multiline) ? null : a;
     return keyText(k) !== null ? INSERT : null;
   }
@@ -768,7 +772,7 @@ function* bindingsOf(mod: Mod, value: string): Generator<[string, string]> {
     const key = b.slice(0, i);
     const k = read(key, mod, false);
     const a = b.slice(i + 1);
-    if (k === null || !ACTIONS.has(a) || UNBOUND.has(k)) continue;
+    if (k === null || !ACTIONS.has(a) || (UNBOUND.has(k) && !(k === "tab" && (a === "program" || a === "default")))) continue;
     yield [key, a];
   }
 }
@@ -851,6 +855,8 @@ export function resolve(p: Platform, multiline: boolean, ...values: string[]): K
   for (const [k, a] of m.mod === "super" ? SUPER_KEYS : CTRL_KEYS) m.bind(k, a);
   const edit = editOf(p);
   for (const a of EDIT_ACTIONS) for (const k of edit[a] ?? []) m.bind(k, a);
+  m.defaults = new Keymap(multiline, m.mod);
+  for (const [k, a] of m.bindings) m.defaults.bind(k, a);
   for (const v of values) for (const [k, a] of bindingsOf(m.mod, v)) if (!SCROLL_ACTIONS.has(a)) m.bind(k, a);
   return m;
 }

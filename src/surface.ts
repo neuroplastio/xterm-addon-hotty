@@ -1351,7 +1351,13 @@ export class Surface {
    * program's.
    */
   private plainKey(e: KeyboardEvent) {
+    const active = this.focusedControl();
+    const kind = this.controlKind(active);
     if (e.key === "Tab" && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      if (!e.shiftKey && active && (kind === "text" || kind === "textarea") && this.keymapOf(active, kind === "textarea").program("tab")) {
+        this.toProgram(e, this.host.encodeKey(e));
+        return;
+      }
       // Tab moves between controls; past the last one it leaves the surface.
       const order = this.tabbable();
       const at = order.indexOf(this.doc.activeElement as HTMLElement);
@@ -1365,8 +1371,6 @@ export class Surface {
       }
       return;
     }
-    const active = this.focusedControl();
-    const kind = this.controlKind(active);
     if (kind === "text" || kind === "textarea") {
       this.scrollDestinations.clear(); // the browser may reveal the caret
       this.fieldKey(e, active!, kind === "textarea");

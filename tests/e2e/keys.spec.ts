@@ -433,3 +433,20 @@ test("ctrl+key_a bound to program or prefix sends ctrl+a to the program; a prefi
   expect(raw).toBe("x");
   expect(evs(msgs)).toEqual([]);
 });
+
+test("tab=default restores traversal inside tab=program, in a 0.7 session too", async ({ page }) => {
+  await open(page);
+  await send(page, { a: "q", v: "0.7" });
+  await send(page, { a: "doc", s: "s", q: "2" },
+    `<div data-keys="tab=program"><input id=a><input id=b data-keys="tab=default"><button id=c>ok</button></div>`);
+  await send(page, { a: "place", s: "s", c: "50", r: "3", q: "2" });
+  await send(page, { a: "focus", s: "s", t: "a", q: "2" });
+  await take(page);
+  await page.keyboard.press("Tab");
+  await expect(surface(page, "s").locator("#a")).toBeFocused();
+  expect((await take(page)).raw).toBe("\t");
+  await send(page, { a: "focus", s: "s", t: "b", q: "2" });
+  await page.keyboard.press("Tab");
+  await expect(surface(page, "s").locator("#c")).toBeFocused();
+  expect((await take(page)).raw).toBe("");
+});

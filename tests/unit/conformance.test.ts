@@ -48,7 +48,7 @@ for (const v of vectors.keys) {
 
 for (const v of vectors.keymap) {
   test(`keymap: ${v.name}`, () => {
-    if ("program" in v || "prefix" in v || "scroll" in v) {
+    if (!("multiline" in v) && ("program" in v || "prefix" in v || "scroll" in v)) {
       // An element's keymap outside a text field: no default; program,
       // prefix and the scroll actions.
       const m = elementKeymap(v.platform ?? {}, ...v.keys);
@@ -62,6 +62,7 @@ for (const v of vectors.keymap) {
       return;
     }
     const m = resolve(v.platform ?? {}, v.multiline, ...(v.terminal_keys ? [TERMINAL_KEYS] : []), ...v.keys);
+    for (const [key, want] of Object.entries(v.program ?? {})) assert.equal(m.program(key), want, `${key}: program`);
     for (const [key, want] of Object.entries(v.lookup)) assert.equal(m.lookup(key), want, key);
     for (const [key, want] of Object.entries(v.selects ?? {})) assert.equal(m.selects(key), want, `${key}: selects`);
     for (const [key, want] of Object.entries(v.binds ?? {})) assert.equal(m.binds(key), want, `${key}: binds`);
