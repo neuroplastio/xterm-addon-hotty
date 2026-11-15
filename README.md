@@ -292,6 +292,12 @@ runs programs for whoever connects.
   program's mouse report (`CSI < 10`). None of this reaches a 0.6 session
   (HOST.md §4.1): the secondary button, with Alt too, is the terminal's
   (`Surface.secondaryIn` and `onAltDown` are the gate).
+- **Hit** (hotty 0.8, SPEC §9.7). `a=hit:s:c:r` answers as a query,
+  with `{t, tx, ty}` for what a drag would name at that cell's centre.
+  It uses the surface's own document beneath anything drawn above it,
+  `elementFromPoint`, the drag target walk and the drop target's steps.
+  Outside its window, hidden or not placed, it answers an empty map; it
+  changes no focus or hover and sends no event.
 - **Fit** (SPEC §5.2, §9: `f=1` on `a=place`). The program hears `fit`
   with the rows the document needs at the placement's width whenever they
   differ from the rows it heard last, starting from the placement's own;

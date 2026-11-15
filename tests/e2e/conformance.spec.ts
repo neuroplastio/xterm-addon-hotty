@@ -384,7 +384,10 @@ function define(vector: { name: string; requires?: string | string[]; steps: Ste
           // each of its type (a `Float` a float, as the vectors are read).
           else if (k === "body") {
             expect(got.get("a"), `${where}: a body is an a=ok's`).toBe("ok");
-            for (const [f, want] of Object.entries(v as Expected)) expect(body[f], `${where}: body ${f}, in ${show(got.body)}`).toStrictEqual(want);
+            for (const [f, want] of Object.entries(v as Expected)) {
+              if (want === null) expect(body[f], `${where}: body ${f} is absent`).toBeUndefined();
+              else expect(body[f], `${where}: body ${f}, in ${show(got.body)}`).toStrictEqual(want);
+            }
           } else if (v === null) expect(k === "code" || k === "detail" ? body[k] : got.get(k), `${where}: ${k} is absent`).toBeUndefined();
           else expect(k === "code" || k === "detail" ? body[k] : got.get(k), `${where}: ${k}`).toBe(v);
         }

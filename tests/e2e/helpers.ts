@@ -69,7 +69,7 @@ export async function take(page: Page): Promise<{ msgs: Msg[]; raw: string }> {
   const msgs = (await decodeAll(raw)).map((c) => {
     const get = (k: string) => c.control.get(k);
     const body = c.payload.length ? unpack(c.payload) : null;
-    const type: Type | undefined = get("a") === "ev" ? DETAIL[get("e") ?? ""] : get("a") === "err" ? ERROR : get("re") === "q" ? CAPS : undefined;
+    const type: Type | undefined = get("a") === "ev" ? DETAIL[get("e") ?? ""] : get("a") === "err" ? ERROR : get("re") === "q" ? CAPS : get("re") === "hit" ? { t: "str", tx: "int", ty: "int" } : undefined;
     const where = `${c.control.encode()} ${show(body)}`;
     if (body !== null && type === undefined) throw new Error(`a body where SPEC gives none: ${where}`);
     const bad = body === null ? null : mistyped(body, type!);

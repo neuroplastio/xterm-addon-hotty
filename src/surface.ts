@@ -2031,6 +2031,16 @@ export class Surface {
     return null;
   }
 
+  /** What a drag would name at a cell's centre (SPEC §9.7), in this
+   * document regardless of anything drawn above it. Changes no state. */
+  hit(c: number, r: number): Body {
+    if (!this.placed || this.box.style.display === "none") return {};
+    const x = (c + 0.5) * this.cellW;
+    const y = (r + 0.5) * this.cellH;
+    const t = this.dragTarget(this.elementAtPoint(x, y, c, r));
+    return t ? { t: t.getAttribute("id")!, ...stepInTarget(t, x, y) } : {};
+  }
+
   /** The id of the nearest element with an id and `drag` in its `data-on`,
    * from `el` outward: a drag that ends where this is the element it began
    * on is a click (SPEC §9.1). "" where there is none. */

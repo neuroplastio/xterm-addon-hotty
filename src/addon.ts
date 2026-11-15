@@ -458,7 +458,7 @@ export class HottyAddon implements ITerminalAddon {
   }
 
   private submit(cmd: Command): void | Promise<void> {
-    if (this.term.modes.synchronizedOutputMode && cmd.control.get("a") !== "q") {
+    if (this.term.modes.synchronizedOutputMode && !["q", "hit"].includes(cmd.control.get("a") ?? "")) {
       const at = cmd.control.get("a") === "place" ? this.hold(cmd.control) : undefined;
       this.held.push({ cmd, at });
       // xterm gives up on a batch that never ends after a second; so do we.
@@ -519,7 +519,7 @@ export class HottyAddon implements ITerminalAddon {
     const action = cmd.control.get("a") ?? "";
     // Only errors, unless asked (SPEC §3.5): a query and a command with `n`
     // are answered, any other command only when it fails.
-    const quiet = Number(cmd.control.get("q") ?? (action === "q" || cmd.control.get("n") !== undefined ? "0" : "1"));
+    const quiet = Number(cmd.control.get("q") ?? (action === "q" || action === "hit" || cmd.control.get("n") !== undefined ? "0" : "1"));
     const ok = (r: Reply | void) => {
       if (quiet === 0) this.reply("ok", cmd, r ?? {});
     };
@@ -564,6 +564,17 @@ export class HottyAddon implements ITerminalAddon {
         // terminal from the start, so it holds no query (§4). What the
         // program hears is what a `caps` event differs from (§9).
         return { body: this.hear(this.capabilities(answerIn(c.get("v")))) };
+      case "hit": {
+        const s = this.existing(c);
+        if (s.detached) throw new Failure("EDETACHED", `surface ${s.name} is detached`);
+        const cell = (key: string): number => {
+          const value = c.get(key) ?? "";
+          const n = Number(value);
+          if (!/^-?\d+$/.test(value) || !Number.isSafeInteger(n)) throw new Failure("EINVAL", `${key} is a whole decimal cell`);
+          return n;
+        };
+        return { body: s.hit(cell("c"), cell("r")) };
+      }
       case "doc": {
         const name = this.surfaceName(c);
         // A document that is not UTF-8 changes nothing (SPEC §3.3).
