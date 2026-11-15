@@ -7,6 +7,7 @@
 // reaches the live document, and a focused control keeps what the user typed.
 
 import { read } from "./msgpack.ts";
+import { SCROLL_ACTIONS } from "./keys.ts";
 import type { Resolver } from "./resolver.ts";
 
 /** An error of a delta (SPEC §3.6): its code, the detail, and, where one op
@@ -29,7 +30,7 @@ export interface Op {
   v?: string;
 }
 
-const OPS = new Set(["morph", "inner", "replace", "append", "prepend", "before", "after", "remove", "attr", "unattr", "text", "var", "reveal"]);
+const OPS = new Set(["morph", "inner", "replace", "append", "prepend", "before", "after", "remove", "attr", "unattr", "text", "var", "reveal", "scroll"]);
 
 /** The ops that name a key `k`. */
 const KEYED = new Set(["attr", "unattr", "var"]);
@@ -38,9 +39,9 @@ const KEYED = new Set(["attr", "unattr", "var"]);
  * A delta's ops from its body (SPEC §6.1), the whole of it checked before
  * any is applied. `EINVAL` where the body does not decode (§3.3), is not a
  * map with a list of ops, or has none; where an op is not a map or names an
- * op the table does not have; where `t` is missing (every op but `morph`
+ * op the table does not have; where `t` is missing (every op but `morph` and `scroll`
  * needs one), or `k` for `attr`, `unattr` and `var`; or where `reveal` has
- * a `v` other than `start` or `end`. The error names the first op at fault
+ * a `v` other than `start` or `end`, or `scroll` no scroll action. The error names the first op at fault
  * by its index. A field an op does not take is ignored, whatever its type,
  * as is a key of an op that the table does not name.
  */
@@ -67,10 +68,11 @@ export function readDelta(bytes: Uint8Array): Op[] {
       if (need && !x) throw bad(`op=${op} needs ${name}`);
       return x;
     };
-    const t = field("t", op !== "morph") || undefined;
+    const t = field("t", op !== "morph" && op !== "scroll") || undefined;
     const k = field("k", KEYED.has(op));
     const v = field("v", false);
     if (op === "reveal" && v !== undefined && v !== "start" && v !== "end") throw bad(`op=reveal takes start, end or nothing, not ${JSON.stringify(v)}`);
+    if (op === "scroll" && (v === undefined || !SCROLL_ACTIONS.has(v))) throw bad(`op=scroll needs a scroll action, not ${JSON.stringify(v)}`);
     return { op, t, k: KEYED.has(op) ? k : undefined, v: op === "remove" || op === "unattr" ? undefined : v };
   });
 }
@@ -89,12 +91,14 @@ export class Deltas {
   /** Hears that the delta set a control's value: the surface puts a text
    * field's caret at the end (SPEC §6.2). */
   private readonly valued: (el: Element) => void;
+  private readonly scroller: (el: Element, action: string) => void;
 
-  constructor(doc: Document, resolver: Resolver, revealer: (el: Element, where: Reveal) => void, valued: (el: Element) => void = () => {}) {
+  constructor(doc: Document, resolver: Resolver, revealer: (el: Element, where: Reveal) => void, valued: (el: Element) => void = () => {}, scroller: (el: Element, action: string) => void = () => {}) {
     this.doc = doc;
     this.resolver = resolver;
     this.revealer = revealer;
     this.valued = valued;
+    this.scroller = scroller;
   }
 
   /** A changed attribute's property, as `syncProperty`, told to `valued`
@@ -220,6 +224,9 @@ export class Deltas {
         (t as HTMLElement).style?.setProperty(name, payload);
         return;
       }
+      case "scroll":
+        this.scroller(target ? find() : this.doc.documentElement, payload);
+        return;
       case "reveal": {
         // It changes no node (SPEC §6.1). The value is exact: `START` is
         // another value, and was refused with the rest (`readDelta`).

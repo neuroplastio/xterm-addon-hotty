@@ -327,7 +327,8 @@ export class Touch {
     this.fling = this.win.requestAnimationFrame(step);
   }
 
-  private stopFling() {
+  /** A key or a program's scroll op takes over from this momentum. */
+  stopFling() {
     if (this.fling) this.win.cancelAnimationFrame(this.fling);
     this.fling = 0;
   }

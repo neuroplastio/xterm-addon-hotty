@@ -486,6 +486,9 @@ export class Surface {
    * comes to rest (`scrollend`), or, where the browser tells no rest, until
    * none has moved for a while (`restTimer`). */
   private moving = new Set<EventTarget>();
+  /** A smooth key/op scroll starts its next step at this destination,
+   * not at the position the browser is drawing (SPEC §6.1). */
+  private scrollDestinations = new Map<Element, { left: number; top: number }>();
   private restTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(name: string, host: SurfaceHost, hostCss: string, scheme: Scheme) {
@@ -540,7 +543,7 @@ export class Surface {
     this.css = hostCss;
     this.restyle();
     this.resolver = new Resolver(host.store);
-    this.deltas = new Deltas(doc, this.resolver, (el, where) => this.reveal(el, where), (el) => this.valueSet(el));
+    this.deltas = new Deltas(doc, this.resolver, (el, where) => this.reveal(el, where), (el) => this.valueSet(el), (el, action) => this.scrollAction(el, action));
     this.listen();
   }
 
@@ -562,6 +565,7 @@ export class Surface {
    * is the program's again (SPEC §5.1, §5.5). `axes` (`scroll`) are the
    * axes it scrolls along, 0 for none (§5.3). */
   setDocument(html: string, detached = false, axes = 0) {
+    this.scrollDestinations.clear();
     if (detached) this.detach();
     const scrolled = this.axes !== 0;
     this.axes = axes;
@@ -603,6 +607,7 @@ export class Surface {
    * failed, if any. On a detached surface, the controls it adds are
    * disabled too, and so is one whose `disabled` it removes. */
   delta(ops: Op[]): DeltaError | null {
+    if (ops.some((o) => o.op !== "scroll")) this.scrollDestinations.clear();
     try {
       return this.deltas.apply(ops);
     } finally {
@@ -800,6 +805,7 @@ export class Surface {
    * the next, which reports how what it carries differs from what the
    * program last heard (SPEC §9.5). */
   endPlacement() {
+    this.scrollDestinations.clear();
     this.placed = false;
     this.viewDirty = false;
     if (this.viewFrame) this.frame.ownerDocument.defaultView?.cancelAnimationFrame(this.viewFrame);
@@ -822,6 +828,7 @@ export class Surface {
    */
   private reveal(el: Element, where: Reveal) {
     if (!this.placed || !this.axes) return;
+    this.scrollDestinations.clear();
     const box = this.box.style;
     const out = box.display === "none";
     const visibility = box.visibility;
@@ -861,6 +868,8 @@ export class Surface {
   /** A box came to rest (`scrollend`): once all have, what is in view is
    * checked. */
   private scrollEnded(e: Event) {
+    const el = e.target === this.doc ? this.doc.scrollingElement : e.target;
+    if (el && isElement(el)) this.scrollDestinations.delete(el);
     if (e.target && this.moving.delete(e.target) && !this.moving.size) this.rested();
   }
 
@@ -868,6 +877,7 @@ export class Surface {
     if (this.restTimer) clearTimeout(this.restTimer);
     this.restTimer = null;
     this.moving.clear();
+    this.scrollDestinations.clear();
     this.requestView();
   }
 
@@ -1358,12 +1368,16 @@ export class Surface {
     const active = this.focusedControl();
     const kind = this.controlKind(active);
     if (kind === "text" || kind === "textarea") {
+      this.scrollDestinations.clear(); // the browser may reveal the caret
       this.fieldKey(e, active!, kind === "textarea");
       return;
     }
     if (this.host.browserKey(e)) return; // the browser's: reload, zoom, …
     if (active && this.programKey(e, active)) return;
-    if (this.consumes(e, kind)) return;
+    if (this.consumes(e, kind)) {
+      this.scrollDestinations.clear(); // a native control may move its box
+      return;
+    }
     if (active && this.scrollActionKey(e, active)) return;
     if (this.axes && this.scrollKey(e)) return;
     this.forward(e);
@@ -1410,17 +1424,50 @@ export class Surface {
     if (!k || !(this.axes & (k.axis === "y" ? 1 : 2))) return false;
     e.preventDefault();
     e.stopPropagation();
-    const to = this.scroller(el, k.axis, k.sign);
-    if (typeof to !== "string") this.scrollBox(to, k);
+    this.scrollAction(el, action!);
     return true;
+  }
+
+  /** A delta's or a key's scroll action, confined to this document. */
+  private scrollAction(el: Element, action: string) {
+    if (!this.placed) return;
+    const k = SCROLL_ACTIONS[action];
+    if (!k || !(this.axes & (k.axis === "y" ? 1 : 2))) return;
+    this.finger?.stopFling();
+    // A placement outside the scrollback viewport is laid out unseen,
+    // as for reveal; its offsets remain when it is hidden again.
+    const box = this.box.style;
+    const out = box.display === "none";
+    const visibility = box.visibility;
+    if (out) Object.assign(box, { display: "block", visibility: "hidden" });
+    try {
+      const to = this.scroller(el, k.axis, k.sign);
+      if (typeof to !== "string") this.scrollBox(to, k);
+    } finally {
+      if (out) Object.assign(box, { display: "none", visibility });
+    }
   }
 
   /** Scrolls `to` as a key does (`KeyScroll`), by Chromium's amounts. */
   private scrollBox(to: Element, k: KeyScroll) {
+    this.finger?.stopFling();
     const y = k.axis === "y";
     const port = y ? to.clientHeight : to.clientWidth;
     const by = k.by === "line" ? LINE_PX : k.by === "page" ? Math.max(1, port * PAGE_FRACTION) : k.by === "half" ? Math.max(1, port / 2) : y ? to.scrollHeight : to.scrollWidth;
-    to.scrollBy(y ? { top: k.sign * by } : { left: k.sign * by });
+    const from = this.scrollDestinations.get(to) ?? { left: to.scrollLeft, top: to.scrollTop };
+    const next = { ...from };
+    const style = to.ownerDocument.defaultView!.getComputedStyle(to);
+    if (y) next.top = Math.max(0, Math.min(to.scrollHeight - to.clientHeight, from.top + k.sign * by));
+    else {
+      const span = to.scrollWidth - to.clientWidth;
+      const [min, max] = style.direction === "rtl" ? [-span, 0] : [0, span];
+      next.left = Math.max(min, Math.min(max, from.left + k.sign * by));
+    }
+    // Auto steps complete immediately, including the browser's snapping.
+    // Smooth steps keep their destination until scrollend or a gesture.
+    if (style.scrollBehavior === "smooth") this.scrollDestinations.set(to, next);
+    else this.scrollDestinations.delete(to);
+    to.scrollTo(next);
   }
 
   /** A key the program has, as xterm.js encoded it (`data`; null when it
@@ -2448,7 +2495,12 @@ export class Surface {
     d.addEventListener("click", (e) => this.onClick(e), true);
     d.addEventListener("auxclick", (e) => this.onAuxClick(e), true);
     d.addEventListener("contextmenu", (e) => this.onContextMenu(e), true);
-    d.addEventListener("touchstart", (e) => this.longPressStart(e), { capture: true, passive: true });
+    d.addEventListener("pointerdown", () => this.scrollDestinations.clear(), true);
+    d.addEventListener("focusin", () => this.scrollDestinations.clear(), true);
+    d.addEventListener("touchstart", (e) => {
+      this.scrollDestinations.clear();
+      this.longPressStart(e);
+    }, { capture: true, passive: true });
     d.addEventListener("touchmove", (e) => this.longPressMove(e), { capture: true, passive: false });
     d.addEventListener("touchend", (e) => this.longPressEnd(e), { capture: true, passive: false });
     d.addEventListener("touchcancel", (e) => this.longPressEnd(e), { capture: true, passive: true });
@@ -2544,6 +2596,7 @@ export class Surface {
    * instead, the surface scrolls the page itself.
    */
   private onWheel(e: WheelEvent) {
+    this.scrollDestinations.clear();
     if (e.ctrlKey) return;
     if (this.axes) {
       this.scrollWheel(e);
@@ -2619,7 +2672,8 @@ export class Surface {
   /** Whether a box that scrolls can still move along `axis`, `d`'s way. */
   private canMove(el: Element, axis: Axis, d: number): boolean {
     if (!d || !(this.axes & (axis === "y" ? 1 : 2))) return false;
-    const [at, span] = axis === "y" ? [el.scrollTop, el.scrollHeight - el.clientHeight] : [el.scrollLeft, el.scrollWidth - el.clientWidth];
+    const dest = this.scrollDestinations.get(el);
+    const [at, span] = axis === "y" ? [dest?.top ?? el.scrollTop, el.scrollHeight - el.clientHeight] : [dest?.left ?? el.scrollLeft, el.scrollWidth - el.clientWidth];
     // Across a right-to-left box, scrollLeft runs from -span to 0.
     const rtl = axis === "x" && this.frame.contentWindow!.getComputedStyle(el).direction === "rtl";
     const [min, max] = rtl ? [-span, 0] : [0, span];

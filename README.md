@@ -221,6 +221,13 @@ runs programs for whoever connects.
   the document did not ask for, the key goes on as if unbound. A text
   field's keymap leaves scroll actions out, so a field inside a box that
   scrolls with `j` still types `j`.
+- **Scroll ops** (hotty 0.8, SPEC §6.1). A delta's `scroll` op takes the
+  same step through `scrollBox`, starting from `t` or the root where it is
+  empty. CSS smooth scrolling keeps a destination per box so counted ops
+  and rapid keys accumulate; the browser still chooses the snap position.
+  It takes no focus, moves nothing beyond the root, and sends no
+  event of its own; `view` reports once the scroll comes to rest. An
+  unplaced surface, or an axis its document did not request, moves nothing.
 - **Selects** (SPEC §10.2) are the browser's own: its keys pick, each pick
   is heard at once (`input` with `data-on~=input`, then `change`, one
   `rev` for both), and its

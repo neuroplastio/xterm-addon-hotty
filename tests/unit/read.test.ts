@@ -46,6 +46,10 @@ test("readDelta: a body is checked whole, and i names the first op that fails", 
   assert.equal(bad(ops({ op: "text", v: "x" })).i, 0);
   assert.equal(bad(ops({ op: "attr", t: "a" })).i, 0);
   assert.equal(bad(ops({ op: "reveal", t: "a", v: "mid" })).i, 0);
+  assert.equal(readDelta(ops({ op: "scroll", v: "scroll-down" }))[0]!.t, undefined);
+  for (const v of [undefined, "", "down", "program", "SCROLL-DOWN"]) {
+    assert.equal(bad(ops({ op: "text", t: "a", v: "x" }, { op: "scroll", v })).i, 1);
+  }
   assert.equal(bad(ops()).code, "EINVAL");
   assert.equal(bad(w({ x: 1 })).code, "EINVAL");
   assert.equal(bad(Uint8Array.of(0xc1)).code, "EINVAL");

@@ -518,3 +518,53 @@ test.describe("a document that scrolls", () => {
     expect((await take(page)).raw).toBe("");
   });
 });
+
+test("scroll ops take counted key steps from the target outward, without taking focus", async ({ page }) => {
+  await open(page);
+  await send(page, { a: "doc", s: "s", scroll: "1", q: "2" },
+    `<style>body{margin:0}#box{height:80px;overflow:auto}#tall{height:800px}#after{height:800px}</style>` +
+    `<div id=box tabindex=0 data-keys="j=scroll-down"><div id=tall>tall</div></div><div id=after>after</div>`);
+  await send(page, { a: "place", s: "s", c: "30", r: "8", q: "2" });
+  const box = surface(page, "s").locator("#box");
+  await expect(box).toBeVisible();
+  await delta(page, { s: "s", q: "2" }, ...Array.from({ length: 3 }, () => ({ op: "scroll", t: "box", v: "scroll-down" })));
+  await expect.poll(() => box.evaluate((el) => el.scrollTop)).toBe(120);
+  await send(page, { a: "focus", s: "s", t: "box", q: "2" });
+  await page.keyboard.press("j");
+  await expect.poll(() => box.evaluate((el) => el.scrollTop)).toBe(160);
+  await delta(page, { s: "s", q: "2" }, { op: "scroll", t: "tall", v: "scroll-end" });
+  await expect.poll(() => box.evaluate((el) => el.scrollTop)).toBe(720);
+  await delta(page, { s: "s", q: "2" }, { op: "scroll", t: "tall", v: "scroll-down" });
+  await expect.poll(() => surface(page, "s").locator("html").evaluate((el) => el.scrollTop)).toBe(40);
+  await expect(box).toBeFocused();
+});
+
+test("scroll ops count while CSS smooth scrolling is still moving", async ({ page }) => {
+  await open(page);
+  await send(page, { a: "doc", s: "s", scroll: "1", q: "2" },
+    `<style>body{margin:0}#box{height:80px;overflow:auto;scroll-behavior:smooth}#tall{height:800px}</style><div id=box tabindex=0 data-keys="j=scroll-down"><div id=tall>tall</div></div>`);
+  await send(page, { a: "place", s: "s", c: "30", r: "8", q: "2" });
+  const box = surface(page, "s").locator("#box");
+  await expect(box).toBeVisible();
+  await delta(page, { s: "s", q: "2" }, ...Array.from({ length: 3 }, () => ({ op: "scroll", t: "box", v: "scroll-down" })));
+  await expect.poll(() => box.evaluate((el) => el.scrollTop)).toBe(120);
+  await send(page, { a: "focus", s: "s", t: "box", q: "2" });
+  for (let i = 0; i < 3; i++) await page.keyboard.press("j");
+  await expect.poll(() => box.evaluate((el) => el.scrollTop)).toBe(240);
+});
+
+test("scroll ops lay out a placement outside the visible scrollback", async ({ page }) => {
+  await open(page);
+  await write(page, Array.from({ length: 100 }, () => "line\r\n").join(""));
+  await send(page, { a: "doc", s: "s", scroll: "1", q: "2" },
+    `<style>body{margin:0}#tall{height:800px}</style><div id=tall>tall</div>`);
+  await send(page, { a: "place", s: "s", c: "30", r: "4", C: "1", q: "2" });
+  await expect(surface(page, "s").locator("#tall")).toBeVisible();
+  const bottom = await viewportY(page);
+  await page.evaluate(() => (window.hotty.term as unknown as Scrolling).scrollToLine(0));
+  await expect(page.locator('.hotty-surface[data-surface="s"]')).toBeHidden();
+  await delta(page, { s: "s", q: "2" }, { op: "scroll", v: "scroll-end" });
+  await page.evaluate((line) => (window.hotty.term as unknown as Scrolling).scrollToLine(line), bottom);
+  await expect(surface(page, "s").locator("#tall")).toBeVisible();
+  await expect.poll(() => surface(page, "s").locator("html").evaluate((el) => el.scrollTop === el.scrollHeight - el.clientHeight)).toBe(true);
+});
