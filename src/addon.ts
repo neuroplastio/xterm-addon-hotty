@@ -361,6 +361,8 @@ export class HottyAddon implements ITerminalAddon {
       // RIS: every surface goes (PROTOCOL §4).
       p.registerEscHandler({ final: "c" }, () => {
         this.reset();
+        this.store.clear();
+        this.assembler.reset();
         this.version = SPEAKS[0]!; // the session ends with the reset
         this.taken.normal.clear();
         this.taken.alternate.clear();
@@ -408,6 +410,8 @@ export class HottyAddon implements ITerminalAddon {
     this.cellTouch?.dispose();
     this.cellTouch = null;
     this.reset();
+    this.store.clear();
+    this.assembler.reset();
     if (this.capsTimer) clearTimeout(this.capsTimer);
     this.capsTimer = null;
     this.pixelWatch?.dispose();

@@ -218,3 +218,22 @@ test("a document's IBM Plex Sans at 400, 500 and 600 is drawn in the web font th
     w6: [["IBM Plex Sans SmBld", true]],
   });
 });
+
+test("the browser's reduced-motion preference reaches every surface iframe and changes live", async ({ page }) => {
+  await open(page);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  const doc = `<style>#motion{width:10px}@media(prefers-reduced-motion:reduce){#motion{width:20px}}</style><div id=motion>motion</div>`;
+  for (const s of ["a", "b"]) {
+    await send(page, { a: "doc", s, q: "2" }, doc);
+    await send(page, { a: "place", s, c: "20", r: "2", q: "2" });
+    await expect(surface(page, s).locator("#motion")).toHaveCSS("width", "10px");
+  }
+  await send(page, { a: "hide", s: "b", q: "2" });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  expect(await page.evaluate(() => matchMedia("(prefers-reduced-motion:reduce)").matches)).toBe(true);
+  await expect(surface(page, "a").locator("#motion")).toHaveCSS("width", "20px");
+  await send(page, { a: "place", s: "b", c: "20", r: "2", q: "2" });
+  await expect(surface(page, "b").locator("#motion")).toHaveCSS("width", "20px");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  for (const s of ["a", "b"]) await expect(surface(page, s).locator("#motion")).toHaveCSS("width", "10px");
+});

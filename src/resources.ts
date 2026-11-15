@@ -61,6 +61,13 @@ export class Store {
     this.quota = quota;
   }
 
+  /** End the session: no bytes, URLs or quota usage carry into the next. */
+  clear(): void {
+    for (const e of this.entries.values()) if (e.url) URL.revokeObjectURL(e.url);
+    this.entries.clear();
+    this.used = 0;
+  }
+
   put(name: string, mime: string, bytes: Uint8Array): void {
     const old = this.entries.get(name);
     const next = this.used - (old?.bytes.length ?? 0) + bytes.length;

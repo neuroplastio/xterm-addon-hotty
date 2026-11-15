@@ -92,6 +92,12 @@ export class Assembler {
   /** A chunked command was dropped as too large: its further chunks are dropped too, until its last. */
   private dropping = false;
 
+  /** A full reset ends the session, including a resource partway in. */
+  reset(): void {
+    this.partial = null;
+    this.dropping = false;
+  }
+
   /** Feeds the data of one OSC 7279 sequence. */
   feed(data: string): Decoded[] | Promise<Decoded[]> {
     const semi = data.indexOf(";");

@@ -298,6 +298,14 @@ runs programs for whoever connects.
   `elementFromPoint`, the drag target walk and the drop target's steps.
   Outside its window, hidden or not placed, it answers an empty map; it
   changes no focus or hover and sends no event.
+- **Session resources** (SPEC §7.1, §12). Each addon has its own store.
+  RIS ends the session: resources and their blob URLs, quota usage and
+  unfinished messages are cleared, so the next session cannot resolve
+  the old names. Disposing the addon clears them too.
+- **Reduced motion** (SPEC §8, HOST.md §4). The browser already applies
+  `prefers-reduced-motion` to every surface iframe and updates their CSS
+  when the preference changes. The addon needs no forwarding code;
+  `hostcss.spec.ts` checks both settings and live changes in both browsers.
 - **Fit** (SPEC §5.2, §9: `f=1` on `a=place`). The program hears `fit`
   with the rows the document needs at the placement's width whenever they
   differ from the rows it heard last, starting from the placement's own;
