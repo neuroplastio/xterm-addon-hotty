@@ -125,7 +125,7 @@ runs programs for whoever connects.
 | bodies | `src/msgpack.ts` | SPEC §3.3: replies' and events' bodies as msgpack maps, each field as its type; a float field (`scale`, `cellcss`'s `w` and `h`) goes in a `Float`, even when whole. A field with nothing is left out, never nil, and a map is a plain object, keyed by strings, each written once |
 | addon | `src/addon.ts` | OSC handler, replies through `term.input(…, false)`, placement, synchronized output, RIS, the alternate screen, zoom and theme, and keys a surface does not use, through xterm.js's own keyboard handling |
 | surface | `src/surface.ts` | one sandboxed iframe per surface; events, focus and key routing |
-| keys | `src/keys.ts` | SPEC §10.2, §10.4: key names, the keys in what the terminal sends, keymaps (`data-keys`), the `prefix` action, and the actions on a field's text |
+| keys | `src/keys.ts` | SPEC §10.2, §10.4: key names, the keys in what the terminal sends, keymaps (`data-keys` and `data-keys-inner`), the `prefix` action, and the actions on a field's text |
 | deltas | `src/delta.ts` | SPEC §6, §6.1: a delta body checked whole, then its ops and morph; a failure names the first failing op (`i`) |
 | fields | `src/field.ts` | SPEC §6.4: an `a=field` body checked as far as it can be without the control, and positions between bytes of UTF-8 and the DOM's code units, an end inside a grapheme cluster moved to its start (`Intl.Segmenter`) |
 | menus | `src/menu.ts` | SPEC §10.7: reading a program's `a=menu` body, the level a sequence reaches, and the entries a page's own palette lists |
@@ -173,8 +173,9 @@ runs programs for whoever connects.
   `prefix`. Otherwise the key goes through xterm.js's
   keyboard handling, with what it would send the program kept back, and
   is named from that, so a field sees the key the program would read, in
-  the encoding the program enabled. The field's keymap (the default, then each `data-keys` from the root to the
-  field) decides: an action, which the addon does itself on the field's
+  the encoding the program enabled. The field's keymap starts from the default, reads its ancestors'
+  `data-keys-inner` from the root down, and reads its own `data-keys` last.
+  The resulting binding decides: an action, which the addon does itself on the field's
   text with the editing commands, so the browser sends `input` and
   `change` as for typing; a character, which the browser types; or the
   program's, which gets what xterm.js encoded. Details:
@@ -200,17 +201,18 @@ runs programs for whoever connects.
   default keymap or types the character, and other elements use the browser's
   own action, then scrolling, then ordinary terminal input. `tab=default`
   restores focus traversal inside a container that gives Tab to the program.
-  These keymaps hold in a 0.7 session too.
-- **Keys for the program** (SPEC §10.2). Any focused element has a keymap:
-  each `data-keys` from the root to it, over the default only in a text
-  field; with nothing focused there is none. A key it binds to `program`
-  (named as in a text field; a key with `shift` that is not a character is
-  looked up again without it)
-  goes to the program as xterm.js encoded it, and the browser does nothing
-  with it: a select's arrows pick nothing, and a document that scrolls does
-  not scroll. Outside a text field the keymap's other bindings do nothing
-  but the scroll actions (below), and a nearer one of a key still cancels a
-  farther `program`.
+- **Keys for the program** (SPEC §10.2). The focused element reads its
+  ancestors' `data-keys-inner` and its own `data-keys`. With nothing
+  focused, the surface reads the root's and body's `data-keys-inner`, then
+  the body's `data-keys`. Fields accept editing actions. Other elements
+  accept scroll actions. An element keeps the keys it uses unless its own
+  keymap gives them to the program. A `program` or `prefix` key reaches
+  the program as a command if the program took that edit shortcut (§10.6),
+  or as xterm.js input otherwise.
+- **Focus fixup** (SPEC §10.1). If the focused element disappears or
+  stops taking focus, the surface keeps the keyboard. An edited control
+  that stays in the document commits with `change`. With nothing focused,
+  Tab and Shift+Tab start at the first and last focusable element.
 - **Scrolling keys** (SPEC §10.2). Outside a text field, a key the focused
   element does not use and its keymap binds to a scroll action
   (`scroll-down`, `scroll-page-up`, `scroll-half-page-down`, `scroll-end`,
@@ -360,8 +362,9 @@ runs programs for whoever connects.
 - **Copying** (SPEC §10.2, §11): a surface's selection is copied by its
   keymap, `mod+c` by default (Cmd+C on a Mac, Ctrl+C elsewhere: `mod` is
   `super` or `ctrl`, the platform's, §10.4), and neither the surface nor the
-  program hears the key; a document that binds one to `program` gives it
-  to the program while its text is selected. A focused field copies its
+  program hears the key. A document selection reads the default copy keys,
+  `program` and `prefix` from the root's and body's `data-keys-inner`,
+  and the body's own bindings. A focused field copies its
   selection, never a password field's. With nothing selected the key goes
   where it would: Ctrl+C interrupts. The cells' selection is copied by the
   `copyKeys` option (default: the exported `copyKeys`, Ctrl+C and Cmd+C;

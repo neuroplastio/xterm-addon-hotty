@@ -22,7 +22,7 @@ import { cspSources, intersect, parse, type Policy } from "./network.ts";
 import { NO_BASE, type Store } from "./resources.ts";
 import { edited, type FieldState, History, type Run, runOf, stateOf, step } from "./history.ts";
 import { byteAt, clusterStart, type FieldChange, FieldError, readField, type Sel, unitAt, wireSel } from "./field.ts";
-import { chars, elementKeymap, INSERT, inputKeys, isBreak, isSpace, type InputKey, type Keymap, keyText, MULTILINE_ACTIONS, NOT_KEYS, type Platform, plan, pressNames, resolve, ROW_ACTIONS, type Rows, type Text } from "./keys.ts";
+import { chars, INSERT, inputKeys, isBreak, isSpace, type InputKey, type Keymap, type KeyReader, keyText, MULTILINE_ACTIONS, NOT_KEYS, type Platform, plan, pressNames, resolve, ROW_ACTIONS, type Rows, type Text } from "./keys.ts";
 
 /** A surface's CSP: nothing from the network but what the host grants, and
  * the host's font (`fonts`, a directory, or ""). The `<base>` is the addon's
@@ -1085,8 +1085,8 @@ export class Surface {
   /**
    * A key for the selection in the document outside a text field (SPEC
    * §11): null when there is none, or a focused text field holds the
-   * selection; else its text when the keymap of the element whose text it
-   * starts in, read as a text field's, binds the key to `copy`, and false
+   * selection; else its text when the document selection's keymap
+   * binds the key to `copy`, and false
    * when it does not, the key going on as if nothing were selected.
    */
   selectionCopy(e: KeyboardEvent): string | false | null {
@@ -1096,10 +1096,7 @@ export class Surface {
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
     const text = sel.toString();
     if (text === "") return null;
-    const start = sel.getRangeAt(0).startContainer;
-    const el = start.nodeType === 1 ? (start as Element) : start.parentElement;
-    if (!el) return null;
-    const keymap = resolve(this.host.keys.platform, false, ...keysValues(el));
+    const keymap = this.keymapOf(null, "selection");
     const named = pressNames(e).find((n) => keymap.binds(n));
     return named !== undefined && keymap.lookup(named) === "copy" ? text : false;
   }
@@ -1406,7 +1403,7 @@ export class Surface {
     const active = this.focusedControl();
     const kind = this.controlKind(active);
     if (e.key === "Tab" && !e.ctrlKey && !e.altKey && !e.metaKey) {
-      if (!e.shiftKey && active && (kind === "text" || kind === "textarea") && this.keymapOf(active, kind === "textarea").program("tab")) {
+      if (!e.shiftKey && active && (kind === "text" || kind === "textarea") && this.keymapOf(active, kind === "textarea" ? "multiline" : "input").program("tab")) {
         this.toProgram(e, this.host.encodeKey(e));
         return;
       }
@@ -1440,29 +1437,20 @@ export class Surface {
       return;
     }
     if (this.host.browserKey(e)) return; // the browser's: reload, zoom, …
-    if (active && this.programKey(e, active)) return;
+    const reader = kind === "activatable" ? "button" : kind === "none" ? "element" : kind;
+    const keymap = this.keymapOf(active, reader);
+    if (keymap.bindings.size && this.programKey(e, keymap)) return;
     if (this.consumes(e, kind)) {
       this.scrollDestinations.clear(); // a native control may move its box
       return;
     }
-    if (active && this.scrollActionKey(e, active)) return;
+    if (keymap.bindings.size && this.scrollActionKey(e, active ?? this.doc.body, keymap)) return;
     if (this.axes && this.scrollKey(e)) return;
-    this.forward(e);
+    if (!this.menuKey(e, active)) this.forward(e);
   }
 
-  /**
-   * A key the focused element's keymap gives the program (SPEC §10.2, *Keys
-   * for the program*), outside a text field: it reaches the program before
-   * the element uses it (a select's arrows) and before the document
-   * scrolls with it. The keymap is each `data-keys` from the root down to
-   * the element, with no default, and only its `program` and `prefix`
-   * bindings count; a `prefix` begins one (§10.5). The key is named as in a
-   * text field (`fieldKey`).
-   */
-  private programKey(e: KeyboardEvent, el: Element): boolean {
-    const values = keysValues(el);
-    if (!values.some((v) => v.includes("program") || v.includes("prefix"))) return false;
-    const keymap = elementKeymap(this.host.keys.platform, ...values);
+  /** A key given to the program before the element uses it (§10.2). */
+  private programKey(e: KeyboardEvent, keymap: Keymap): boolean {
     const data = this.host.encodeKey(e);
     const keys = asked(keymap, e, data);
     if (!keys.some((k) => keymap.program(k))) return false;
@@ -1481,10 +1469,7 @@ export class Surface {
    * scroll, it goes on as if its keymap did not bind it. The key is named
    * as in a text field (`fieldKey`).
    */
-  private scrollActionKey(e: KeyboardEvent, el: Element): boolean {
-    const values = keysValues(el);
-    if (!values.some((v) => v.includes("scroll-"))) return false;
-    const keymap = elementKeymap(this.host.keys.platform, ...values);
+  private scrollActionKey(e: KeyboardEvent, el: Element, keymap: Keymap): boolean {
     const data = this.host.encodeKey(e);
     const action = asked(keymap, e, data).map((k) => keymap.scroll(k)).find((a) => a !== null);
     const k = action ? SCROLL_ACTIONS[action] : undefined;
@@ -1578,7 +1563,7 @@ export class Surface {
    */
   private fieldKey(e: KeyboardEvent, el: HTMLElement, multiline: boolean) {
     if (this.host.browserKey(e)) return; // the browser's: reload, zoom, …
-    const keymap = this.keymapOf(el, multiline);
+    const keymap = this.keymapOf(el, multiline ? "multiline" : "input");
     // No copy or cut with nothing selected, nor in a password field: the
     // key is the program's (SPEC §10.2).
     const cuts = this.selects(el) && !(el.localName === "input" && this.inputType(el as HTMLInputElement) === "password");
@@ -1600,7 +1585,7 @@ export class Surface {
       // key bound to `program` or `prefix` is the program's first (§10.2),
       // and a `prefix` begins one (§10.5).
       const program = keys.some((k) => k.key !== null && keymap.program(k.key));
-      if (!program && this.axes && this.scrollKey(e)) return;
+      if (!program && ((this.axes && this.scrollKey(e)) || this.menuKey(e, el))) return;
       this.toProgram(e, data);
       if (keys.some((k) => k.key !== null && keymap.prefix(k.key))) this.prefix = true;
       return;
@@ -1643,10 +1628,15 @@ export class Surface {
     });
   }
 
-  /** A field's keymap (SPEC §10.2): the default, then the `data-keys` of
-   * each element from the root down to the field. */
-  private keymapOf(el: Element, multiline: boolean) {
-    return resolve(this.host.keys.platform, multiline, ...keysValues(el));
+  private keymapOf(el: Element | null, reader: KeyReader) {
+    const own = (el ?? this.doc.body).getAttribute("data-keys") ?? "";
+    const attr = this.host.legacySession() ? "data-keys" : "data-keys-inner";
+    const inner: string[] = [];
+    for (let n = el ? el.parentElement : this.doc.body; n; n = n.parentElement) {
+      const value = n.getAttribute(attr);
+      if (value !== null) inner.unshift(value);
+    }
+    return resolve(this.host.keys.platform, reader, own, ...inner);
   }
 
   /** Does an action in a field, or types text in it. */
@@ -3765,17 +3755,6 @@ function listOpen(el: Element | null): boolean {
   } catch {
     return false;
   }
-}
-
-/** The `data-keys` of each element from the root down to `el`, its own
- * last (SPEC §10.2). */
-function keysValues(el: Element): string[] {
-  const values: string[] = [];
-  for (let n: Element | null = el; n; n = n.parentElement) {
-    const v = n.getAttribute("data-keys");
-    if (v !== null) values.unshift(v);
-  }
-  return values;
 }
 
 /** A key that types no text (SPEC §10.4): one that is not a character, or a

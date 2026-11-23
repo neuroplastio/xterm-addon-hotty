@@ -5,10 +5,10 @@
 // (conformance.spec.ts); these check what they leave out.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { displayKey, elementKeymap, type Press, pressNames, resolve, Taps } from "../../src/keys.ts";
+import { displayKey, type Press, pressNames, resolve, Taps } from "../../src/keys.ts";
 
 test("a key with Shift that is not bound is looked up again without it; a binding with Shift wins", () => {
-  const m = elementKeymap({}, "arrow_down=program a=program", "shift+arrow_up=program arrow_up=line-start");
+  const m = resolve({}, "element", "shift+arrow_up=program arrow_up=line-start", "arrow_down=program a=program");
   assert.equal(m.program("shift+arrow_down"), true);
   assert.equal(m.program("shift+arrow_up"), true);
   assert.equal(m.program("arrow_up"), false);
@@ -21,7 +21,7 @@ test("a key with Shift that is not bound is looked up again without it; a bindin
 });
 
 test("a binding with an unknown action does not cancel program, and Escape and Tab cannot be given to it", () => {
-  const m = elementKeymap({}, "arrow_down=program escape=program tab=program", "arrow_down=frobnicate");
+  const m = resolve({}, "element", "arrow_down=frobnicate", "arrow_down=program escape=program tab=program");
   assert.equal(m.program("arrow_down"), true);
   assert.equal(m.program("escape"), false);
   assert.equal(m.program("tab"), false);
@@ -29,7 +29,7 @@ test("a binding with an unknown action does not cancel program, and Escape and T
 });
 
 test("in a text field a key bound to program is not the field's, and is the program's", () => {
-  const m = resolve({}, false, "arrow_left=program", "shift+arrow_right=program");
+  const m = resolve({}, "input", "arrow_left=program", "shift+arrow_right=program");
   assert.equal(m.lookup("arrow_left"), null);
   assert.equal(m.program("arrow_left"), true);
   assert.equal(m.program("shift+arrow_left"), true);
@@ -45,7 +45,7 @@ test("in a text field a key bound to program is not the field's, and is the prog
 // scroll action; a field's keymap leaves them out where they stand.
 
 test("outside a text field, scroll gives the scroll action a key is bound to, with the fallback without Shift", () => {
-  const m = elementKeymap({}, "j=program space=scroll-page-down shift+g=scroll-end", "j=scroll-down");
+  const m = resolve({}, "element", "j=scroll-down", "j=program space=scroll-page-down shift+g=scroll-end");
   assert.equal(m.scroll("j"), "scroll-down");
   assert.equal(m.program("j"), false);
   assert.equal(m.scroll("space"), "scroll-page-down");
@@ -53,11 +53,11 @@ test("outside a text field, scroll gives the scroll action a key is bound to, wi
   assert.equal(m.scroll("shift+g"), "scroll-end");
   // g is a key of its own, and program is not a scroll action.
   assert.equal(m.scroll("g"), null);
-  assert.equal(elementKeymap({}, "k=program").scroll("k"), null);
+  assert.equal(resolve({}, "element", "k=program").scroll("k"), null);
 });
 
 test("a text field's keymap leaves scroll actions out, in the same value too", () => {
-  const m = resolve({}, true, "k=program", "j=scroll-down k=scroll-up page_down=scroll-page-down ctrl+d=delete-char-forward ctrl+d=scroll-half-page-down");
+  const m = resolve({}, "multiline", "k=program j=scroll-down k=scroll-up page_down=scroll-page-down ctrl+d=delete-char-forward ctrl+d=scroll-half-page-down");
   assert.equal(m.lookup("j"), "insert");
   assert.equal(m.lookup("k"), null);
   assert.equal(m.program("k"), true);
@@ -67,7 +67,7 @@ test("a text field's keymap leaves scroll actions out, in the same value too", (
 });
 
 test("a key bound to prefix is the program's and begins a prefix; a text field's lookup gives it up", () => {
-  const m = resolve({}, false, "g=prefix", "arrow_left=program");
+  const m = resolve({}, "input", "g=prefix", "arrow_left=program");
   assert.equal(m.prefix("g"), true);
   assert.equal(m.program("g"), true);
   assert.equal(m.lookup("g"), null);

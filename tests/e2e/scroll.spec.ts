@@ -365,8 +365,9 @@ test.describe("a document that scrolls", () => {
 
   test("a key the focused element's data-keys gives the program is the program's before the document's: a text field's, a select's, a radio button's", async ({ page }) => {
     await scrolling(page);
-    const controls = `<input id=t><select id=l><option>x<option>y</select><input type=radio name=r id=r1 checked><input type=radio name=r id=r2>`;
-    await send(page, { a: "doc", s: "s", scroll: "1", q: "2" }, `<section data-keys="arrow_down=program page_down=program">${controls}</section>${ROWS}`);
+    const keys = 'data-keys="arrow_down=program page_down=program"';
+    const controls = `<input id=t ${keys}><select id=l ${keys}><option>x<option>y</select><input type=radio name=r id=r1 checked ${keys}><input type=radio name=r id=r2>`;
+    await send(page, { a: "doc", s: "s", scroll: "1", q: "2" }, `<section>${controls}</section>${ROWS}`);
     const top = () => root(page).evaluate((el) => el.scrollTop);
     for (const id of ["t", "l", "r1"]) {
       await send(page, { a: "focus", s: "s", t: id, q: "2" });

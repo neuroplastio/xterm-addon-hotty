@@ -683,7 +683,9 @@ export class Keymap {
   readonly mod: Mod;
   /** A resolved field keeps the host's keymap for `default`. */
   defaults: Keymap | null = null;
-  constructor(multiline = false, mod: Mod = "ctrl") {
+  private readonly selection: boolean;
+  constructor(multiline = false, mod: Mod = "ctrl", selection = false) {
+    this.selection = selection;
     this.multiline = multiline;
     this.mod = mod;
   }
@@ -752,6 +754,7 @@ export class Keymap {
     if (k === null || UNBOUND.has(k)) return null;
     let a = this.action(k);
     if (a === "default") a = this.defaults?.action(k);
+    if (this.selection) return a === "copy" ? a : null;
     if (a !== undefined) return a === "program" || a === "prefix" || (MULTILINE_ACTIONS.has(a) && !this.multiline) ? null : a;
     return keyText(k) !== null ? INSERT : null;
   }
@@ -787,17 +790,6 @@ function* bindingsOf(mod: Mod, value: string): Generator<[string, string]> {
 export function parseKeymap(p: Platform, value: string, multiline = false): Keymap {
   const m = new Keymap(multiline, p.mod);
   for (const [k, a] of bindingsOf(m.mod, value)) m.bind(k, a);
-  return m;
-}
-
-/** A focused element's keymap outside a text field (SPEC §10.2, *Keys for
- * the program*): each `data-keys` value, the root's first, over no default.
- * Only its `program` and `prefix` bindings (`Keymap.program`,
- * `Keymap.prefix`) and its scroll actions (`Keymap.scroll`) count there: a
- * nearer binding of a key to another action cancels a farther one. */
-export function elementKeymap(p: Platform, ...values: string[]): Keymap {
-  const m = new Keymap(false, p.mod);
-  for (const v of values) for (const [k, a] of bindingsOf(m.mod, v)) m.bind(k, a);
   return m;
 }
 
@@ -848,20 +840,60 @@ const SUPER_KEYS = [
   ["ctrl+k", "delete-to-line-end"],
 ] as const;
 
-/** A field's keymap: SPEC §10.2's default for the platform's `mod`, with
- * its edit shortcuts, then each `data-keys` value, the root's first. A
- * binding to a scroll action is left out where it stands, in its own value
- * too: it neither acts nor overrides an earlier binding. */
-export function resolve(p: Platform, multiline: boolean, ...values: string[]): Keymap {
+export type KeyReader = "input" | "multiline" | "button" | "select" | "date" | "element" | "selection";
+
+const BUTTON_KEYS = new Set(["space", "enter"]);
+const SELECT_KEYS = new Set([...BUTTON_KEYS, "arrow_up", "arrow_down", "home", "end", "page_up", "page_down"]);
+const DATE_KEYS = new Set([...SELECT_KEYS, "arrow_left", "arrow_right", "backspace", "delete"]);
+
+function usesKey(reader: KeyReader, key: string): boolean {
+  if (reader === "input" || reader === "multiline") return keyText(key) !== null;
+  const { kind, value, mods } = splitKey(key);
+  if (mods.some((mod) => mod !== "shift")) return false;
+  if (reader === "button") return BUTTON_KEYS.has(value);
+  if (reader === "select") return kind === "character" || SELECT_KEYS.has(value);
+  if (reader === "date") return kind === "character" || DATE_KEYS.has(value);
+  return false;
+}
+
+function defaultKeymap(p: Platform, multiline: boolean): Keymap {
   const m = new Keymap(multiline, p.mod);
   for (const [k, a] of DEFAULT_KEYS) m.bind(k, a);
   m.bind("enter", multiline ? "newline" : "submit");
   for (const [k, a] of m.mod === "super" ? SUPER_KEYS : CTRL_KEYS) m.bind(k, a);
   const edit = editOf(p);
   for (const a of EDIT_ACTIONS) for (const k of edit[a] ?? []) m.bind(k, a);
-  m.defaults = new Keymap(multiline, m.mod);
-  for (const [k, a] of m.bindings) m.defaults.bind(k, a);
-  for (const v of values) for (const [k, a] of bindingsOf(m.mod, v)) if (!SCROLL_ACTIONS.has(a)) m.bind(k, a);
+  return m;
+}
+
+/** Read own and inner bindings with the focused element's or selection's rules (§10.2). */
+export function resolve(p: Platform, reader: KeyReader, own = "", ...inner: string[]): Keymap {
+  const field = reader === "input" || reader === "multiline";
+  const selection = reader === "selection";
+  const m = field ? defaultKeymap(p, reader === "multiline") : new Keymap(false, p.mod, selection);
+  if (selection) {
+    for (const key of editOf(p).copy ?? []) m.bind(key, "copy");
+  }
+  if (field || selection) {
+    m.defaults = new Keymap(m.multiline, m.mod, selection);
+    for (const [k, a] of m.bindings) m.defaults.bind(k, a);
+  }
+  const apply = (value: string, inherited: boolean) => {
+    for (const [key, action] of bindingsOf(m.mod, value)) {
+      const canonical = read(key, m.mod, false)!;
+      if (canonical === "tab" && !field) continue;
+      if (action === "default") {
+        if (inherited) continue;
+      } else if (action === "program" || action === "prefix") {
+        if (inherited && usesKey(reader, canonical)) continue;
+      } else if (selection ? inherited || action !== "copy" : SCROLL_ACTIONS.has(action) === field) {
+        continue;
+      }
+      m.bind(key, action);
+    }
+  };
+  for (const value of inner) apply(value, true);
+  apply(own, false);
   return m;
 }
 

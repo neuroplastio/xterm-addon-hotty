@@ -98,7 +98,7 @@ const evs = (msgs: Awaited<ReturnType<typeof take>>["msgs"]) => msgs.filter((m) 
 // A prefix (SPEC §10.5).
 
 const PREFIX = `<style>body{margin:0}button{display:block;margin:0;padding:0;border:0;box-sizing:border-box;font:inherit;height:var(--hotty-cell-h);width:calc(6*var(--hotty-cell-w))}</style>
-<main data-keys="mod+k=prefix"><button id=a>A</button><button id=b data-keys="g=prefix">B</button><input id=f></main>`;
+<main data-keys-inner="mod+k=prefix"><button id=a>A</button><button id=b data-keys="g=prefix">B</button><input id=f></main>`;
 
 async function prefixed(page: Page, scroll = "") {
   await open(page, "?pty=0");
