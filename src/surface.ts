@@ -2145,7 +2145,10 @@ export class Surface {
     const [axis, delta] = mainAxis(dx, dy);
     const to = this.scroller(el, axis, delta);
     if (typeof to === "string") {
-      this.touchRoute = to === "terminal" && this.protectScrollAxis(axis) ? "stop" : to;
+      if (to === "terminal" && this.protectScrollAxis(axis)) {
+        this.touchRoute = "chain";
+        this.touchBox = el;
+      } else this.touchRoute = to;
       return true;
     }
     // If the first move itself runs past an edge, split it between the
