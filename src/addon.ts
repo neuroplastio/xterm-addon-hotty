@@ -290,7 +290,7 @@ export class HottyAddon implements ITerminalAddon {
   private focusAfter = false;
   /** The wheel gesture under way: the surface its last wheel was over ("" for
    * the cells), where it goes, and when that wheel came. */
-  private gesture: { surface: string; route: Route; at: number } | null = null;
+  private gesture: { surface: string; routes: Partial<Record<"x" | "y", Route>>; at: number } | null = null;
   /** How keys are read (SPEC §10.4): `mod` is `super` on a Mac, `ctrl` elsewhere. */
   private readonly keys: KeySettings;
   /** The edit commands the program takes on each screen (SPEC §10.6). */
@@ -974,12 +974,16 @@ export class HottyAddon implements ITerminalAddon {
       fonts: this.fonts,
       pageScrolls: this.pageScrolls,
       scrollPage: (dx, dy) => this.scrollPage(dx, dy),
-      wheelGesture: (surface, decide) => {
+      stopEdgeScroll: () => this.term.buffer.active.type === "alternate" && this.term.modes.mouseTrackingMode === "none",
+      wheelGesture: (surface, axis, decide) => {
         const now = performance.now();
         const g = this.gesture;
-        const same = g !== null && now - g.at < GESTURE_MS && (g.surface === surface || g.route === "terminal");
-        const route = same ? g.route : decide();
-        this.gesture = { surface, route, at: now };
+        const recent = g !== null && now - g.at < GESTURE_MS;
+        const routes = recent && g.surface === surface ? g.routes : {};
+        const previous = recent ? g.routes[axis] : undefined;
+        const route = routes[axis] ?? (previous === "terminal" ? previous : decide());
+        routes[axis] = route;
+        this.gesture = { surface, routes, at: now };
         return route;
       },
       // A hyperlink (SPEC §9) goes where xterm.js sends an OSC 8 one: the
@@ -1117,7 +1121,14 @@ export class HottyAddon implements ITerminalAddon {
     if (this.cellWheelBound) return;
     this.cellWheelBound = true;
     const wheel = (e: Event) => {
-      if (e.isTrusted) this.gesture = { surface: "", route: "terminal", at: performance.now() };
+      if (!e.isTrusted) return;
+      const { deltaX, deltaY } = e as WheelEvent;
+      const axis = Math.abs(deltaX) > Math.abs(deltaY) ? "x" : "y";
+      const now = performance.now();
+      const g = this.gesture;
+      const routes = g?.surface === "" && now - g.at < GESTURE_MS ? g.routes : {};
+      routes[axis] = "terminal";
+      this.gesture = { surface: "", routes, at: now };
     };
     el.addEventListener("wheel", wheel, { capture: true, passive: true });
     this.disposables.push({ dispose: () => el.removeEventListener("wheel", wheel, { capture: true }) });

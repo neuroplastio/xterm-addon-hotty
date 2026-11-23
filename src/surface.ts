@@ -125,7 +125,8 @@ export interface SurfaceHost {
    *  where it began decides where the rest of it goes (`decide`, called for
    *  a gesture's first wheel), as a browser latches scrolling to what it
    *  began on. A gesture begun over the cells stays the terminal's. */
-  wheelGesture(surface: string, decide: () => Route): Route;
+  wheelGesture(surface: string, axis: Axis, decide: () => Route): Route;
+  stopEdgeScroll(): boolean;
   /** Scrolls the page by dx, dy pixels, where the page scrolls: for a
    *  gesture the browser would give an element of the document instead. */
   scrollPage(dx: number, dy: number): void;
@@ -459,12 +460,12 @@ export class Surface {
    * the document, but scrolled by the surface, since the document's
    * `touch-action` would stop the browser's own pan (SPEC §9.1: it changes
    * nothing there). */
-  private touchRoute: Route | "self" = "terminal";
+  private touchRoute: Route | "self" | "chain" = "terminal";
   /** The box a touch drag scrolls itself ("self"). */
   private touchBox: Element | null = null;
   /** The box the wheel gesture under way scrolls, if it went to the
    * document: the gesture moves no other (`scrollWheel`). */
-  private wheelBox: Element | null = null;
+  private wheelBoxes: Partial<Record<Axis, Element>> = {};
   /** Some element may carry `CLIP`. */
   private clipping = false;
   /** Placed (SPEC §5.2), from `a=place` until the placement goes: drawn or
@@ -2113,9 +2114,17 @@ export class Surface {
       this.touchRoute = "terminal";
       return true;
     }
-    const to = this.gestureTarget(el, dx, dy);
+    const [axis, delta] = mainAxis(dx, dy);
+    const to = this.scroller(el, axis, delta);
     if (typeof to === "string") {
-      this.touchRoute = to;
+      this.touchRoute = to === "terminal" && this.protectScrollAxis(axis) ? "stop" : to;
+      return true;
+    }
+    // If the first move itself runs past an edge, split it between the
+    // scroll boxes and the terminal. Ordinary document pans stay native.
+    if (!this.host.pageScrolls && !this.canMove(to, axis, delta, Math.abs(delta))) {
+      this.touchRoute = "chain";
+      this.touchBox = el;
       return true;
     }
     // The browser pans the box, chaining to the page where the page scrolls,
@@ -2605,6 +2614,7 @@ export class Surface {
       {
         scroll: (dx, dy, x, y) => {
           if (this.touchRoute === "self") this.touchBox?.scrollBy(dx, dy);
+          else if (this.touchRoute === "chain") this.scrollTouch(dx, dy, x, y);
           else if (this.touchRoute !== "terminal") return;
           else if (this.host.pageScrolls) this.host.scrollPage(dx, dy);
           else this.host.wheel(new WheelEvent("wheel", { deltaX: dx, deltaY: dy, deltaMode: 0, clientX: x, clientY: y }), x, y);
@@ -2694,42 +2704,67 @@ export class Surface {
    */
   private scrollWheel(e: WheelEvent) {
     if (this.host.pageScrolls || !e.cancelable) return;
-    const route = this.host.wheelGesture(this.name, () => {
-      const to = this.gestureTarget(e.target, e.deltaX, e.deltaY);
-      this.wheelBox = typeof to === "string" ? null : to;
-      return typeof to === "string" ? to : "doc";
-    });
-    // The box the gesture began on, while it can still move: the browser's
-    // own scrolling picks it again, the innermost under the pointer.
     const [axis, d] = mainAxis(e.deltaX, e.deltaY);
-    if (route === "doc" && this.wheelBox && this.canMove(this.wheelBox, axis, d)) return;
+    const protectEdge = this.protectScrollAxis(axis);
+    const target = e.target && isElement(e.target) ? e.target : null;
+    const route = this.host.wheelGesture(this.name, axis, () => {
+      const to = this.scroller(target, axis, d);
+      this.wheelBoxes[axis] = typeof to === "string" ? undefined : to;
+      return to === "terminal" && protectEdge ? "doc" : typeof to === "string" ? to : "doc";
+    });
+    const box = this.wheelBoxes[axis];
+    if (route === "doc" && box && this.canMove(box, axis, d)) return;
     e.preventDefault();
+    if (protectEdge && (route === "terminal" || route === "doc")) {
+      const to = this.scroller(target, axis, d);
+      if (typeof to !== "string") {
+        const px = e.deltaMode === 1 ? LINE_PX : e.deltaMode === 2 ? (axis === "y" ? to.clientHeight : to.clientWidth) : 1;
+        to.scrollBy(e.deltaX * px, e.deltaY * px);
+      }
+      return;
+    }
     if (route !== "terminal") return;
     const r = this.frame.getBoundingClientRect();
     this.host.wheel(e, r.left + e.clientX, r.top + e.clientY);
   }
 
-  /** Where a gesture that scrolls by dx, dy pixels at `target` goes, by its
-   * main axis (SPEC §5.3). */
-  private gestureRoute(target: EventTarget | null, dx: number, dy: number): Route {
-    const to = this.gestureTarget(target, dx, dy);
-    return typeof to === "string" ? to : "doc";
+  private scrollTouch(dx: number, dy: number, x: number, y: number) {
+    const [axis, delta] = mainAxis(dx, dy);
+    const pos = axis === "y" ? "scrollTop" : "scrollLeft";
+    let left = delta;
+    while (Math.abs(left) > 0.5) {
+      const box = this.scroller(this.touchBox, axis, left);
+      if (box === "stop") return;
+      if (box === "terminal") {
+        if (!this.protectScrollAxis(axis)) {
+          const fraction = left / delta;
+          this.host.wheel(new WheelEvent("wheel", { deltaX: dx * fraction, deltaY: dy * fraction }), x, y);
+        }
+        return;
+      }
+      const before = box[pos];
+      box.scrollBy({ left: axis === "x" ? left : 0, top: axis === "y" ? left : 0, behavior: "instant" });
+      const moved = box[pos] - before;
+      // Snapping can leave a box at its previous offset or move farther
+      // than the gesture asked for.
+      if (Math.sign(moved) !== Math.sign(left) || Math.abs(moved) >= Math.abs(left)) return;
+      left -= moved;
+    }
   }
 
-  private gestureTarget(target: EventTarget | null, dx: number, dy: number): Element | "terminal" | "stop" {
-    const [axis, d] = mainAxis(dx, dy);
-    return this.scroller(target && isElement(target) ? target : null, axis, d);
+  private protectScrollAxis(axis: Axis): boolean {
+    return !!(this.axes & (axis === "y" ? 1 : 2)) && this.host.stopEdgeScroll();
   }
 
   /** Whether a box that scrolls can still move along `axis`, `d`'s way. */
-  private canMove(el: Element, axis: Axis, d: number): boolean {
+  private canMove(el: Element, axis: Axis, d: number, distance = 0.5): boolean {
     if (!d || !(this.axes & (axis === "y" ? 1 : 2))) return false;
     const dest = this.scrollDestinations.get(el);
     const [at, span] = axis === "y" ? [dest?.top ?? el.scrollTop, el.scrollHeight - el.clientHeight] : [dest?.left ?? el.scrollLeft, el.scrollWidth - el.clientWidth];
     // Across a right-to-left box, scrollLeft runs from -span to 0.
     const rtl = axis === "x" && this.frame.contentWindow!.getComputedStyle(el).direction === "rtl";
     const [min, max] = rtl ? [-span, 0] : [0, span];
-    return d > 0 ? at < max - 0.5 : at > min + 0.5;
+    return d > 0 ? at < max - distance : at > min + distance;
   }
 
   /**

@@ -502,18 +502,12 @@ runs programs for whoever connects.
     CSS cannot select by a computed value, so the addon reads it after each
     document, delta and host stylesheet, and marks those elements with an
     attribute of its own, which inspection and morphs do not see.
-  - **Gestures.** A wheel gesture's first event decides where it goes, as
-    a browser latches scrolling to what it began on (a gesture is wheels
-    less than 150ms apart): to the document while the innermost box under
-    the pointer that can move that way can (the browser scrolls it), else
-    on to the terminal, as over the cells, unless `overscroll-behavior`
-    stops it. A gesture begun over the cells stays the terminal's when a
-    surface comes under the pointer. A touch that pans decides the same way
-    once it has a direction: the browser pans the document, or the touch
-    goes to the terminal as before. Where the document's `touch-action`
-    would stop the browser's pan (a `none` on a box that doesn't drag), the
-    addon pans the box itself, so that only a drag element takes a touch
-    from scrolling (SPEC §9.1).
+  - **Gestures.** Each axis of a wheel gesture keeps the route of its first
+    event. The larger delta decides which route carries the entire event,
+    with ties going vertical. On the alternate screen with mouse tracking
+    off, a wheel or touch drag past the edge stays in the document along
+    an axis it scrolls. On the main screen it chains to the terminal's
+    scrollback, subject to CSS `overscroll-behavior`.
   - **Keys.** While the surface has the keyboard, the keys a browser
     scrolls with that the focused element neither uses nor gives the
     program (SPEC §10.2) scroll the innermost box, from the focused
