@@ -341,6 +341,8 @@ export class Surface {
   /** The element the program knows has focus: the last `focus` named it,
    * or the program's `a=focus` gave it (SPEC §10.1). */
   private told: Element | null = null;
+  /** Chromium can fire change before a removed control is disconnected. */
+  private documentCommits: Set<Element> | null = null;
   /** Detached (SPEC §5.5): nothing in the surface reaches the program. */
   private detachedState = false;
   /** A press is on something that takes no focus (SPEC §10.1): the focus
@@ -587,7 +589,7 @@ export class Surface {
     head.append(...Array.from(parsed.head.childNodes));
     this.copyAttributes(parsed.documentElement, this.doc.documentElement);
     this.copyAttributes(parsed.body, this.doc.body);
-    this.doc.body.replaceChildren(...Array.from(parsed.body.childNodes));
+    this.editDocument(() => this.doc.body.replaceChildren(...Array.from(parsed.body.childNodes)));
     this.detachedState = detached;
     this.sync();
     // A new document starts at the top left (SPEC §5.3). The root and the
@@ -608,11 +610,21 @@ export class Surface {
   delta(ops: Op[]): DeltaError | null {
     if (ops.some((o) => o.op !== "scroll")) this.scrollDestinations.clear();
     try {
-      return this.deltas.apply(ops);
+      return this.editDocument(() => this.deltas.apply(ops));
     } finally {
       if (this.detachedState) this.sync();
       else this.clip();
       this.relayout();
+    }
+  }
+
+  private editDocument<T>(edit: () => T): T {
+    const commits = this.documentCommits = new Set<Element>();
+    try {
+      return edit();
+    } finally {
+      this.documentCommits = null;
+      for (const el of commits) this.commitField(el);
     }
   }
 
@@ -782,6 +794,7 @@ export class Surface {
   /** The layout may have changed: `fit` and `view` check it in the next
    * frame drawn. */
   private relayout() {
+    this.fixFocus();
     this.refit();
     this.requestView();
   }
@@ -977,6 +990,7 @@ export class Surface {
     });
     this.box.style.width = `${Math.round(win.w * cellW)}px`;
     this.box.style.height = `${win.h * cellH}px`;
+    this.fixFocus();
   }
 
   /** The placement's z (SPEC §5.2): CSS z-index on the box, so overlapping
@@ -1165,6 +1179,21 @@ export class Surface {
     if (active) active.blur(); // fires `change` if the value changed
   }
 
+  /** Complete focus fixup before input where the browser defers it to rendering. */
+  private fixFocus() {
+    if (!this.keyboard || this.waiting !== null) return;
+    const active = this.focusedControl();
+    if (active && this.box.style.display !== "none" && !this.focusable(active)) active.blur();
+    if (!this.focusedControl()) this.told = null;
+  }
+
+  private focusable(el: HTMLElement): boolean {
+    if (el.matches(":disabled, input[type=hidden]") || el.closest("[inert]") ||
+        (!takesFocus(el, this.hyper) && !/^[\t\n\f\r ]*[+-]?\d+/.test(el.getAttribute("tabindex") ?? ""))) return false;
+    return this.frame.contentWindow!.getComputedStyle(el).visibility === "visible" &&
+      el.checkVisibility();
+  }
+
   private focusedControl(): HTMLElement | null {
     const a = this.doc.activeElement;
     return a && a !== this.doc.body && a !== this.doc.documentElement ? (a as HTMLElement) : null;
@@ -1276,7 +1305,9 @@ export class Surface {
     const all = this.doc.querySelectorAll<HTMLElement>(
       "a[href], button, input:not([type=hidden]), select, textarea, summary, [tabindex], [contenteditable=''], [contenteditable=true]",
     );
-    return Array.from(all).filter((el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled && el.getClientRects().length > 0);
+    return Array.from(all)
+      .filter((el) => (el.tabIndex >= 0 || (!el.hasAttribute("tabindex") && takesFocus(el, this.hyper))) && this.focusable(el))
+      .sort((a, b) => (a.tabIndex > 0 ? a.tabIndex : Infinity) - (b.tabIndex > 0 ? b.tabIndex : Infinity));
   }
 
   private controlKind(el: Element | null): Control {
@@ -1315,6 +1346,7 @@ export class Surface {
 
   private onKey(e: KeyboardEvent) {
     if (e.isComposing || e.defaultPrevented) return;
+    this.fixFocus();
     // The program's menu hides on Escape and on a key it does not list.
     this.host.typed(e);
     // While something is selected, a copy key is the host's (SPEC §11).
@@ -1360,7 +1392,18 @@ export class Surface {
       // Tab moves between controls; past the last one it leaves the surface.
       const order = this.tabbable();
       const at = order.indexOf(this.doc.activeElement as HTMLElement);
-      const leaving = order.length === 0 || (e.shiftKey ? at <= 0 : at === order.length - 1 || at < 0);
+      if (!active && order.length) {
+        e.preventDefault();
+        const next = e.shiftKey ? order[order.length - 1]! : order[0]!;
+        next.focus();
+        return;
+      }
+      // A program can focus an element with a negative tabindex. Its
+      // place in document order still bounds the next Tab.
+      const direction = e.shiftKey ? Node.DOCUMENT_POSITION_PRECEDING : Node.DOCUMENT_POSITION_FOLLOWING;
+      const leaving = !order.length || (at < 0 && active
+        ? !order.some((el) => active.compareDocumentPosition(el) & direction)
+        : e.shiftKey ? at === 0 : at === order.length - 1);
       if (leaving) {
         e.preventDefault();
         this.blur();
@@ -2938,7 +2981,11 @@ export class Surface {
    * when the browser's own `change` follows, and one edited back to what
    * it was none at all. */
   private commitField(el: Element) {
-    if (!this.dirty.delete(el)) return;
+    if (this.documentCommits) {
+      this.documentCommits.add(el);
+      return;
+    }
+    if (!this.dirty.delete(el) || !el.isConnected) return;
     const value = (el as HTMLInputElement | HTMLTextAreaElement).value;
     if (this.committed.get(el) === value) return;
     this.committed.set(el, value);
