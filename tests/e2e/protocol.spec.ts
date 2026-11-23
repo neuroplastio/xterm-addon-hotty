@@ -192,6 +192,35 @@ test("a stylesheet resource that arrives after the document restyles it", async 
   await expect(p).toHaveCSS("color", "rgb(0, 128, 0)");
 });
 
+test("identical resource resends keep image, stylesheet and font URLs", async ({ page }) => {
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==", "base64");
+  const resources = [
+    { id: "image", type: "image/png", data: new Uint8Array(png) },
+    { id: "font", type: "font/woff2", data: new Uint8Array([1, 2, 3]) },
+    { id: "theme", type: "TEXT/CSS", data: "#p { color: rgb(255, 0, 0) }" },
+  ];
+  for (const { id, type, data } of resources) await send(page, { a: "res", id, type, q: "2" }, data);
+  await send(page, { a: "doc", s: "x", q: "2" }, `
+    <link id=link rel=stylesheet href=cid:theme><img id=image src=cid:image>
+    <style id=font>@font-face { font-family: Sample; src: url(cid:font) }</style><p id=p>styled</p>`);
+  await send(page, { a: "place", s: "x", c: "30", r: "4", q: "2" });
+  const frame = surface(page, "x");
+  const urls = () => Promise.all([
+    frame.locator("#link").getAttribute("href"),
+    frame.locator("#image").getAttribute("src"),
+    frame.locator("#font").textContent(),
+  ]);
+  await expect(frame.locator("#p")).toHaveCSS("color", "rgb(255, 0, 0)");
+  const before = await urls();
+  for (const url of before) expect(url).toContain("blob:");
+  for (const { id, type, data } of resources) await send(page, { a: "res", id, type, q: "2" }, data);
+  expect(await urls()).toEqual(before);
+
+  await send(page, { a: "res", id: "theme", type: "text/plain", q: "2" }, resources[2]!.data);
+  await expect(frame.locator("#link")).toHaveAttribute("href", "about:invalid");
+  await expect(frame.locator("#p")).not.toHaveCSS("color", "rgb(255, 0, 0)");
+});
+
 test("cid: images and stylesheets that name them resolve", async ({ page }) => {
   // A 1×1 red PNG, sent as bytes.
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==", "base64");

@@ -42,6 +42,10 @@ export function isUrlAttr(name: string): boolean {
   return URL_ATTRS.has(name.toLowerCase());
 }
 
+function isCss(mime: string): boolean {
+  return mime.split(";", 1)[0]!.trim().toLowerCase() === "text/css";
+}
+
 interface Entry {
   mime: string;
   bytes: Uint8Array;
@@ -70,6 +74,7 @@ export class Store {
 
   put(name: string, mime: string, bytes: Uint8Array): void {
     const old = this.entries.get(name);
+    if (old?.mime === mime && bytes.length === old.bytes.length && bytes.every((byte, i) => byte === old.bytes[i])) return;
     const next = this.used - (old?.bytes.length ?? 0) + bytes.length;
     if (next > this.quota) throw new Error(`resource store over quota (${next} > ${this.quota} bytes)`);
     this.used = next;
@@ -87,17 +92,18 @@ export class Store {
   }
 
   /** The `blob:` URL for a resource, or `null` if there is none (yet). */
-  url(name: string): string | null {
+  url(name: string, stylesheet = false): string | null {
     const e = this.entries.get(name);
-    if (!e) return null;
+    if (!e || (stylesheet && !isCss(e.mime))) return null;
     if (e.url === null) {
       let bytes: Uint8Array = e.bytes;
-      if (e.mime.startsWith("text/css")) {
+      const cssResource = isCss(e.mime);
+      if (cssResource) {
         e.deps.clear();
         const css = new TextDecoder().decode(e.bytes);
         bytes = new TextEncoder().encode(this.rewriteCss(css, e.deps));
       }
-      e.url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: e.mime }));
+      e.url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: cssResource ? "text/css" : e.mime }));
     }
     return e.url;
   }
@@ -110,7 +116,7 @@ export class Store {
       const v = raw.trim();
       if (/^cid:/i.test(v)) {
         names.add(v.slice(4));
-        return this.url(v.slice(4)) ?? INVALID;
+        return this.url(v.slice(4), d.includes("style-src")) ?? INVALID;
       }
       if (/^data:/i.test(v) || /^blob:/i.test(v) || v.startsWith("#")) return raw;
       // CSS does not say what a url() is for: an image or a font. The
@@ -133,7 +139,7 @@ export class Store {
     if (/^cid:/i.test(v)) {
       const name = v.slice(4);
       names.add(name);
-      return this.url(name) ?? INVALID;
+      return this.url(name, d === "style-src") ?? INVALID;
     }
     if (/^data:/i.test(v) || /^blob:/i.test(v) || v === "" || v.startsWith("#")) return value;
     if (d) return network(v, ctx, d);

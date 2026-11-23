@@ -298,6 +298,10 @@ runs programs for whoever connects.
   `prefers-reduced-motion` to every surface iframe and updates their CSS
   when the preference changes. The addon needs no forwarding code;
   `hostcss.spec.ts` checks both settings and live changes in both browsers.
+- **Resources** (SPEC §7.1). Resending identical bytes with the same id
+  and type keeps the current blob URL, including for animated images.
+  Only a `text/css` resource applies as a stylesheet. The type comparison
+  for stylesheets ignores case and parameters.
 - **Fit** (SPEC §5.2, §9: `f=1` on `a=place`). The program hears `fit`
   with the rows the document needs at the placement's width whenever they
   differ from the rows it heard last, starting from the placement's own;

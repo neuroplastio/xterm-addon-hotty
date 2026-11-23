@@ -32,3 +32,15 @@ test("a full reset cannot finish a resource begun in the previous session", asyn
   const out = await a.feed("m=0");
   assert.ok(out.every((d) => d.kind !== "command" || d.command.control.get("a") !== "res"));
 });
+
+test("only CSS resources resolve in stylesheet positions", async () => {
+  const store = new Store();
+  const names = new Set<string>();
+  const resolveStyle = () => store.resolveUrl("cid:theme", names, undefined, "style-src");
+  store.put("theme", "TEXT/CSS; charset=utf-8", bytes("p {color:red}"));
+  assert.equal((await fetch(resolveStyle())).headers.get("Content-Type"), "text/css");
+  store.put("theme", "text/css-invalid", bytes("p {color:red}"));
+  assert.equal(resolveStyle(), "about:invalid");
+  assert.ok(names.has("theme"));
+  store.clear();
+});
