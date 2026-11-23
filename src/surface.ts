@@ -145,6 +145,7 @@ export interface SurfaceHost {
    *  page. */
   cells(kind: "down" | "move" | "up", e: MouseEvent, pageX: number, pageY: number, button: number): void;
   tracksMouse(): boolean;
+  cellPointer(e: PointerEvent, frame: HTMLIFrameElement): boolean;
   reportMouse(kind: "down" | "move" | "up", e: MouseEvent, pageX: number, pageY: number, button: number, giveKeyboard?: boolean): void;
 }
 
@@ -242,6 +243,7 @@ const SCROLL_ACTIONS: Record<string, KeyScroll> = {
 };
 
 type Axis = "x" | "y";
+type TouchRoute = Element | "terminal" | "stop" | "chain";
 
 /** Whether the browser says when a scroll comes to rest (`scrollend`). */
 const SCROLL_ENDS = typeof window !== "undefined" && "onscrollend" in window;
@@ -399,6 +401,7 @@ export class Surface {
   private secondaryTaken = false;
   private buttonHold: ButtonHold | null = null;
   private suppressMouse = false;
+  private mismatchedButton = false;
   private suppressPaste = false;
   private primaryClickEmitted = false;
   /** The last thing the user pressed, until a key: what a `contextmenu`
@@ -478,13 +481,10 @@ export class Surface {
   /** The axes the document asked to scroll along (`scroll`, SPEC §5.1): 1
    * vertically, 2 horizontally, 3 both; 0, nothing scrolls. */
   private axes = 0;
-  /** Where the touch drag under way goes, once it has a direction: "self",
-   * the document, but scrolled by the surface, since the document's
-   * `touch-action` would stop the browser's own pan (SPEC §9.1: it changes
-   * nothing there). */
-  private touchRoute: Route | "self" | "chain" = "terminal";
-  /** The box a touch drag scrolls itself ("self"). */
-  private touchBox: Element | null = null;
+  /** Each axis of a claimed touch pan keeps the route of its first move. */
+  private touchRoutes: Partial<Record<Axis, TouchRoute>> = {};
+  /** Where the pan started, used to find scroll boxes on either axis. */
+  private touchTarget: Element | null = null;
   /** The box the wheel gesture under way scrolls, if it went to the
    * document: the gesture moves no other (`scrollWheel`). */
   private wheelBoxes: Partial<Record<Axis, Element>> = {};
@@ -911,14 +911,24 @@ export class Surface {
     this.moving.add(e.target);
     this.viewDirty = true;
     if (this.restTimer) clearTimeout(this.restTimer);
-    this.restTimer = setTimeout(() => this.rested(), SCROLL_ENDS ? SCROLL_REST_LONG_MS : SCROLL_REST_MS);
+    this.restTimer = setTimeout(() => {
+      this.scrollDestinations.clear();
+      this.rested();
+    }, SCROLL_ENDS ? SCROLL_REST_LONG_MS : SCROLL_REST_MS);
   }
 
   /** A box came to rest (`scrollend`): once all have, what is in view is
    * checked. */
   private scrollEnded(e: Event) {
     const el = e.target === this.doc ? this.doc.scrollingElement : e.target;
-    if (el && isElement(el)) this.scrollDestinations.delete(el);
+    if (el && isElement(el)) {
+      const dest = this.scrollDestinations.get(el);
+      // A previous smooth step can end just as the next one is queued.
+      // Keep the newer destination until reached, unless CSS snapped it.
+      if (dest && (Math.abs(el.scrollTop - dest.top) > 1 || Math.abs(el.scrollLeft - dest.left) > 1) &&
+          el.ownerDocument.defaultView!.getComputedStyle(el).scrollSnapType === "none") return;
+      this.scrollDestinations.delete(el);
+    }
     if (e.target && this.moving.delete(e.target) && !this.moving.size) this.rested();
   }
 
@@ -926,7 +936,6 @@ export class Surface {
     if (this.restTimer) clearTimeout(this.restTimer);
     this.restTimer = null;
     this.moving.clear();
-    this.scrollDestinations.clear();
     this.requestView();
   }
 
@@ -1230,7 +1239,7 @@ export class Surface {
   }
 
   private focusable(el: HTMLElement): boolean {
-    if (el.matches(":disabled, input[type=hidden]") || el.closest("[inert]") ||
+    if (this.isHyperlink(el) || el.matches(":disabled, input[type=hidden]") || el.closest("[inert]") ||
         (!takesFocus(el, this.hyper) && !/^[\t\n\f\r ]*[+-]?\d+/.test(el.getAttribute("tabindex") ?? ""))) return false;
     return this.frame.contentWindow!.getComputedStyle(el).visibility === "visible" &&
       el.checkVisibility();
@@ -1330,7 +1339,7 @@ export class Surface {
       this.told = el;
       return;
     }
-    if (this.auxPress) return;
+    if (this.auxPress || this.mismatchedButton) return;
     if (this.detachedState || this.pressNothing || !el || !takesFocus(el, this.hyper)) {
       this.settle();
       return;
@@ -2142,35 +2151,11 @@ export class Surface {
     const el = begin.target && isElement(begin.target) ? begin.target : null;
     const pans = this.allowedPans(el);
     if (panBlocked(pans, dx, dy) && this.touchDragStart(e, begin)) return "drag";
-    if (!this.axes) {
-      this.touchRoute = "terminal";
-      return true;
-    }
-    const [axis, delta] = mainAxis(dx, dy);
-    const to = this.scroller(el, axis, delta);
-    if (typeof to === "string") {
-      if (to === "terminal" && this.protectScrollAxis(axis)) {
-        this.touchRoute = "chain";
-        this.touchBox = el;
-      } else this.touchRoute = to;
-      return true;
-    }
-    // If the first move itself runs past an edge, split it between the
-    // scroll boxes and the terminal. Ordinary document pans stay native.
-    if (!this.host.pageScrolls && !this.canMove(to, axis, delta, Math.abs(delta))) {
-      this.touchRoute = "chain";
-      this.touchBox = el;
-      return true;
-    }
-    // The browser pans the box, chaining to the page where the page scrolls,
-    // unless the document's touch-action stops it.
-    if (pans.x && pans.y) {
-      this.touchRoute = "doc";
-      return false;
-    }
-    this.touchRoute = "self";
-    this.touchBox = to;
-    return true;
+    this.touchTarget = el;
+    this.touchRoutes = {};
+    // A page that scrolls can keep the browser's native pan and momentum.
+    return !this.host.pageScrolls || !this.axes || !pans.x || !pans.y ||
+      typeof this.scroller(el, ...mainAxis(dx, dy)) === "string";
   }
 
   /** Whether the touch-action that counts at `target` allows every pan. */
@@ -2358,7 +2343,9 @@ export class Surface {
 
   /** Start a single-button hold. Chords arrive as later pointermoves. */
   private buttonDown(e: PointerEvent): boolean {
-    if (this.host.legacySession() || e.pointerType === "touch") return false;
+    if (e.pointerType === "touch") return false;
+    const legacy = this.host.legacySession();
+    if (legacy && e.button === 2 && e.altKey) return false;
     const controlClick = mac && e.button === 0 && e.ctrlKey && e.pointerType === "mouse" && !e.altKey;
     if (e.button === 0 && !controlClick) {
       this.buttonHold = { down: e, buttons: e.buttons, button: 0, route: e.altKey ? "cells" : "primary" };
@@ -2366,15 +2353,12 @@ export class Surface {
     }
     const button = controlClick ? 2 : e.button;
     if (button === 5 || button < 1) return false;
-    // Older WebKit can label back and forward as middle. Leave those
-    // gestures with the browser when its button and buttons disagree.
-    if (button === 1 && !(e.buttons & 4)) return false;
     // Native back/forward cancellation has been verified in Chromium.
     if (button > 2 && !chromium) return true;
     const physical = e.pointerType === "mouse" && !controlClick;
     const path = e.composedPath();
-    const element = this.detachedState || e.shiftKey || e.altKey ? undefined : this.buttonTarget(path, button, physical);
-    const pasteField = linux && button === 1 && !e.shiftKey && !e.altKey && !this.detachedState &&
+    const element = legacy || this.detachedState || e.shiftKey || e.altKey ? undefined : this.buttonTarget(path, button, physical);
+    const pasteField = !legacy && linux && button === 1 && !e.shiftKey && !e.altKey && !this.detachedState &&
       path.find((el): el is Element => isElement(el) && (this.isTextField(el) || (el as HTMLElement).isContentEditable));
     if (pasteField && !listens(pasteField, "aux")) {
       this.buttonHold = { down: e, buttons: e.buttons, button, route: "browser" };
@@ -2400,7 +2384,15 @@ export class Surface {
     this.host.reportMouse(kind, e, x, y, button, giveKeyboard);
   }
 
+  private relayCellPointer(e: PointerEvent): boolean {
+    if (!this.host.cellPointer(e, this.frame)) return false;
+    this.suppressMouse = true;
+    e.preventDefault();
+    return true;
+  }
+
   private buttonMove(e: PointerEvent) {
+    if (this.mismatchedButton || this.relayCellPointer(e)) return;
     const hold = this.buttonHold;
     if (!hold || hold.down.pointerId !== e.pointerId) {
       this.onAltMove(e) || this.onDragMove(e);
@@ -2437,6 +2429,7 @@ export class Surface {
   }
 
   private buttonUp(e: PointerEvent) {
+    if (this.mismatchedButton || this.relayCellPointer(e)) return;
     const hold = this.buttonHold;
     if (!hold || hold.down.pointerId !== e.pointerId) {
       this.onAltUp(e) || this.onDragUp(e);
@@ -2557,6 +2550,11 @@ export class Surface {
    * is a key (§10.2), and Shift is the terminal's: both are left alone.
    */
   private onContextMenu(e: MouseEvent) {
+    if (this.mismatchedButton) return;
+    if (this.suppressMouse && !this.buttonHold) {
+      e.preventDefault();
+      return;
+    }
     const hold = this.buttonHold;
     if (!this.host.legacySession() && hold && this.lastDown?.type !== "touch") {
       if (hold.route === "cells" && hold.button === 2 && !hold.down.altKey && (!this.suppressMouse || hold.released)) return;
@@ -2708,16 +2706,22 @@ export class Surface {
     d.addEventListener(
       "pointerdown",
       (e) => {
+        // Older WebKit can label a side button as primary or middle.
+        // Leave it to the platform before doing anything for that label.
+        this.mismatchedButton = e.pointerType !== "touch" &&
+          (e.button === 0 || e.button === 1) && !(e.buttons & buttonMask(e.button));
+        if (this.mismatchedButton) return;
         this.cancelDrag();
         this.buttonHold = null;
         this.suppressMouse = false;
         this.primaryClickEmitted = false;
         this.suppressPaste = false;
         this.secondaryTaken = false;
+        if (this.relayCellPointer(e)) return;
         this.lastDown = { type: e.pointerType };
         // A secondary press clears no selection (a Mac's Control with the
         // primary button is one), so it comes before `pressed`.
-        if (this.buttonDown(e) || this.onSecondaryDown(e)) return;
+        if (this.onSecondaryDown(e) || this.buttonDown(e)) return;
         if (e.button === 0 && e.isPrimary) this.host.pressed(e.altKey ? null : this.name);
         if (this.onAltDown(e)) return;
         if (e.button === 0) this.maskField(e.target, false);
@@ -2730,12 +2734,15 @@ export class Surface {
     );
     d.addEventListener("pointermove", (e) => this.buttonMove(e), true);
     d.addEventListener("pointerup", (e) => this.buttonUp(e), true);
-    d.addEventListener("pointercancel", (e) => this.lostPointer(e), true);
+    d.addEventListener("pointercancel", (e) => {
+      this.relayCellPointer(e);
+      this.lostPointer(e);
+    }, true);
     d.addEventListener("lostpointercapture", (e) => this.lostPointer(e), true);
     d.addEventListener(
       "mousedown",
       (e) => {
-        if (this.buttonHold?.route === "browser") return;
+        if (this.mismatchedButton || this.buttonHold?.route === "browser") return;
         if (this.altPointer !== null || this.secondaryTaken || this.suppressMouse ||
             (this.buttonHold && this.buttonHold.route !== "primary")) {
           // The program's press (SPEC §9.2), or a secondary press the
@@ -2808,6 +2815,7 @@ export class Surface {
     d.addEventListener("input", (e) => this.onInput(e), true);
     d.addEventListener("keydown", (e) => {
       this.lastDown = null;
+      this.mismatchedButton = false;
       this.onKey(e);
       this.noteCaret();
     }, true);
@@ -2839,25 +2847,15 @@ export class Surface {
       const r = this.frame.getBoundingClientRect();
       return [r.left + x, r.top + y];
     };
-    // A document that scrolls (SPEC §5.3) is the browser's to pan: where it
-    // can still move the way a drag goes, the drag is left to the browser,
-    // which pans the document; where it cannot, the drag goes on to the
-    // terminal, unless overscroll-behavior stops it. Where the page scrolls,
-    // the browser chains the drag from the document to the page itself. A
-    // touch on an element that opts in to drags, whose touch-action allows
-    // no pan its way, is a drag (§9.1); a touch-action that would stop the
-    // browser's pan anywhere else does not (`claimTouch`).
+    // Follow a claimed pan by axis. When the terminal is embedded in a
+    // scrolling page, the browser can still pan and chain to that page.
+    // An element that opts in to drags can take a direction its
+    // touch-action excludes (§9.1).
     this.finger = new Touch(
       d,
       this.frame.ownerDocument.defaultView!,
       {
-        scroll: (dx, dy, x, y) => {
-          if (this.touchRoute === "self") this.touchBox?.scrollBy(dx, dy);
-          else if (this.touchRoute === "chain") this.scrollTouch(dx, dy, x, y);
-          else if (this.touchRoute !== "terminal") return;
-          else if (this.host.pageScrolls) this.host.scrollPage(dx, dy);
-          else this.host.wheel(new WheelEvent("wheel", { deltaX: dx, deltaY: dy, deltaMode: 0, clientX: x, clientY: y }), x, y);
-        },
+        scroll: (dx, dy, x, y) => this.panTouch(dx, dy, x, y),
         toPage,
         claim: (dx, dy, e, begin) => this.claimTouch(dx, dy, e, begin),
         dragMove: (x, y, e) => this.touchDragMove(x, y, e),
@@ -2967,12 +2965,35 @@ export class Surface {
     this.host.wheel(e, r.left + e.clientX, r.top + e.clientY);
   }
 
+  private panTouch(dx: number, dy: number, x: number, y: number) {
+    const [axis, delta] = mainAxis(dx, dy);
+    const protect = this.protectScrollAxis(axis);
+    const route = this.touchRoutes[axis] ??= this.touchRoute(axis, delta, protect);
+    if (route === "stop") return;
+    if (route === "chain" || (route === "terminal" && protect)) {
+      this.scrollTouch(dx, dy, x, y);
+    } else if (typeof route !== "string") {
+      route.scrollBy({ left: dx, top: dy, behavior: "instant" });
+    } else if (this.host.pageScrolls) {
+      this.host.scrollPage(dx, dy);
+    } else {
+      this.host.wheel(new WheelEvent("wheel", { deltaX: dx, deltaY: dy }), x, y);
+    }
+  }
+
+  private touchRoute(axis: Axis, delta: number, protect: boolean): TouchRoute {
+    const to = this.scroller(this.touchTarget, axis, delta);
+    if (to === "terminal" && protect) return "chain";
+    if (typeof to === "string") return to;
+    return !this.host.pageScrolls && !this.canMove(to, axis, delta, Math.abs(delta)) ? "chain" : to;
+  }
+
   private scrollTouch(dx: number, dy: number, x: number, y: number) {
     const [axis, delta] = mainAxis(dx, dy);
     const pos = axis === "y" ? "scrollTop" : "scrollLeft";
     let left = delta;
     while (Math.abs(left) > 0.5) {
-      const box = this.scroller(this.touchBox, axis, left);
+      const box = this.scroller(this.touchTarget, axis, left);
       if (box === "stop") return;
       if (box === "terminal") {
         if (!this.protectScrollAxis(axis)) {
@@ -3089,7 +3110,8 @@ export class Surface {
   /** A hyperlink (SPEC §9): a link with target="_blank" and a `url`. One
    * without a url is the program's, as any other link. */
   private isHyperlink(link: Element): boolean {
-    return link.getAttribute("target") === "_blank" && this.urlOf(link) !== "";
+    return (link.localName === "a" || link.localName === "area") && link.hasAttribute("href") &&
+      link.getAttribute("target") === "_blank" && this.urlOf(link) !== "";
   }
 
   private readonly hyper = (link: Element) => this.isHyperlink(link);
@@ -3150,6 +3172,10 @@ export class Surface {
   }
 
   private onClick(e: MouseEvent) {
+    if (this.mismatchedButton && e.detail !== 0) {
+      e.preventDefault();
+      return;
+    }
     const link = this.linkIn(e);
     if (this.primaryClickEmitted && e.detail > 0) {
       if (link) e.preventDefault();
@@ -3641,11 +3667,12 @@ function isElement(n: EventTarget): n is Element {
   return (n as Node).nodeType === 1;
 }
 
-/** Whether `el`'s `data-on` lists `what`. */
-function buttonMask(button: number): number {
+/** The Pointer Events `buttons` bit for a DOM button number. */
+export function buttonMask(button: number): number {
   return button === 1 ? 4 : button === 2 ? 2 : button === 0 ? 1 : 1 << button;
 }
 
+/** Whether `el`'s `data-on` lists `what`. */
 function listens(el: Element, what: string): boolean {
   return (el.getAttribute("data-on") ?? "").split(/\s+/).includes(what);
 }

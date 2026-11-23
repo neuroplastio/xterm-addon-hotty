@@ -22,7 +22,7 @@ import { clean, type Policy } from "./network.ts";
 import { Store } from "./resources.ts";
 import { displayKey, EDIT_ACTIONS, editAction, editOf, type Platform, pressNames, readKey } from "./keys.ts";
 import { entries, find, hides, isGroup, type Menu, type MenuEntry, Menus, readMenu, readSeq, shownLevel } from "./menu.ts";
-import { type KeySettings, type Route, type Scheme, Surface, type SurfaceHost } from "./surface.ts";
+import { buttonMask, type KeySettings, type Route, type Scheme, Surface, type SurfaceHost } from "./surface.ts";
 import { areaAt, areaDrags, LONG_PRESS_MS, readTouchAreas, Touch, type TouchArea, type TouchBegin } from "./touch.ts";
 import { HOST, VERSION } from "./version.ts";
 import { Assembler, Control, encode, MAX_COMMAND, OSC, strictText, type Command, type Decoded } from "./wire.ts";
@@ -218,6 +218,8 @@ type Reply = { extra?: [string, string][]; body?: Body };
 
 /** Where xterm.js sends what the program reads (its core service). */
 type DataSink = { triggerDataEvent(data: string, wasUserInput?: boolean): void };
+type Input = Parameters<DataSink["triggerDataEvent"]>;
+type PendingInput = { input?: Input };
 
 /** The modifier keys an event has held. */
 type Keys = Pick<MouseEvent, "altKey" | "ctrlKey" | "shiftKey" | "metaKey">;
@@ -258,6 +260,27 @@ export class HottyAddon implements ITerminalAddon {
     this.dropSelections();
     if (e.button === 0 && !e.altKey) for (const s of this.surfaces.values()) s.dropWait(true);
   };
+  /** A mouse gesture that started on the cells can cross into an iframe. */
+  private cellHold: { pointer: number; buttons: number } | null = null;
+  private readonly cellPointerDown = (e: PointerEvent) => {
+    if (e.pointerType === "touch" || e.button < 0 || !(e.buttons & buttonMask(e.button))) return;
+    this.cellHold = { pointer: e.pointerId, buttons: e.buttons };
+    // Keep xterm's native mouse listeners in the parent document.
+    if (this.term.modes.mouseTrackingMode !== "none" && e.target instanceof Element) {
+      try {
+        e.target.setPointerCapture(e.pointerId);
+      } catch {
+        // The iframe can relay the rest of the hold if capture fails.
+      }
+    }
+  };
+  private readonly cellPointerChange = (e: PointerEvent) => {
+    const hold = this.cellHold;
+    if (!hold || hold.pointer !== e.pointerId) return;
+    if (e.type === "pointercancel" || !e.buttons) this.cellHold = null;
+    else hold.buttons = e.buttons;
+  };
+
   /** Focus comes into the terminal, and not by a click (Tab, or the page
    * focusing it): an `a=focus` that waited moves now. */
   private readonly focusIn = () => {
@@ -305,7 +328,10 @@ export class HottyAddon implements ITerminalAddon {
   private readonly commandCodes = new Set<string>();
   /** A paste command waiting for the browser's paste, which brings the
    * clipboard's text: the key, and the fallback that reads it instead. */
-  private pasting: { key: string; timer: ReturnType<typeof setTimeout> } | null = null;
+  private pasting: { finish: (text: string) => void; read: () => void; timer: ReturnType<typeof setTimeout> } | null = null;
+  private inputQueue: PendingInput[] = [];
+  private drainInput: (() => void) | null = null;
+  private restoreInput: (() => void) | null = null;
   /** `encodeKey` runs a key through xterm.js: it is not typed. */
   private encoding = false;
   /** The program's menu on each screen (SPEC §10.7). */
@@ -367,6 +393,8 @@ export class HottyAddon implements ITerminalAddon {
       // RIS: every surface goes (PROTOCOL §4).
       p.registerEscHandler({ final: "c" }, () => {
         this.reset();
+        this.clearPaste();
+        this.cellHold = null;
         this.store.clear();
         this.assembler.reset();
         this.version = SPEAKS[0]!; // the session ends with the reset
@@ -407,8 +435,7 @@ export class HottyAddon implements ITerminalAddon {
   }
 
   dispose(): void {
-    if (this.pasting) clearTimeout(this.pasting.timer);
-    this.pasting = null;
+    this.clearPaste();
     this.pasteOn?.removeEventListener("paste", this.onPaste, true);
     this.pasteOn = null;
     this.menuEl?.remove();
@@ -1027,6 +1054,7 @@ export class HottyAddon implements ITerminalAddon {
       wheel: (e, x, y) => this.forwardWheel(e, x, y),
       cells: (kind, e, x, y, button) => this.pressCells(kind, e, x, y, button),
       tracksMouse: () => this.term.modes.mouseTrackingMode !== "none",
+      cellPointer: (e, frame) => this.relayCellPointer(e, frame),
       reportMouse: (kind, e, x, y, button, giveKeyboard) => this.reportMouse(kind, e, x, y, button, giveKeyboard),
     };
   }
@@ -1040,13 +1068,10 @@ export class HottyAddon implements ITerminalAddon {
   private terminalKey(e: KeyboardEvent) {
     const ta = this.term.textarea;
     if (!ta) return;
-    // xterm's legacy keyboard handler does not encode the menu key.
-    if (e.key === "ContextMenu" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey &&
-        this.version !== "0.8" && e.type === "keydown") {
-      const core = (this.term as unknown as { _core?: { coreService?: DataSink } })._core;
-      core?.coreService?.triggerDataEvent("\x1b[29~", true);
-      return;
-    }
+    const core = (this.term as unknown as { _core?: {
+      coreService?: DataSink;
+      _keyboardService?: { useKitty: boolean; useWin32InputMode: boolean };
+    } })._core;
     const init = {
       key: e.key,
       code: e.code,
@@ -1064,7 +1089,12 @@ export class HottyAddon implements ITerminalAddon {
     this.throughTerminal(() => {
       const ev = new KeyboardEvent(e.type, init);
       ta.dispatchEvent(ev);
-      if (e.type === "keydown" && !ev.defaultPrevented && [...e.key].length === 1) {
+      if (e.type !== "keydown" || ev.defaultPrevented) return;
+      if (e.key === "ContextMenu" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey &&
+          this.version !== "0.8" && !core?._keyboardService?.useKitty &&
+          !core?._keyboardService?.useWin32InputMode && !this.browserKey(e)) {
+        core?.coreService?.triggerDataEvent("\x1b[29~", true);
+      } else if ([...e.key].length === 1) {
         const c = e.key.codePointAt(0)!;
         ta.dispatchEvent(new KeyboardEvent("keypress", { ...init, charCode: c, keyCode: c, which: c }));
       }
@@ -1331,6 +1361,30 @@ export class HottyAddon implements ITerminalAddon {
     });
   }
 
+  private relayCellPointer(e: PointerEvent, frame: HTMLIFrameElement): boolean {
+    const hold = this.cellHold;
+    if (!hold || hold.pointer !== e.pointerId || e.pointerType === "touch") return false;
+    const rect = frame.getBoundingClientRect();
+    const x = rect.left + e.clientX, y = rect.top + e.clientY;
+    const finalRelease = e.type === "pointerup" && !e.buttons;
+    const changed = hold.buttons ^ e.buttons;
+    for (const button of [0, 1, 2, 3, 4]) {
+      const mask = buttonMask(button);
+      if (!(changed & mask) || (finalRelease && button === e.button && button <= 2)) continue;
+      this.reportMouse(e.buttons & mask ? "down" : "up", e, x, y, button);
+    }
+    // A native mouseup on the parent document also retires xterm's
+    // drag listeners. Its DOM path cannot encode a side-button release.
+    if (finalRelease) this.pressCells("up", e, x, y, e.button);
+    if (e.type === "pointermove" && !changed) {
+      const button = [0, 1, 2, 3, 4].find((n) => e.buttons & buttonMask(n));
+      if (button !== undefined) this.reportMouse("move", e, x, y, button);
+    }
+    if (e.type === "pointercancel" || !e.buttons) this.cellHold = null;
+    else hold.buttons = e.buttons;
+    return true;
+  }
+
   private ensureLayer(): HTMLDivElement {
     if (this.layer?.isConnected) return this.layer;
     const screen = this.term.element?.querySelector(".xterm-screen");
@@ -1353,12 +1407,21 @@ export class HottyAddon implements ITerminalAddon {
     if (!el || this.pressed === el) return;
     this.unwatch();
     el.addEventListener("mousedown", this.cellsPressed, true);
+    el.addEventListener("pointerdown", this.cellPointerDown, true);
+    for (const kind of ["pointermove", "pointerup", "pointercancel"] as const) {
+      el.ownerDocument.addEventListener(kind, this.cellPointerChange, true);
+    }
     el.addEventListener("focusin", this.focusIn, true);
     this.pressed = el;
   }
 
   private unwatch() {
     this.pressed?.removeEventListener("mousedown", this.cellsPressed, true);
+    this.pressed?.removeEventListener("pointerdown", this.cellPointerDown, true);
+    for (const kind of ["pointermove", "pointerup", "pointercancel"] as const) {
+      this.pressed?.ownerDocument.removeEventListener(kind, this.cellPointerChange, true);
+    }
+    this.cellHold = null;
     this.pressed?.removeEventListener("focusin", this.focusIn, true);
     this.pressed = null;
   }
@@ -1394,7 +1457,7 @@ export class HottyAddon implements ITerminalAddon {
     clearTimeout(p.timer);
     e.preventDefault();
     e.stopImmediatePropagation();
-    this.sendCommand("paste", p.key, e.clipboardData?.getData("text/plain") ?? "");
+    p.finish(e.clipboardData?.getData("text/plain") ?? "");
   };
 
   /**
@@ -1423,27 +1486,81 @@ export class HottyAddon implements ITerminalAddon {
       this.sendCommand(name, k);
       return true;
     }
-    if (this.pasting) clearTimeout(this.pasting.timer);
-    // A key the user typed on the cells pastes, as the browser's default
-    // action; one a surface gave on, or a browser that makes no paste of
-    // it, has the clipboard read.
+    // Native paste supplies text on the cells. A surface's cancelled
+    // keydown uses the clipboard API instead. Reserve the input slot now.
+    if (this.pasting) {
+      clearTimeout(this.pasting.timer);
+      this.pasting.read();
+    }
+    const finish = this.beginPaste(k);
     const read = () => {
       this.pasting = null;
-      void (navigator.clipboard?.readText().catch(() => "") ?? Promise.resolve("")).then((text) => this.sendCommand("paste", k, text));
+      void this.readPaste().then(finish);
     };
     if (!e.isTrusted || this.forwarding || fromSurface) {
       e.preventDefault();
       read();
-    } else this.pasting = { key: k, timer: setTimeout(read, 0) };
+    } else this.pasting = { finish, read, timer: setTimeout(read, 0) };
     return true;
+  }
+
+  private async readPaste(): Promise<string> {
+    try {
+      return await navigator.clipboard?.readText() ?? "";
+    } catch {
+      return "";
+    }
+  }
+
+  private beginPaste(key?: string): (text: string) => void {
+    const sink = (this.term as unknown as { _core?: { coreService?: DataSink } })._core?.coreService;
+    if (!sink) return (text) => this.sendCommand("paste", key, text);
+    const queue = this.inputQueue;
+    const pending: PendingInput = {};
+    queue.push(pending);
+    if (!this.restoreInput) {
+      const original = sink.triggerDataEvent;
+      const own = Object.hasOwn(sink, "triggerDataEvent");
+      sink.triggerDataEvent = (...input) => { queue.push({ input }); };
+      this.restoreInput = () => {
+        if (own) sink.triggerDataEvent = original;
+        else delete (sink as Partial<DataSink>).triggerDataEvent;
+        this.restoreInput = null;
+        this.drainInput = null;
+      };
+      this.drainInput = () => {
+        // Keep the interception in place while emitting. An onData listener
+        // may synchronously send more input, which belongs at the tail.
+        while (queue[0]?.input) original.apply(sink, queue.shift()!.input!);
+        if (!queue.length) this.restoreInput?.();
+      };
+    }
+    return (text) => {
+      if (this.inputQueue !== queue) return;
+      pending.input = [this.commandMessage("paste", key, text), false];
+      this.drainInput?.();
+    };
+  }
+
+  private clearPaste() {
+    if (this.pasting) clearTimeout(this.pasting.timer);
+    this.pasting = null;
+    this.inputQueue.length = 0;
+    this.inputQueue = [];
+    this.restoreInput?.();
+    this.commandCodes.clear();
   }
 
   /** The event `command` (SPEC §10.6): of no surface and no element, with
    * the key that made it where one did. A paste's text is left out where
    * the clipboard holds none. */
   private sendCommand(name: string, key?: string, text?: string) {
+    this.send(this.commandMessage(name, key, text));
+  }
+
+  private commandMessage(name: string, key?: string, text?: string): string {
     const c = new Control().set("a", "ev").set("e", "command");
-    this.send(encode(c, this.writer.body({ name, key, text: text || undefined })));
+    return encode(c, this.writer.body({ name, key, text: text || undefined }));
   }
 
   // --- The program's menu (SPEC §10.7) --------------------------------------
@@ -1501,7 +1618,8 @@ export class HottyAddon implements ITerminalAddon {
     if (name === "copy" && this.term.hasSelection()) {
       navigator.clipboard?.writeText(this.term.getSelection()).catch(() => {});
     } else if (name === "paste") {
-      void (navigator.clipboard?.readText().catch(() => "") ?? Promise.resolve("")).then((text) => this.sendCommand("paste", undefined, text));
+      const finish = this.beginPaste();
+      void this.readPaste().then(finish);
     } else this.sendCommand(name);
     return true;
   }

@@ -3,7 +3,7 @@
 
 import { expect, test, type Page } from "@playwright/test";
 import { readFileSync, rmSync } from "node:fs";
-import { open, sansArea, screenPoint, send, surface, take, write } from "./helpers.ts";
+import { delta, open, sansArea, screenPoint, send, surface, take, write } from "./helpers.ts";
 
 const evs = (msgs: Awaited<ReturnType<typeof take>>["msgs"]) =>
   msgs.filter((m) => m.get("a") === "ev").map((m) => [m.get("e"), m.get("t") ?? "", sansArea(m.body)]);
@@ -240,4 +240,20 @@ test("p=1: every press in the window is reported, first; it belongs to the surfa
   await send(page, { a: "place", s: "pp", c: "60", r: "6", p: "0", q: "2" });
   await d.locator("b").click();
   expect(evs((await take(page)).msgs)).toEqual([]);
+});
+
+test("Tab from empty focus skips terminal hyperlinks with tabindex at both ends", async ({ page }) => {
+  await open(page);
+  await send(page, { a: "doc", s: "x", q: "2" }, `
+    <a target="_blank" href="https://example.test" tabindex="0">first link</a>
+    <button id=first>first control</button><input id=a><input id=b><button id=last>last control</button>
+    <a target="_blank" href="https://example.test" tabindex="0">last link</a>`);
+  await send(page, { a: "place", s: "x", c: "40", r: "6", q: "2" });
+  for (const [input, key, target] of [["a", "Tab", "first"], ["b", "Shift+Tab", "last"]] as const) {
+    await send(page, { a: "focus", s: "x", t: input, q: "2" });
+    await delta(page, { s: "x", q: "2" }, { op: "remove", t: input });
+    await page.keyboard.press(key);
+    await expect(surface(page, "x").locator(`#${target}`)).toBeFocused();
+    expect((await take(page)).msgs.map((m) => [m.get("e"), m.get("t")])).toEqual([["focus", target]]);
+  }
 });

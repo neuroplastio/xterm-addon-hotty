@@ -569,3 +569,26 @@ test("scroll ops lay out a placement outside the visible scrollback", async ({ p
   await expect(surface(page, "s").locator("#tall")).toBeVisible();
   await expect.poll(() => surface(page, "s").locator("html").evaluate((el) => el.scrollTop === el.scrollHeight - el.clientHeight)).toBe(true);
 });
+
+test.describe("alternate-screen touch pans", () => {
+  test.use({ hasTouch: true });
+
+  test("a horizontal-first touch pan turns into a vertical document scroll without arrow keys", async ({ page, browserName }) => {
+    test.skip(browserName !== "chromium", "touch input comes from CDP");
+    await open(page);
+    await write(page, "\x1b[?1049h\x1b[?1007h");
+    await send(page, { a: "doc", s: "s", scroll: "1", q: "2" }, "<div style='height:900px'>tall</div>");
+    await send(page, { a: "place", s: "s", c: "30", r: "8", q: "2" });
+    const html = surface(page, "s").locator("html");
+    const r = (await html.boundingBox())!;
+    const x = r.x + 90, y = r.y + 90;
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: x - 40, y }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: x - 40, y: y - 50 }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await cdp.detach();
+    await expect.poll(() => html.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+    expect((await take(page)).raw).toBe("");
+  });
+});

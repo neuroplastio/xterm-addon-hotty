@@ -5,7 +5,7 @@
 // the terminal's presses and is cancelled for the surface's, the focus, the
 // click and the drag it does not make, and the touch's lift.
 import { expect, test, type CDPSession, type Page } from "@playwright/test";
-import { open, send, surface, take, write } from "./helpers.ts";
+import { open, screenPoint, send, surface, take, write } from "./helpers.ts";
 
 type Keys = { alt?: boolean; shift?: boolean };
 
@@ -19,7 +19,7 @@ class Mouse {
   constructor(
     private readonly page: Page,
     private readonly browser: string,
-    private readonly button: "left" | "right" = "right",
+    private readonly button: "left" | "middle" | "right" = "right",
   ) {}
 
   private async go(type: "mouseMoved" | "mousePressed" | "mouseReleased", x: number, y: number, keys: Keys) {
@@ -28,7 +28,7 @@ class Mouse {
     if (this.browser === "chromium") {
       this.cdp ??= await this.page.context().newCDPSession(this.page);
       const modifiers = (keys.alt ? 1 : 0) | (keys.shift ? 8 : 0);
-      await this.cdp.send("Input.dispatchMouseEvent", { type, x, y, button: this.button, buttons: this.held ? (this.button === "right" ? 2 : 1) : 0, clickCount: 1, modifiers });
+      await this.cdp.send("Input.dispatchMouseEvent", { type, x, y, button: this.button, buttons: this.held ? (this.button === "right" ? 2 : this.button === "middle" ? 4 : 1) : 0, clickCount: 1, modifiers });
       return;
     }
     if (keys.alt) await this.page.keyboard.down("Alt");
@@ -376,4 +376,70 @@ test.describe("a 0.8 session", () => {
     await m.up(x, y, { alt: true });
     expect((await take(page)).raw).toContain("\x1b[<10;");
   });
+});
+
+test("an unclaimed middle button reaches the terminal in a 0.8 session", async ({ page, browserName }) => {
+  await write(page, "\x1b[?1000h\x1b[?1006h");
+  await place(page, "1", DOC.replace("id=n", "id=n data-on=aux"));
+  const [x, y] = await centre(page, "n");
+  await new Mouse(page, browserName, "middle").click(x, y);
+  const { msgs, raw } = await take(page);
+  expect(msgs).toEqual([]);
+  expect([...raw.matchAll(/\x1b\[<(\d+);\d+;\d+([Mm])/g)].map(([, button, kind]) => [button, kind]))
+    .toEqual([["1", "M"], ["1", "m"]]);
+});
+
+for (const capture of [true, false]) {
+  test(`a terminal-owned chord crosses from cells into a surface through release (${capture ? "captured" : "relayed"})`, async ({ page, browserName }) => {
+    await send(page, { a: "q", v: "0.9", q: "2" });
+    await write(page, "\x1b[?1003h\x1b[?1006h");
+    await place(page, "1", DOC.replace("id=n", 'id=n data-on="aux click drag"'));
+    if (!capture) {
+      await page.evaluate(() => {
+        Element.prototype.setPointerCapture = () => { throw new DOMException("capture unavailable"); };
+      });
+    }
+    const [x, y] = await centre(page, "n");
+    const [cx, cy] = await screenPoint(page, [30, 0]);
+    for (const first of ["left", "middle"] as const) {
+      const last = first === "left" ? "middle" : "left";
+      if (browserName === "chromium") {
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", buttons: 1, x: cx, y: cy, clickCount: 1 });
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", button: "left", buttons: 1, x, y });
+        await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", button: "middle", buttons: 5, x, y, clickCount: 1 });
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: first, buttons: last === "middle" ? 4 : 1, x, y, clickCount: 1 });
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", button: last, buttons: 0, x, y, clickCount: 1 });
+        await cdp.detach();
+      } else {
+        await page.mouse.move(cx, cy);
+        await page.mouse.down();
+        await page.mouse.move(x, y);
+        await page.mouse.down({ button: "middle" });
+        await page.mouse.up({ button: first });
+        await page.mouse.up({ button: last });
+      }
+      const { msgs, raw } = await take(page);
+      expect(msgs).toEqual([]);
+      expect(raw).toMatch(/\x1b\[<32;\d+;\d+M/);
+      expect([...raw.matchAll(/\x1b\[<([01]);\d+;\d+([Mm])/g)].map(([, button, kind]) => [button, kind]))
+        .toEqual([["0", "M"], ["1", "M"], [first === "left" ? "0" : "1", "m"], [last === "left" ? "0" : "1", "m"]]);
+    }
+  });
+}
+
+test("side-button bits cannot initiate a surface primary press", async ({ page }) => {
+  await send(page, { a: "q", v: "0.9", q: "2" });
+  await place(page, "1", '<button id=b data-on="drag click">button</button>');
+  await surface(page, "x").locator("#b").evaluate((b) => {
+    const win = b.ownerDocument.defaultView as Window & typeof globalThis;
+    for (const buttons of [8, 16]) {
+      const init = { bubbles: true, cancelable: true, button: 0, buttons, pointerType: "mouse", isPrimary: true, detail: 1 };
+      b.dispatchEvent(new win.PointerEvent("pointerdown", init));
+      b.dispatchEvent(new win.MouseEvent("mousedown", init));
+      b.dispatchEvent(new win.MouseEvent("click", { ...init, buttons: 0 }));
+    }
+  });
+  expect(await events(page)).toEqual([]);
+  await expect(surface(page, "x").locator("#b")).not.toBeFocused();
 });

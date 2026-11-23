@@ -450,3 +450,57 @@ test("tab=default restores traversal inside tab=program, in a 0.8 session too", 
   await expect(surface(page, "s").locator("#c")).toBeFocused();
   expect((await take(page)).raw).toBe("");
 });
+
+test("a program-bound paste keeps its place before later input", async ({ page }) => {
+  await open(page);
+  await page.evaluate(() => {
+    const reads: ((text: string) => void)[] = [];
+    Object.assign(window, { pasteReads: reads });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText: () => new Promise<string>((resolve) => reads.push(resolve)) },
+    });
+  });
+  await send(page, { a: "doc", s: "x", q: "2" }, '<button id=b data-keys="ctrl+v=program">paste</button>');
+  await send(page, { a: "place", s: "x", c: "20", r: "3", q: "2" });
+  await send(page, { a: "focus", s: "x", t: "b", q: "2" });
+  await send(page, { a: "edit", take: "paste", q: "2" });
+  await take(page);
+
+  await page.keyboard.press("Control+v");
+  await page.keyboard.press("k");
+  await page.keyboard.press("Control+v");
+  await page.keyboard.press("j");
+  const answer = (i: number, text: string) => page.evaluate(([i, text]) => {
+    (window as unknown as { pasteReads: ((text: string) => void)[] }).pasteReads[i]!(text);
+  }, [i, text] as const);
+  await answer(1, "second");
+  expect(await page.evaluate(() => window.hotty.sent.slice())).toEqual([]);
+  await answer(0, "first");
+  await expect.poll(() => page.evaluate(() => window.hotty.sent.map((data) =>
+    data.startsWith("\x1b]7279;a=ev:e=command;") ? "command" : data,
+  ))).toEqual(["command", "k", "command", "j"]);
+  const { msgs, raw } = await take(page);
+  expect(msgs.map((m) => m.body)).toEqual([
+    { name: "paste", key: "ctrl+v", text: "first" },
+    { name: "paste", key: "ctrl+v", text: "second" },
+  ]);
+  expect(raw).toBe("kj");
+});
+
+test("the unclaimed menu key uses Kitty on a surface and falls back in legacy mode", async ({ page }) => {
+  await open(page);
+  await write(page, "\x1b[>11u");
+  await page.evaluate(() => window.hotty.term.focus());
+  await page.keyboard.press("ContextMenu");
+  const cells = (await take(page)).raw;
+  expect(cells).toBe("\x1b[57363u\x1b[57363;1:3u");
+  await send(page, { a: "doc", s: "x", q: "2" }, "<button id=b>button</button>");
+  await send(page, { a: "place", s: "x", c: "20", r: "3", q: "2" });
+  await send(page, { a: "focus", s: "x", t: "b", q: "2" });
+  await page.keyboard.press("ContextMenu");
+  expect((await take(page)).raw).toBe(cells);
+  await write(page, "\x1b[<u");
+  await page.keyboard.press("ContextMenu");
+  expect((await take(page)).raw).toBe("\x1b[29~");
+});
