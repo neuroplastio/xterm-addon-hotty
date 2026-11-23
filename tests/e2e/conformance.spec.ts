@@ -172,9 +172,32 @@ class Mouse {
     for (const k of keys) await this.page.keyboard.down(names[k]!);
     if (step.pointer === "move") await this.page.mouse.move(this.x, this.y);
     else if (step.pointer === "down") await this.page.mouse.down({ button: buttonName as "left" | "middle" | "right", clickCount: step.count ?? 1 });
-    else if (step.pointer === "wheel") for (const move of moves) for (const [dx, dy] of await this.notches(move)) await this.page.mouse.wheel(dx, dy);
+    else if (step.pointer === "wheel") await this.firefoxWheel(moves);
     else await this.page.mouse.up({ button: buttonName as "left" | "middle" | "right", clickCount: step.count ?? 1 });
     for (const k of [...keys].reverse()) await this.page.keyboard.up(names[k]!);
+  }
+
+  private async firefoxWheel(moves: [number, number][]) {
+    // A vector step denotes one gesture. Driver round trips under load
+    // can otherwise introduce a new gesture between two of its notches.
+    const clock = await this.page.evaluateHandle(() => {
+      const own = Object.getOwnPropertyDescriptor(performance, "now");
+      const now = performance.now();
+      Object.defineProperty(performance, "now", { configurable: true, value: () => now });
+      return () => {
+        if (own) Object.defineProperty(performance, "now", own);
+        else Reflect.deleteProperty(performance, "now");
+      };
+    });
+    try {
+      for (const move of moves) {
+        for (const [dx, dy] of await this.notches(move)) await this.page.mouse.wheel(dx, dy);
+      }
+      await frames(this.page, 2);
+    } finally {
+      await clock.evaluate((restore) => restore());
+      await clock.dispose();
+    }
   }
 
   /** A wheel step as one gesture of wheel events, a cell's worth of pixels
