@@ -2742,7 +2742,13 @@ export class Surface {
     d.addEventListener(
       "mousedown",
       (e) => {
-        if (this.mismatchedButton || this.buttonHold?.route === "browser") return;
+        if (this.mismatchedButton) {
+          // The compatibility press can still focus or select as primary.
+          // Leave genuine side-button events to the browser.
+          if (e.button === 0 || e.button === 1) e.preventDefault();
+          return;
+        }
+        if (this.buttonHold?.route === "browser") return;
         if (this.altPointer !== null || this.secondaryTaken || this.suppressMouse ||
             (this.buttonHold && this.buttonHold.route !== "primary")) {
           // The program's press (SPEC §9.2), or a secondary press the
@@ -3003,12 +3009,14 @@ export class Surface {
         return;
       }
       const before = box[pos];
-      box.scrollBy({ left: axis === "x" ? left : 0, top: axis === "y" ? left : 0, behavior: "instant" });
+      const step = Math.sign(left) * Math.min(Math.abs(left), this.scrollRoom(box, axis, left, before));
+      const fraction = step / delta;
+      box.scrollBy({ left: dx * fraction, top: dy * fraction, behavior: "instant" });
       const moved = box[pos] - before;
-      // Snapping can leave a box at its previous offset or move farther
-      // than the gesture asked for.
-      if (Math.sign(moved) !== Math.sign(left) || Math.abs(moved) >= Math.abs(left)) return;
-      left -= moved;
+      // Chain only the part beyond this box's edge. Snapping inside the
+      // box is not an edge, even if it consumes less than we asked for.
+      if (Math.abs(moved - step) > 0.5 || Math.abs(step) <= 0.5) return;
+      left -= step;
     }
   }
 
@@ -3020,11 +3028,16 @@ export class Surface {
   private canMove(el: Element, axis: Axis, d: number, distance = 0.5): boolean {
     if (!d || !(this.axes & (axis === "y" ? 1 : 2))) return false;
     const dest = this.scrollDestinations.get(el);
-    const [at, span] = axis === "y" ? [dest?.top ?? el.scrollTop, el.scrollHeight - el.clientHeight] : [dest?.left ?? el.scrollLeft, el.scrollWidth - el.clientWidth];
+    const at = axis === "y" ? dest?.top ?? el.scrollTop : dest?.left ?? el.scrollLeft;
+    return this.scrollRoom(el, axis, d, at) > distance;
+  }
+
+  private scrollRoom(el: Element, axis: Axis, d: number, at: number): number {
+    const span = axis === "y" ? el.scrollHeight - el.clientHeight : el.scrollWidth - el.clientWidth;
     // Across a right-to-left box, scrollLeft runs from -span to 0.
     const rtl = axis === "x" && this.frame.contentWindow!.getComputedStyle(el).direction === "rtl";
     const [min, max] = rtl ? [-span, 0] : [0, span];
-    return d > 0 ? at < max - distance : at > min + distance;
+    return Math.max(0, d > 0 ? max - at : at - min);
   }
 
   /**

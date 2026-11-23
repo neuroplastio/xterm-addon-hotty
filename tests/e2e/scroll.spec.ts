@@ -591,4 +591,27 @@ test.describe("alternate-screen touch pans", () => {
     await expect.poll(() => html.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
     expect((await take(page)).raw).toBe("");
   });
+
+  test("a diagonal touch reversal at the protected edge scrolls on both axes", async ({ page, browserName }) => {
+    test.skip(browserName !== "chromium", "touch input comes from CDP");
+    await open(page);
+    await write(page, "\x1b[?1049h\x1b[?1007h");
+    await send(page, { a: "doc", s: "s", scroll: "3", q: "2" }, "<div style='width:900px;height:900px'>wide and tall</div>");
+    await send(page, { a: "place", s: "s", c: "30", r: "8", q: "2" });
+    const html = surface(page, "s").locator("html");
+    const rect = (await page.locator('.hotty-surface[data-surface="s"] iframe').boundingBox())!;
+    const x = rect.x + 90, y = rect.y + 65;
+    await html.evaluate((el) => el.scrollTo(125, 0));
+    const offset = () => html.evaluate((el) => [el.scrollLeft, el.scrollTop]);
+    expect(await offset()).toEqual([125, 0]);
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + 28 }] });
+    expect(await offset()).toEqual([125, 0]);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: x - 20, y: y - 12 }] });
+    await expect.poll(offset).toEqual([145, 40]);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+    await cdp.detach();
+    expect((await take(page)).raw).toBe("");
+  });
 });

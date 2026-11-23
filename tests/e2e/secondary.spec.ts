@@ -443,3 +443,36 @@ test("side-button bits cannot initiate a surface primary press", async ({ page }
   expect(await events(page)).toEqual([]);
   await expect(surface(page, "x").locator("#b")).not.toBeFocused();
 });
+
+test("a mislabeled side button leaves focus and typing in the original field", async ({ page, browserName }) => {
+  await send(page, { a: "q", v: "0.9", q: "2" });
+  await place(page, "1", '<style>body{margin:0}input{display:block;width:90px}</style>' +
+    '<input id=a><input id=b data-on="drag click">');
+  const a = surface(page, "x").locator("#a");
+  const b = surface(page, "x").locator("#b");
+  const mouse = new Mouse(page, browserName, "left");
+  await mouse.click(...await centre(page, "a"));
+  await expect(a).toBeFocused();
+  await take(page);
+
+  await page.evaluate(() => {
+    const frame = document.querySelector<HTMLIFrameElement>('.hotty-surface[data-surface="x"] iframe')!;
+    const win = frame.contentWindow!;
+    const el = frame.contentDocument!.getElementById("b")!;
+    // Give the addon the side-button bit while the browser still delivers
+    // a trusted primary mousedown with its native focus default.
+    win.addEventListener("pointerdown", (e) => {
+      Object.defineProperty(e, "buttons", { value: 8 });
+    }, { capture: true, once: true });
+    win.addEventListener("mousedown", (e) => {
+      el.setAttribute("data-trusted-press", String(e.isTrusted && e.button === 0 && e.target === el));
+    }, { capture: true, once: true });
+  });
+  await mouse.click(...await centre(page, "b"));
+  await expect(b).toHaveAttribute("data-trusted-press", "true");
+  await expect(a).toBeFocused();
+  expect(await events(page)).toEqual([]);
+  await page.keyboard.press("k");
+  await expect(a).toHaveValue("k");
+  await expect(b).toHaveValue("");
+});
