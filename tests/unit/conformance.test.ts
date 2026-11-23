@@ -7,7 +7,7 @@ import { readVectors } from "../hotty.ts";
 import { Assembler, text, type Command } from "../../src/wire.ts";
 import { Writer, type Body } from "../../src/msgpack.ts";
 import { find, hides, isGroup, Menus, readMenu, readSeq, shownLevel } from "../../src/menu.ts";
-import { decodeKeys, elementKeymap, Field, keyText, parseKey, parseKeymap, readKey as readOn, resolve, TERMINAL_KEYS } from "../../src/keys.ts";
+import { decodeKeys, Field, keyText, parseKey, parseKeymap, readKey as readOn, resolve, TERMINAL_KEYS } from "../../src/keys.ts";
 
 const vectors = readVectors();
 
@@ -48,24 +48,18 @@ for (const v of vectors.keys) {
 
 for (const v of vectors.keymap) {
   test(`keymap: ${v.name}`, () => {
-    if (!("multiline" in v) && ("program" in v || "prefix" in v || "scroll" in v)) {
-      // An element's keymap outside a text field: no default; program,
-      // prefix and the scroll actions.
-      const m = elementKeymap(v.platform ?? {}, ...v.keys);
-      for (const [key, want] of Object.entries(v.program ?? {})) assert.equal(m.program(key), want, key);
-      for (const [key, want] of Object.entries(v.prefix ?? {})) assert.equal(m.prefix(key), want, key);
-      for (const [key, want] of Object.entries(v.scroll ?? {})) assert.equal(m.scroll(key), want, key);
-      return;
-    }
-    if (!("lookup" in v)) {
+    if (!("reader" in v)) {
       assert.equal(parseKeymap(v.platform ?? {}, v.parse ?? TERMINAL_KEYS).format(), v.format);
       return;
     }
-    const m = resolve(v.platform ?? {}, v.multiline, ...(v.terminal_keys ? [TERMINAL_KEYS] : []), ...v.keys);
-    for (const [key, want] of Object.entries(v.program ?? {})) assert.equal(m.program(key), want, `${key}: program`);
-    for (const [key, want] of Object.entries(v.lookup)) assert.equal(m.lookup(key), want, key);
+    const inner = [...(v.terminal_keys ? [TERMINAL_KEYS] : []), ...(v.inner ?? [])];
+    const m = resolve(v.platform ?? {}, v.reader, v.own, ...inner);
+    for (const [key, want] of Object.entries(v.lookup ?? {})) assert.equal(m.lookup(key), want, `${key}: lookup`);
     for (const [key, want] of Object.entries(v.selects ?? {})) assert.equal(m.selects(key), want, `${key}: selects`);
     for (const [key, want] of Object.entries(v.binds ?? {})) assert.equal(m.binds(key), want, `${key}: binds`);
+    for (const [key, want] of Object.entries(v.program ?? {})) assert.equal(m.program(key), want, `${key}: program`);
+    for (const [key, want] of Object.entries(v.prefix ?? {})) assert.equal(m.prefix(key), want, `${key}: prefix`);
+    for (const [key, want] of Object.entries(v.scroll ?? {})) assert.equal(m.scroll(key), want, `${key}: scroll`);
   });
 }
 

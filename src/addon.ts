@@ -148,7 +148,7 @@ const GESTURE_MS = 150;
 
 /** The hotty versions the addon speaks (SPEC §4), highest first. The first
  * is VERSION's MAJOR.MINOR (gov P-5 rule 6). */
-export const SPEAKS = ["0.8", "0.7"];
+export const SPEAKS = ["0.9", "0.8"];
 
 /**
  * The version a query is answered in (SPEC §4): the highest the addon
@@ -156,7 +156,7 @@ export const SPEAKS = ["0.8", "0.7"];
  * spelling (`major.minor`, no leading zeros), so an entry is one only
  * exactly: `0.20` is not 0.2. None, as with no `v` at all, is `EVERSION`,
  * its detail the versions the addon speaks (§3.6), lowest first as a query
- * lists them (`0.7,0.8`).
+ * lists them (`0.8,0.9`).
  */
 function answerIn(v: string | undefined): string {
   const listed = (v ?? "").split(",");
@@ -279,8 +279,7 @@ export class HottyAddon implements ITerminalAddon {
   private heard: Body | null = null;
   /** The hotty version the session speaks (SPEC §4, HOST.md §5.1): the one
    *  the last query was answered in, until a full reset (RIS). Before a
-   *  query it is the highest the addon speaks. Both versions have the
-   *  secondary press (`Surface.secondary`). */
+   *  query it is the highest the addon speaks. */
   private version = SPEAKS[0]!;
   /** The font and the cell (CSS px) it heard them with: a new cell is owed
    * as `cellcss` when the font changed, or by more than a device pixel's

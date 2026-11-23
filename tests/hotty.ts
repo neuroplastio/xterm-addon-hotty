@@ -2,7 +2,7 @@
 // reference client are this addon's test material. HOTTY_DIR, or a checkout
 // next to this one (a plain clone at ../hotty, or the worktree layout at
 // ../../hotty/main).
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,8 +25,11 @@ export const HOTTY_DIR = ((): string => {
  * is written from its source text.
  */
 export function readVectors() {
-  // The released contract, independent of later work in that checkout.
-  const src = execFileSync("git", ["-C", HOTTY_DIR, "show", "v0.8.0:conformance/vectors.json"], { encoding: "utf8", maxBuffer: 8 << 20 });
+  // An explicit checkout supports untagged development. Otherwise use the
+  // released contract, independent of later work in the checkout.
+  const src = process.env.HOTTY_DIR
+    ? readFileSync(join(HOTTY_DIR, "conformance/vectors.json"), "utf8")
+    : execFileSync("git", ["-C", HOTTY_DIR, "show", "v0.9.0:conformance/vectors.json"], { encoding: "utf8", maxBuffer: 8 << 20 });
   return JSON.parse(src, (_key: string, v: unknown, context?: { source?: string }) => {
     if (typeof v !== "number") return v;
     if (context?.source === undefined) throw new Error("JSON.parse gives the reviver no source text: run the Node mise.toml pins");

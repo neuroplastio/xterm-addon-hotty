@@ -171,7 +171,7 @@ export class Resolver {
 
   /** Re-resolves everything that names one of `names` (a resource changed);
    * whether anything did. */
-  refresh(names: Set<string>): boolean {
+  refresh(names: Set<string>, loading: (link: HTMLLinkElement, href: string) => void): boolean {
     let any = false;
     for (const [el, uses] of Array.from(this.refs)) {
       if (!el.isConnected) {
@@ -182,7 +182,12 @@ export class Resolver {
       any = true;
       this.refs.delete(el);
       const o = this.orig.get(el);
-      if (o) for (const [attr, value] of Array.from(o)) this.set(el, attr, value);
+      if (o) for (const [attr, value] of Array.from(o)) {
+        const before = el.getAttribute(attr);
+        this.set(el, attr, value);
+        const after = el.getAttribute(attr);
+        if (el.localName === "link" && attr === "href" && after?.startsWith("blob:") && after !== before) loading(el as HTMLLinkElement, after);
+      }
       const css = this.css.get(el);
       if (css !== undefined) this.setCss(el, css);
     }

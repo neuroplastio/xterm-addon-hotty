@@ -305,7 +305,7 @@ test("a paste command brings the clipboard's text, from the browser's paste; wit
 
 test("the capabilities report the key settings and the menu", async ({ page }) => {
   await open(page, "?pty=0");
-  await send(page, { a: "q", v: "0.7,0.8" });
+  await send(page, { a: "q", v: "0.8,0.9" });
   const caps = (await take(page)).msgs[0]!.body as Record<string, unknown>;
   expect(caps.mod).toBe("ctrl");
   expect(caps.edit).toEqual({ "select-all": ["ctrl+a"], copy: ["ctrl+c"], cut: ["ctrl+x"], paste: ["ctrl+v"], undo: ["ctrl+z"], redo: ["ctrl+shift+z", "ctrl+y"] });
@@ -434,9 +434,9 @@ test("ctrl+key_a bound to program or prefix sends ctrl+a to the program; a prefi
   expect(evs(msgs)).toEqual([]);
 });
 
-test("tab=default restores traversal inside tab=program, in a 0.7 session too", async ({ page }) => {
+test("tab=default restores traversal inside tab=program, in a 0.8 session too", async ({ page }) => {
   await open(page);
-  await send(page, { a: "q", v: "0.7" });
+  await send(page, { a: "q", v: "0.8" });
   await send(page, { a: "doc", s: "s", q: "2" },
     `<div data-keys="tab=program"><input id=a><input id=b data-keys="tab=default"><button id=c>ok</button></div>`);
   await send(page, { a: "place", s: "s", c: "50", r: "3", q: "2" });

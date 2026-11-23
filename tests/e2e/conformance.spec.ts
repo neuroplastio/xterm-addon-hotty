@@ -1,6 +1,7 @@
 // The shared protocol vectors (conformance/README.md), run in the browser.
 // hotty-blitz runs the same file (crates/hotty-blitz/tests/conformance.rs).
 
+import { execFileSync } from "node:child_process";
 import { expect, test, type CDPSession, type Page } from "@playwright/test";
 import { readVectors } from "../hotty.ts";
 import { Writer, type Body } from "../../src/msgpack.ts";
@@ -22,17 +23,18 @@ type Step = {
   touch?: "down" | "move" | "hold" | "up";
   s?: string;
   at?: string | [number, number];
-  by?: [number, number];
+  by?: [number, number] | [number, number][];
   key?: string;
   keys?: string[];
   menu?: "shown" | "pick";
   name?: string;
   count?: number;
+  primary?: string;
   /** The button of a pointer step's down and up, as the DOM numbers it; 0 when absent. */
   button?: number;
   terminal?: boolean;
-  /** What the terminal reported of the mouse's primary button (§9.6). */
-  mouse?: Report[];
+  /** Mouse reports by button for pointer steps, by cell for touch steps. */
+  mouse?: Report[] | [kind: "down" | "up", button: number][];
   /** Bytes the program writes to the terminal, not hotty's. */
   write?: string;
   events?: Expected[];
@@ -114,9 +116,7 @@ class Mouse {
   x = 0;
   y = 0;
   s = "";
-  down = false;
-  /** The button held is the secondary one. */
-  secondary = false;
+  buttons = 0;
   constructor(
     private readonly page: Page,
     private readonly browser: string,
@@ -128,6 +128,14 @@ class Mouse {
       this.s = step.s!;
     }
     const keys = step.keys ?? [];
+    const button = step.button ?? 0;
+    const buttonNames = ["left", "middle", "right", "back", "forward"] as const;
+    const buttonName = buttonNames[button]!;
+    const flag = [1, 4, 2, 8, 16][button]!;
+    if (step.pointer === "down") this.buttons |= flag;
+    if (step.pointer === "up") this.buttons &= ~flag;
+    const by = step.by;
+    const moves = !by ? [] : typeof by[0] === "number" ? [by as [number, number]] : by as [number, number][];
     if (this.browser === "chromium") {
       const bits = { alt: 1, ctrl: 2, meta: 4, super: 4, shift: 8 } as Record<string, number>;
       const modifiers = keys.reduce((m, k) => m | (bits[k] ?? 0), 0);
@@ -136,32 +144,36 @@ class Mouse {
         // what it scrolls: wheels from dispatchMouseEvent are each one of
         // their own to Chromium.
         const [w, h] = await cellOf(this.page, this.s);
-        const [dx, dy] = [step.by![0] * w, step.by![1] * h];
         const cdp = await this.page.context().newCDPSession(this.page);
-        await cdp.send("Input.synthesizeScrollGesture", { x: this.x, y: this.y, xDistance: -dx, yDistance: -dy, gestureSourceType: "mouse", speed: 5000, preventFling: true });
+        if (moves.length === 1 && (moves[0]![0] === 0 || moves[0]![1] === 0)) {
+          const [dx, dy] = moves[0]!;
+          await cdp.send("Input.synthesizeScrollGesture", { x: this.x, y: this.y, xDistance: -dx * w, yDistance: -dy * h, gestureSourceType: "mouse", speed: 5000, preventFling: true });
+        } else {
+          // Send diagonal events in their ratio and keep the intervals in
+          // the addon's gesture window, including when an axis changes.
+          for (const [dx, dy] of moves) {
+            await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: this.x, y: this.y, deltaX: dx * w, deltaY: dy * h, modifiers });
+          }
+        }
         await cdp.detach();
         return;
       }
       const type = step.pointer === "move" ? "mouseMoved" : step.pointer === "down" ? "mousePressed" : "mouseReleased";
-      if (step.pointer === "down") {
-        this.down = true;
-        this.secondary = step.button === 2;
-      }
-      const secondary = step.pointer === "move" ? this.secondary : step.button === 2;
-      if (step.pointer === "up") this.down = false;
       const cdp = await this.page.context().newCDPSession(this.page);
-      // A secondary button is "right" to the browser: it fires `contextmenu`
-      // for it, which is what a browser host takes the press from.
-      await cdp.send("Input.dispatchMouseEvent", { type, x: this.x, y: this.y, button: secondary ? "right" : "left", buttons: this.down ? (secondary ? 2 : 1) : 0, clickCount: step.count ?? 1, modifiers });
+      const held = buttonNames[[1, 4, 2, 8, 16].findIndex((bit) => this.buttons & bit)] ?? "left";
+      await cdp.send("Input.dispatchMouseEvent", {
+        type, x: this.x, y: this.y, button: step.pointer === "move" ? held : buttonName,
+        buttons: this.buttons, clickCount: step.count ?? 1, modifiers,
+      });
       await cdp.detach();
       return;
     }
     const names = { shift: "Shift", ctrl: "Control", alt: "Alt", super: "Meta" } as Record<string, string>;
     for (const k of keys) await this.page.keyboard.down(names[k]!);
     if (step.pointer === "move") await this.page.mouse.move(this.x, this.y);
-    else if (step.pointer === "down") await this.page.mouse.down({ button: step.button === 2 ? "right" : "left", clickCount: step.count ?? 1 });
-    else if (step.pointer === "wheel") for (const [dx, dy] of await this.notches(step.by!)) await this.page.mouse.wheel(dx, dy);
-    else await this.page.mouse.up({ button: step.button === 2 ? "right" : "left", clickCount: step.count ?? 1 });
+    else if (step.pointer === "down") await this.page.mouse.down({ button: buttonName as "left" | "middle" | "right", clickCount: step.count ?? 1 });
+    else if (step.pointer === "wheel") for (const move of moves) for (const [dx, dy] of await this.notches(move)) await this.page.mouse.wheel(dx, dy);
+    else await this.page.mouse.up({ button: buttonName as "left" | "middle" | "right", clickCount: step.count ?? 1 });
     for (const k of [...keys].reverse()) await this.page.keyboard.up(names[k]!);
   }
 
@@ -224,6 +236,17 @@ async function cellOf(page: Page, s: string): Promise<[number, number]> {
     const css = getComputedStyle(doc.documentElement);
     return [parseFloat(css.getPropertyValue("--hotty-cell-w")), parseFloat(css.getPropertyValue("--hotty-cell-h"))];
   }, s);
+}
+
+/** Pointer steps check the button number, independently of the cell. */
+function buttonReports(raw: string): [string, number][] {
+  const reports: [string, number][] = [];
+  for (const [, code, final] of raw.matchAll(/\x1b\[<(\d+);\d+;\d+([Mm])/g)) {
+    const button = Number(code) & ~(4 | 8 | 16);
+    if (button & (32 | 64)) continue;
+    reports.push([final === "m" ? "up" : "down", button & 128 ? 3 + (button & 3) : button]);
+  }
+  return reports;
 }
 
 /**
@@ -294,15 +317,35 @@ async function point(page: Page, s: string, at: string | [number, number]): Prom
 // the features `count` and `menu` (SPEC §4), all a 0.8 host does (`scroll`,
 // `steps`, `drop`, `view`), a history in its fields (`undo`), edit commands
 // (`commands`, §10.6), a terminal that reports the mouse (`mouse`, §9.6),
-// `speaks-0.7` (HOST.md §5), and `touch` (§9.1, §16) where this runner can touch it, in Chromium,
+// `speaks-0.8` (HOST.md §5), and `touch` (§9.1, §16) where this runner can touch it, in Chromium,
 // through CDP: Playwright gives Firefox no touch moves. It does not let the
 // pointer through surfaces (§9.3, `passthrough`), sends no `hover` (§9.4),
 // and draws no backdrop (§5.2, `backdrop`).
-const reported = (browser: string) => new Set<string>(["scroll", "steps", "drop", "view", "count", "menu", "undo", "commands", "pressed", "mouse", "speaks-0.7", ...(browser === "chromium" ? ["touch"] : [])]);
+const primaryDisplay = process.platform === "linux" ? process.env.HOTTY_PRIMARY_DISPLAY : undefined;
+const reported = (browser: string) => new Set([
+  "scroll", "steps", "drop", "view", "count", "menu", "undo", "commands",
+  "pressed", "mouse", "layout", "menu-key", "speaks-0.8",
+  ...(browser === "chromium" ? ["touch"] : []),
+  ...(primaryDisplay ? ["middle-paste"] : []),
+]);
 
 const needs = (v: { requires?: string | string[] }) => (v.requires === undefined ? [] : [v.requires].flat());
 
-for (const vector of vectors.vectors.filter((v) => !needs(v).includes("touch"))) define(vector);
+for (const vector of vectors.vectors.filter((v) => !needs(v).some((r) => r === "touch" || r === "middle-paste"))) define(vector);
+
+if (primaryDisplay) test.use({
+  headless: false,
+  launchOptions: async ({ browserName }, use) => {
+    await use({
+      args: browserName === "chromium" ? ["--ozone-platform=x11"] : [],
+      env: { ...process.env, DISPLAY: primaryDisplay, MOZ_ENABLE_WAYLAND: "0" },
+    });
+  },
+});
+
+test.describe("Linux primary selection", () => {
+  for (const vector of vectors.vectors.filter((v) => needs(v).includes("middle-paste"))) define(vector);
+});
 
 // A touch screen for the vectors that touch: touch events are on.
 test.describe("touch", () => {
@@ -316,6 +359,8 @@ function define(vector: { name: string; requires?: string | string[]; steps: Ste
     const has = reported(browserName);
     const missing = requires.filter((r) => !has.has(r));
     test.skip(missing.length > 0, `needs ${missing.join(", ")}, which this runner can't give in ${browserName}`);
+    test.skip(browserName !== "chromium" && vector.steps.some((s) => (s.button ?? 0) > 2),
+      "Playwright can dispatch back and forward buttons through Chromium CDP");
     await open(page);
     // The terminal has the keyboard, as in a page that gave it focus: a key
     // goes to the cells until a surface takes it.
@@ -324,7 +369,11 @@ function define(vector: { name: string; requires?: string | string[]; steps: Ste
     const finger = new Finger(page);
     for (const [i, step] of vector.steps.entries()) {
       const where = `step ${i + 1}`;
-      if (step.touch) {
+      if (step.primary !== undefined) {
+        execFileSync("xclip", ["-display", primaryDisplay!, "-selection", "primary", "-i"], {
+          input: step.primary, stdio: ["pipe", "ignore", "inherit"],
+        });
+      } else if (step.touch) {
         await take(page);
         await terminalWheels(page);
         await finger.step(step);
@@ -332,13 +381,16 @@ function define(vector: { name: string; requires?: string | string[]; steps: Ste
         const { msgs, raw } = await take(page);
         checkEvents(where, msgs, step.events);
         if (step.terminal !== undefined) expect((await terminalWheels(page)) > 0, `${where}: the terminal got the touch`).toBe(step.terminal);
-        if (step.mouse !== undefined) expect(collapseMoves(mouseReports(raw)), `${where}: the mouse reported (${JSON.stringify(raw)})`).toEqual(collapseMoves(step.mouse));
+        if (step.mouse !== undefined) expect(collapseMoves(mouseReports(raw)), `${where}: the mouse reported (${JSON.stringify(raw)})`).toEqual(collapseMoves(step.mouse as Report[]));
       } else if (step.pointer) {
         await take(page);
         await terminalWheels(page);
         await mouse.step(step);
         if (step.pointer === "wheel") await settle(page);
-        checkEvents(where, (await take(page)).msgs, step.events);
+        await frames(page, 2);
+        const { msgs, raw } = await take(page);
+        checkEvents(where, msgs, step.events);
+        if (step.mouse !== undefined) expect(buttonReports(raw), `${where}: mouse reports (${JSON.stringify(raw)})`).toEqual(step.mouse);
         if (step.terminal !== undefined) expect((await terminalWheels(page)) > 0, `${where}: the terminal got the wheel`).toBe(step.terminal);
       } else if (step.key !== undefined) {
         // Where the keyboard is: the surface that has it, else the terminal.

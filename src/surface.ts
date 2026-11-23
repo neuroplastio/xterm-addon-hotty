@@ -276,9 +276,9 @@ const NO_CARET = new Set(["email", "number"]);
 /** The characters a number field types; others it takes and drops. */
 const NUMBER_CHARS = /^[0-9.,+\-eE]$/;
 
-/** On a Mac, Command pastes; elsewhere, Control (SPEC §10.4's Meta). */
-const chromium = typeof navigator !== "undefined" && /\b(?:Chrome|Chromium)\//.test(navigator.userAgent);
+const chromium = typeof navigator !== "undefined" && /\b(?:Chrome|HeadlessChrome|Chromium)\//.test(navigator.userAgent);
 const linux = typeof navigator !== "undefined" && /Linux/.test(navigator.platform);
+/** On a Mac, Command pastes; elsewhere, Control (SPEC §10.4's Meta). */
 const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
 /** The styles a textarea's rows depend on, copied to the copy that measures
@@ -466,6 +466,9 @@ export class Surface {
   private prefix = false;
   /** The rows the program heard last, while the placement asked for `fit`
    * (`f=1`, SPEC §5.2); null when it did not. */
+  /** A changed linked resource may be unloaded for a frame before its
+   * replacement applies. Fit and view check the replacement's layout. */
+  private loadingStyles = new Map<HTMLLinkElement, string>();
   private fitRows: number | null = null;
   /** The height may have changed since the last check. */
   private fitDirty = false;
@@ -490,6 +493,7 @@ export class Surface {
   /** Placed (SPEC §5.2), from `a=place` until the placement goes: drawn or
    * not, as the terminal scrolls it in and out of view (§5.4). */
   private placed = false;
+  private offscreenLayout = false;
   /** What the program heard last of which elements are in view (`view`,
    * SPEC §9.5), as `checkView` compares it, across placements; null when it
    * has heard nothing of this document. */
@@ -790,7 +794,7 @@ export class Surface {
   private refit() {
     if (this.fitRows === null) return;
     this.fitDirty = true;
-    if (this.fitFrame || this.box.style.display === "none") return;
+    if (this.fitFrame || !this.shown) return;
     this.fitFrame = this.frame.ownerDocument.defaultView!.requestAnimationFrame(() => {
       this.fitFrame = 0;
       this.checkFit();
@@ -798,7 +802,7 @@ export class Surface {
   }
 
   private checkFit() {
-    if (this.fitRows === null || !this.fitDirty || this.box.style.display === "none") return;
+    if (this.fitRows === null || !this.fitDirty || !this.shown || this.stylesLoading()) return;
     this.fitDirty = false;
     if (this.detachedState) return; // it sends no events (§5.5)
     const rows = this.neededRows(this.cols, this.cellW, this.cellH);
@@ -809,7 +813,18 @@ export class Surface {
 
   /** A resource changed (`a=res`, `a=del`): what names it resolves again. */
   refresh(names: Set<string>) {
-    if (this.resolver.refresh(names)) this.relayout();
+    if (this.resolver.refresh(names, (link, href) => {
+      if (!link.hasAttribute("disabled")) this.loadingStyles.set(link, href);
+    })) this.relayout();
+  }
+
+  private stylesLoading(): boolean {
+    for (const [link, href] of this.loadingStyles) {
+      if (!link.isConnected || link.getAttribute("href") !== href || link.hasAttribute("disabled") || !link.rel.toLowerCase().split(/[ \t\n\f\r]+/).includes("stylesheet")) {
+        this.loadingStyles.delete(link);
+      }
+    }
+    return this.loadingStyles.size > 0;
   }
 
   /** The layout may have changed: `fit` and `view` check it in the next
@@ -856,21 +871,22 @@ export class Surface {
    * `reveal` (SPEC §6.1): scrolls the boxes that hold `el`, along the axes
    * the document scrolls. A surface not placed has nothing in view to bring
    * it into, and scrolls nothing. One placed but out of view (§5.4) is laid
-   * out unseen for it, as `r=auto` measures, and its offsets stay as it is
-   * hidden again (as hiding keeps them).
+   * out unseen for the operation, as `r=auto` measures.
    */
   private reveal(el: Element, where: Reveal) {
     if (!this.placed || !this.axes) return;
     this.scrollDestinations.clear();
-    const box = this.box.style;
-    const out = box.display === "none";
-    const visibility = box.visibility;
-    if (out) Object.assign(box, { display: "block", visibility: "hidden" });
-    try {
-      reveal(el, where, this.axes, 0.5 / (this.frame.ownerDocument.defaultView?.devicePixelRatio || 1));
-    } finally {
-      if (out) Object.assign(box, { display: "none", visibility });
-    }
+    this.layoutForScroll();
+    reveal(el, where, this.axes, 0.5 / (this.frame.ownerDocument.defaultView?.devicePixelRatio || 1));
+  }
+
+  /** Keep an explicitly scrolled offscreen frame laid out, without drawing
+   * it. Chromium can lose an offset set while a frame is briefly displayed
+   * and then suspended again in the same task. */
+  private layoutForScroll() {
+    if (this.box.style.display !== "none") return;
+    this.offscreenLayout = true;
+    Object.assign(this.box.style, { display: "block", visibility: "hidden" });
   }
 
   /**
@@ -882,7 +898,7 @@ export class Surface {
   private requestView() {
     if (!this.placed) return;
     this.viewDirty = true;
-    if (this.viewFrame || this.moving.size || this.box.style.display === "none") return;
+    if (this.viewFrame || this.moving.size || !this.shown) return;
     this.viewFrame = this.frame.ownerDocument.defaultView!.requestAnimationFrame(() => {
       this.viewFrame = 0;
       this.checkView();
@@ -921,7 +937,7 @@ export class Surface {
    * asks sends none. A detached surface sends none (§5.5).
    */
   private checkView() {
-    if (!this.placed || !this.viewDirty || this.moving.size || this.box.style.display === "none") return;
+    if (!this.placed || !this.viewDirty || this.moving.size || !this.shown || this.stylesLoading()) return;
     this.viewDirty = false;
     if (this.detachedState) return;
     const asks = Array.from(this.doc.querySelectorAll("[data-on~=view][id]")).filter((el) => el.id !== "");
@@ -1020,8 +1036,13 @@ export class Surface {
     this.box.style.zIndex = String(z);
   }
 
+  private get shown(): boolean {
+    return this.box.style.visibility === "visible";
+  }
+
   /** Shows the surface with its top-left corner at (x, y) in the screen's pixels. */
   show(x: number, y: number) {
+    this.offscreenLayout = false;
     this.box.style.left = `${x}px`;
     this.box.style.top = `${y}px`;
     this.box.style.visibility = "visible";
@@ -1035,12 +1056,15 @@ export class Surface {
   hide() {
     this.cancelDrag();
     this.dropAlt();
-    this.box.style.display = "none";
+    this.box.style.visibility = "hidden";
+    if (!this.offscreenLayout) this.box.style.display = "none";
   }
 
   /** No placement (hidden, or not placed yet): the document stays, and the
    *  browser skips its style, layout and paint until it is placed again. */
   park() {
+    this.offscreenLayout = false;
+    this.box.style.visibility = "hidden";
     this.box.style.display = "none";
   }
 
@@ -1201,7 +1225,7 @@ export class Surface {
   private fixFocus() {
     if (!this.keyboard || this.waiting !== null) return;
     const active = this.focusedControl();
-    if (active && this.box.style.display !== "none" && !this.focusable(active)) active.blur();
+    if (active && this.shown && !this.focusable(active)) active.blur();
     if (!this.focusedControl()) this.told = null;
   }
 
@@ -1486,18 +1510,9 @@ export class Surface {
     const k = SCROLL_ACTIONS[action];
     if (!k || !(this.axes & (k.axis === "y" ? 1 : 2))) return;
     this.finger?.stopFling();
-    // A placement outside the scrollback viewport is laid out unseen,
-    // as for reveal; its offsets remain when it is hidden again.
-    const box = this.box.style;
-    const out = box.display === "none";
-    const visibility = box.visibility;
-    if (out) Object.assign(box, { display: "block", visibility: "hidden" });
-    try {
-      const to = this.scroller(el, k.axis, k.sign);
-      if (typeof to !== "string") this.scrollBox(to, k);
-    } finally {
-      if (out) Object.assign(box, { display: "none", visibility });
-    }
+    this.layoutForScroll();
+    const to = this.scroller(el, k.axis, k.sign);
+    if (typeof to !== "string") this.scrollBox(to, k);
   }
 
   /** Scrolls `to` as a key does (`KeyScroll`), by Chromium's amounts. */
@@ -1556,10 +1571,9 @@ export class Surface {
    * translates it (on a Mac, Option+ArrowLeft is ESC b to the program).
    * Otherwise it is named as the program would read it: from
    * what xterm.js would send the program for it, in the encoding the
-   * program enabled, read as SPEC §10.4 says. The field's keymap (the
-   * default, then each `data-keys` from the root to the field) says what
-   * the field does with each key; what it does not use is the program's,
-   * sent as xterm.js encoded it.
+   * program enabled, read as SPEC §10.4 says. The field's resolved keymap
+   * says what the field does with each key. A key it leaves goes to the
+   * program.
    */
   private fieldKey(e: KeyboardEvent, el: HTMLElement, multiline: boolean) {
     if (this.host.browserKey(e)) return; // the browser's: reload, zoom, …
@@ -2095,7 +2109,7 @@ export class Surface {
   /** What a drag would name at a cell's centre (SPEC §9.7), in this
    * document regardless of anything drawn above it. Changes no state. */
   hit(c: number, r: number): Body {
-    if (!this.placed || this.box.style.display === "none") return {};
+    if (!this.placed || !this.shown) return {};
     const x = (c + 0.5) * this.cellW;
     const y = (r + 0.5) * this.cellH;
     const t = this.dragTarget(this.elementAtPoint(x, y, c, r));
@@ -2366,7 +2380,7 @@ export class Surface {
       this.buttonHold = { down: e, buttons: e.buttons, button, route: "browser" };
       return true;
     }
-    if (!element && button > 2 && (!this.host.tracksMouse() || e.shiftKey) && !e.altKey) {
+    if (!element && button > 2 && !this.host.tracksMouse() && !e.shiftKey && !e.altKey) {
       this.buttonHold = { down: e, buttons: e.buttons, button, route: "browser" };
       return true;
     }
@@ -2806,8 +2820,12 @@ export class Surface {
     d.addEventListener("scrollend", (e) => this.scrollEnded(e), true);
     // An image or a stylesheet that loads late, a resource's or one fetched
     // from the network (SPEC §7.1, §7.2), and a font: the height may change.
-    d.addEventListener("load", () => this.relayout(), true);
-    d.addEventListener("error", () => this.relayout(), true);
+    const resourceSettled = (e: Event) => {
+      if (e.target && isElement(e.target) && e.target.localName === "link") this.loadingStyles.delete(e.target as HTMLLinkElement);
+      this.relayout();
+    };
+    d.addEventListener("load", resourceSettled, true);
+    d.addEventListener("error", resourceSettled, true);
     d.fonts.addEventListener("loadingdone", () => this.relayout());
     // What the user does that moves elements without resizing the root or
     // the body: a <details> opened inside a box of fixed height, a

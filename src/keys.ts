@@ -495,9 +495,7 @@ const TILDE: Record<number, string> = { 1: "home", 7: "home", 4: "end", 8: "end"
   15: "f5", 17: "f6", 18: "f7", 19: "f8", 20: "f9", 21: "f10", 23: "f11", 24: "f12", 29: "context_menu",
 };
 const CODES: Record<number, string> = { 9: "tab", 13: "enter", 27: "escape", 8: "backspace", 127: "backspace", 32: "space" };
-/** The kitty keyboard protocol's keypad codes, which name what a legacy
- * terminal sends for the key (SPEC §10.4). Its other codes from 57344 are
- * no key here. */
+/** Kitty keypad, function and menu keys with legacy names (SPEC §10.4). */
 const KITTY: Record<number, string> = {
   57363: "context_menu",
   57409: ".",

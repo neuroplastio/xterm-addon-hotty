@@ -16,18 +16,18 @@ The package is an ES module with its TypeScript declarations, for xterm.js
 released by its hash (`#<commit>`): npm builds it as it installs it
 (`prepare`).
 
-It implements hotty 0.8 and speaks 0.7 as well (SPEC §15, HOST.md §5).
-A query lists the program's versions (`a=q:n=1:v=0.7,0.8`, SPEC §4), and
+It implements hotty 0.9 and speaks 0.8 as well (SPEC §15, HOST.md §5).
+A query lists the program's versions (`a=q:n=1:v=0.8,0.9`, SPEC §4), and
 gets the highest shared version's capabilities (`v`, `cellcss`, `scale`,
 `scheme`, `mod`, `features`, `limits`, `net`, `edit`, `host`, `version`).
-A query sharing neither gets `EVERSION`, with detail `0.7,0.8`, so the
+A query sharing neither gets `EVERSION`, with detail `0.8,0.9`, so the
 program falls back to text. The session speaks the version last answered
-until RIS ends it. Both versions have secondary presses, and both use
-0.8's keymap bindings: `tab=program` and `default` (HOST.md §5.1).
+until RIS ends it. A 0.8 session reads `data-keys` as both own and inner
+bindings and reports `secondary` as `press` with `button: 2` (HOST.md §5).
 A query (`a=q` or `a=hit`) is always answered unless `q` says otherwise;
 other commands are quiet unless they carry `n` or `q=0`.
 
-0.8.x speaks hotty 0.8 and 0.7; the patch number is this repository's own.
+0.9.x speaks hotty 0.9 and 0.8; the patch number is this repository's own.
 
 ```ts
 import { Terminal } from "@xterm/xterm";
@@ -680,8 +680,10 @@ Measured 2026-09-29 in headless Chromium 153 (`bench/`):
 
 ## Tests
 
-The vectors are read from the hotty checkout at tag `v0.8.0`, so later
-changes on its main do not change this cut's contract. `npm run check` runs:
+By default, the vectors come from the hotty checkout at tag `v0.9.0`.
+Set `HOTTY_DIR` explicitly to test the vectors, examples and reference
+client from a specific checkout, including an untagged development
+checkout. `npm run check` runs:
 
 - the typecheck, the build and the declarations (what `npm pack` ships);
 - the unit tests (`node --test`: the wire, keys, the keys any focused
