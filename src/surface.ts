@@ -69,9 +69,8 @@ export interface Window {
 
 export interface SurfaceHost {
   layer: HTMLElement;
-  /** Whether the session has the secondary press (SPEC §9); both 0.7
-   *  and 0.8 do (HOST.md §5.1). */
-  secondary(): boolean;
+  /** Whether to read 0.8 keymaps and buttons (HOST.md §5). */
+  legacySession(): boolean;
   store: Store;
   /** Sends a hotty message (an event) to the program, with its detail
    *  (SPEC §9), if it has one. */
@@ -145,6 +144,8 @@ export interface SurfaceHost {
    *  (SPEC §9.2): the program's, as on the cells beneath, at a point in the
    *  page. */
   cells(kind: "down" | "move" | "up", e: MouseEvent, pageX: number, pageY: number, button: number): void;
+  tracksMouse(): boolean;
+  reportMouse(kind: "down" | "move" | "up", e: MouseEvent, pageX: number, pageY: number, button: number, giveKeyboard?: boolean): void;
 }
 
 export interface KeySettings {
@@ -158,6 +159,7 @@ type Control = "none" | "text" | "textarea" | "date" | "select" | "activatable";
  * step in the target the program heard of last. */
 interface Drag {
   pointer: number;
+  button?: number;
   start: string;
   steps: Steps | null;
   target: string;
@@ -170,6 +172,17 @@ interface Drag {
    * (its mousedown's `detail`): the click the drag reports where it began
    * carries it (SPEC §9). */
   clicks: number;
+}
+
+interface ButtonHold {
+  down: PointerEvent;
+  button: number;
+  buttons: number;
+  route: "primary" | "aux" | "menu" | "cells" | "browser";
+  element?: Element;
+  released?: boolean;
+  menuSent?: boolean;
+  chord?: boolean;
 }
 
 /** The steps of the element a drag started on (SPEC §9.1): the element, and
@@ -264,6 +277,8 @@ const NO_CARET = new Set(["email", "number"]);
 const NUMBER_CHARS = /^[0-9.,+\-eE]$/;
 
 /** On a Mac, Command pastes; elsewhere, Control (SPEC §10.4's Meta). */
+const chromium = typeof navigator !== "undefined" && /\b(?:Chrome|Chromium)\//.test(navigator.userAgent);
+const linux = typeof navigator !== "undefined" && /Linux/.test(navigator.platform);
 const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
 /** The styles a textarea's rows depend on, copied to the copy that measures
@@ -382,6 +397,10 @@ export class Surface {
    * makes is cancelled and the `contextmenu` that follows is the surface's
    * to cancel. Cleared by the next pointerdown. */
   private secondaryTaken = false;
+  private buttonHold: ButtonHold | null = null;
+  private suppressMouse = false;
+  private suppressPaste = false;
+  private primaryClickEmitted = false;
   /** The last thing the user pressed, until a key: what a `contextmenu`
    * with no secondary pointerdown before it came from. The keyboard's (the
    * Menu key, Shift+F10) is a key for the program (§10.2), not a press. */
@@ -641,6 +660,7 @@ export class Surface {
   detach() {
     if (!this.detachedState) {
       this.detachedState = true; // from here on, emit() sends nothing
+      this.buttonHold = null;
       this.dropDrag(); // it ends with nothing more reported (SPEC §9.1)
       const had = (this.keyboard && this.waiting === null) || this.frameFocused();
       this.prefix = false;
@@ -1928,8 +1948,6 @@ export class Surface {
    * another surface, or outside the page), and nothing else hears it.
    */
   private onDragDown(e: PointerEvent) {
-    // A press while a drag is under way: its release was lost.
-    this.cancelDrag();
     if (this.detachedState || e.pointerType === "touch" || e.button !== 0 || !e.isPrimary) return;
     let start: Element | null = null;
     for (const n of e.composedPath()) {
@@ -1938,14 +1956,22 @@ export class Surface {
         break;
       }
     }
-    const id = start?.getAttribute("id");
+    if (start) this.startDrag(start, e);
+  }
+
+  private startDrag(start: Element, e: PointerEvent, button?: number) {
+    const id = start.getAttribute("id");
     if (!id) return;
     const [c, r] = this.cellOf(e);
     const mods = modsOf(e);
-    const d: Drag = { pointer: e.pointerId, start: id, steps: stepsOf(start!), target: id, c, r, mods, step: {}, tstep: {}, clicks: 1 };
+    const d: Drag = { pointer: e.pointerId, button, start: id, steps: stepsOf(start), target: id, c, r, mods, step: {}, tstep: {}, clicks: 1 };
     d.step = this.stepIn(d, e.clientX, e.clientY);
     this.drag = d;
-    this.emit("dragstart", id, { c, r, mods, ...d.step });
+    this.emit("dragstart", id, { c, r, mods, button, ...d.step });
+    this.capture(e);
+  }
+
+  private capture(e: PointerEvent) {
     try {
       this.doc.documentElement.setPointerCapture(e.pointerId);
     } catch {
@@ -2004,7 +2030,7 @@ export class Surface {
    * click it would have been without the drag; anywhere else, no click. */
   private onDragUp(e: PointerEvent) {
     const d = this.drag;
-    if (!d || e.pointerId !== d.pointer || e.button !== 0) return;
+    if (!d || e.pointerId !== d.pointer || e.button !== (d.button ?? 0)) return;
     this.drag = null;
     const [c, r] = this.cellOf(e);
     // The browser's click goes where the capture was (the root), or to
@@ -2021,11 +2047,12 @@ export class Surface {
     this.emit("dragend", t?.getAttribute("id") ?? "", { c, r, mods, ...this.stepIn(d, x, y), ...stepInTarget(t, x, y) });
     this.dragReleased = true;
     setTimeout(() => (this.dragReleased = false), 0);
-    if (at && this.draggedAt(at) === d.start) this.reportClick(ancestry(at), d.clicks, mods);
+    if (d.button === undefined && at && this.draggedAt(at) === d.start) this.reportClick(ancestry(at), d.clicks, mods);
   }
 
   /** The browser took the pointer away before the release. */
   private lostPointer(e: PointerEvent) {
+    if (e.pointerId === this.buttonHold?.down.pointerId && !this.buttonHold.released) this.buttonHold = null;
     if (this.drag && e.pointerId === this.drag.pointer) this.cancelDrag();
     if (e.pointerId === this.altPointer) this.altPointer = null;
   }
@@ -2036,6 +2063,7 @@ export class Surface {
    * target, at the last cell and step the program heard of.
    */
   cancelDrag() {
+    if (this.buttonHold) this.buttonHold.element = undefined;
     const d = this.drag;
     if (!d) return;
     this.dropDrag();
@@ -2254,7 +2282,7 @@ export class Surface {
   private onAltDown(e: PointerEvent): boolean {
     if (e.pointerType === "touch" || (e.button !== 0 && e.button !== 2) || !e.altKey || (e.button === 0 && !e.isPrimary)) return false;
     // Alt with the secondary button is the program's in both versions (SPEC §9.2).
-    if (e.button === 2 && !this.host.secondary()) return false;
+    if (e.button === 2 && !this.host.legacySession()) return false;
     this.cancelDrag(); // a drag whose release was lost
     this.dropAlt();
     this.pointerPress = true;
@@ -2307,11 +2335,184 @@ export class Surface {
     return [r.left + e.clientX, r.top + e.clientY];
   }
 
+  // --- Other buttons (SPEC §9) ---------------------------------------------
+
+  private buttonTarget(path: EventTarget[], button: number, physical = false): Element | undefined {
+    for (const el of path) {
+      if (!isElement(el)) continue;
+      if (button !== 2) {
+        if (listens(el, "aux") && !this.isHyperlink(el)) return el;
+      } else if (listens(el, "contextmenu") || (physical && listens(el, "rightbutton"))) {
+        return el;
+      }
+    }
+    return undefined;
+  }
+
+  /** Start a single-button hold. Chords arrive as later pointermoves. */
+  private buttonDown(e: PointerEvent): boolean {
+    if (this.host.legacySession() || e.pointerType === "touch") return false;
+    const controlClick = mac && e.button === 0 && e.ctrlKey && e.pointerType === "mouse" && !e.altKey;
+    if (e.button === 0 && !controlClick) {
+      this.buttonHold = { down: e, buttons: e.buttons, button: 0, route: e.altKey ? "cells" : "primary" };
+      return false;
+    }
+    const button = controlClick ? 2 : e.button;
+    if (button === 5 || button < 1) return false;
+    // Older WebKit can label back and forward as middle. Leave those
+    // gestures with the browser when its button and buttons disagree.
+    if (button === 1 && !(e.buttons & 4)) return false;
+    // Native back/forward cancellation has been verified in Chromium.
+    if (button > 2 && !chromium) return true;
+    const physical = e.pointerType === "mouse" && !controlClick;
+    const path = e.composedPath();
+    const element = this.detachedState || e.shiftKey || e.altKey ? undefined : this.buttonTarget(path, button, physical);
+    const pasteField = linux && button === 1 && !e.shiftKey && !e.altKey && !this.detachedState &&
+      path.find((el): el is Element => isElement(el) && (this.isTextField(el) || (el as HTMLElement).isContentEditable));
+    if (pasteField && !listens(pasteField, "aux")) {
+      this.buttonHold = { down: e, buttons: e.buttons, button, route: "browser" };
+      return true;
+    }
+    if (!element && button > 2 && (!this.host.tracksMouse() || e.shiftKey) && !e.altKey) {
+      this.buttonHold = { down: e, buttons: e.buttons, button, route: "browser" };
+      return true;
+    }
+    const route = !element ? "cells" : button === 2 && !(physical && listens(element, "rightbutton")) ? "menu" : "aux";
+    this.buttonHold = { down: e, buttons: e.buttons, button, route, element };
+    this.suppressPaste = route === "aux" && button === 1;
+    this.capture(e);
+    // On Firefox cancellation of pointerdown also cancels the corresponding
+    // mousedown. Keep the platform's contextmenu event for a menu gesture.
+    e.preventDefault();
+    if (route === "cells") this.reportButton("down", e, button, e.altKey && !e.shiftKey);
+    return true;
+  }
+
+  private reportButton(kind: "down" | "move" | "up", e: PointerEvent, button: number, giveKeyboard = false) {
+    const [x, y] = this.toPage(e);
+    this.host.reportMouse(kind, e, x, y, button, giveKeyboard);
+  }
+
+  private buttonMove(e: PointerEvent) {
+    const hold = this.buttonHold;
+    if (!hold || hold.down.pointerId !== e.pointerId) {
+      this.onAltMove(e) || this.onDragMove(e);
+      return;
+    }
+    if (hold.route === "browser") return;
+    const changed = hold.buttons ^ e.buttons;
+    hold.buttons = e.buttons;
+    if (e.button >= 0 && (changed & buttonMask(e.button))) {
+      // A change of buttons while any button is held, including release
+      // of the original button before a swallowed button is lifted.
+      hold.chord = true;
+      this.suppressMouse = true;
+      e.preventDefault();
+      if (e.button === hold.down.button && !hold.released && !(e.buttons & buttonMask(e.button))) {
+        this.buttonRelease(hold, e);
+      } else if (hold.route === "cells") {
+        this.reportButton(e.buttons & buttonMask(e.button) ? "down" : "up", e, e.button);
+      }
+      return;
+    }
+    if (hold.released) return;
+    if (this.onAltMove(e)) return;
+    if (hold.route === "cells") {
+      this.reportButton("move", e, hold.button);
+    } else if (hold.route === "aux" && !this.drag) {
+      const el = hold.element;
+      if (el?.isConnected && listens(el, "drag") &&
+          Math.hypot(e.clientX - hold.down.clientX, e.clientY - hold.down.clientY) >= DRAG_SLOP) {
+        this.startDrag(el, hold.down, hold.button);
+      }
+    }
+    this.onDragMove(e);
+  }
+
+  private buttonUp(e: PointerEvent) {
+    const hold = this.buttonHold;
+    if (!hold || hold.down.pointerId !== e.pointerId) {
+      this.onAltUp(e) || this.onDragUp(e);
+      return;
+    }
+    if (hold.route === "browser") {
+      hold.released = e.buttons === 0;
+      return;
+    }
+    if (hold.down.button === e.button && !hold.released) this.buttonRelease(hold, e);
+    else {
+      this.suppressMouse = true;
+      e.preventDefault();
+      if (hold.route === "cells") this.reportButton("up", e, e.button);
+    }
+  }
+
+  private buttonRelease(hold: ButtonHold, e: PointerEvent) {
+    hold.released = true;
+    if (hold.route === "primary") {
+      this.suppressMouse = false;
+      if (this.drag) this.onDragUp(e);
+      else if (hold.chord) this.clickAfterChord(hold, e);
+      return;
+    }
+    this.suppressMouse = true;
+    e.preventDefault();
+    if (this.onAltUp(e)) return;
+    if (hold.route === "cells") this.reportButton("up", e, hold.button);
+    if (hold.route !== "aux") return;
+    if (this.drag) {
+      this.onDragUp(e);
+      return;
+    }
+    const [c, r] = this.cellOf(e);
+    const at = this.elementAt(e, c, r);
+    const el = hold.element;
+    if (!at || !el || this.buttonTarget(ancestry(at), hold.button, true) !== el) return;
+    const id = el.getAttribute("id") ?? "";
+    const link = el.localName === "a" && el.hasAttribute("href") && !this.isHyperlink(el);
+    this.emit("auxclick", id, {
+      button: hold.button, c, r, mods: modsOf(e),
+      area: id || link ? this.areaOf(el) : undefined,
+      href: link ? this.resolver.get(el, "href") ?? "" : undefined,
+      url: link ? this.urlOf(el) || undefined : undefined,
+      value: el.getAttribute("value") ?? undefined,
+    });
+  }
+
+  /** A chord can suppress the browser's click for the first button. */
+  private clickAfterChord(hold: ButtonHold, e: PointerEvent) {
+    const target = hold.down.target;
+    if (!target || !isElement(target)) return;
+    const [c, r] = this.cellOf(e);
+    const at = this.elementAt(e, c, r);
+    const shared = at && ancestry(at).find((el) => el.contains(target));
+    if (!shared) return;
+    // Native controls still use the browser click if one arrives. Only the
+    // protocol event is coalesced with this report.
+    this.reportClick(ancestry(shared), hold.down.detail || 1, modsOf(e));
+    this.primaryClickEmitted = true;
+  }
+
+  private menuKey(e: KeyboardEvent, active: Element | null): boolean {
+    if (this.host.legacySession() || !active || e.altKey || e.ctrlKey || e.metaKey ||
+        !(e.key === "ContextMenu" && !e.shiftKey || e.key === "F10" && e.shiftKey)) return false;
+    const el = this.buttonTarget(ancestry(active), 2);
+    if (!el) return false;
+    e.preventDefault();
+    this.reportContext(el, {});
+    return true;
+  }
+
+  private reportContext(el: Element, detail: { c?: number; r?: number; mods?: number }) {
+    const id = el.getAttribute("id") ?? "";
+    this.emit("contextmenu", id, { ...detail, area: id ? this.areaOf(el) : undefined });
+  }
+
   // --- Secondary presses (SPEC §9) ----------------------------------------
 
   /** The nearest element on `path` with `secondary` in its `data-on`. */
   private secondaryIn(path: EventTarget[]): Element | null {
-    if (!this.host.secondary()) return null;
+    if (!this.host.legacySession()) return null;
     for (const n of path) if (isElement(n) && listens(n, "secondary")) return n;
     return null;
   }
@@ -2349,6 +2550,19 @@ export class Surface {
    * is a key (§10.2), and Shift is the terminal's: both are left alone.
    */
   private onContextMenu(e: MouseEvent) {
+    const hold = this.buttonHold;
+    if (!this.host.legacySession() && hold && this.lastDown?.type !== "touch") {
+      if (hold.route === "cells" && hold.button === 2 && !hold.down.altKey && (!this.suppressMouse || hold.released)) return;
+      e.preventDefault();
+      if (hold.route === "menu" && !hold.menuSent && hold.element?.isConnected) {
+        hold.menuSent = true;
+        const [c, r] = this.cellOf(e);
+        const mods = modsOf(hold.down.button === 0
+          ? { shiftKey: e.shiftKey, ctrlKey: false, altKey: e.altKey, metaKey: e.metaKey } : e);
+        this.reportContext(hold.element, { c, r, mods });
+      }
+      return;
+    }
     if (this.secondaryTaken) {
       this.secondaryTaken = false;
       e.preventDefault();
@@ -2365,8 +2579,8 @@ export class Surface {
     const pointer = (e as PointerEvent).pointerType;
     const touch = pointer === "touch" || (down?.type === "touch" && !pointer);
     if (this.detachedState || e.shiftKey || e.altKey || !(touch || e.button === 2) || this.drag) return;
-    const el = this.secondaryIn(e.composedPath());
-    if (!el) return;
+    const el = this.host.legacySession() ? this.secondaryIn(e.composedPath()) : this.buttonTarget(e.composedPath(), 2);
+    if (!el || (!this.host.legacySession() && !touch)) return;
     e.preventDefault();
     if (touch) {
       // A long press the browser made a `contextmenu` of: the same press.
@@ -2375,7 +2589,11 @@ export class Surface {
       this.finger?.take(); // the touch is the surface's to its lift
       this.longPress = { id: -1, x: e.clientX, y: e.clientY, el, mods: undefined, timer: null, done: true };
     }
-    this.reportSecondary(e, el);
+    if (this.host.legacySession()) this.reportSecondary(e, el);
+    else {
+      const [c, r] = this.cellOf(e);
+      this.reportContext(el, { c, r, mods: modsOf(e) });
+    }
   }
 
   /**
@@ -2391,7 +2609,7 @@ export class Surface {
     this.endLongPress();
     const t = e.touches.length === 1 ? e.touches[0] : undefined;
     if (!t || this.detachedState || e.shiftKey || e.altKey) return;
-    const el = this.secondaryIn(e.composedPath());
+    const el = this.host.legacySession() ? this.secondaryIn(e.composedPath()) : this.buttonTarget(e.composedPath(), 2);
     if (!el) return;
     const lp = { id: t.identifier, x: t.clientX, y: t.clientY, el, mods: modsOf(e), timer: null as ReturnType<typeof setTimeout> | null, done: false };
     lp.timer = setTimeout(() => {
@@ -2400,7 +2618,8 @@ export class Surface {
       lp.done = true;
       this.finger?.take();
       const [c, r] = this.cellAt(lp.x, lp.y);
-      this.emit("press", el.getAttribute("id") ?? "", { button: 2, area: this.areaOf(el), c, r, mods: lp.mods });
+      if (this.host.legacySession()) this.emit("press", el.getAttribute("id") ?? "", { button: 2, area: this.areaOf(el), c, r, mods: lp.mods });
+      else this.reportContext(el, { c, r, mods: lp.mods });
     }, LONG_PRESS_MS);
     this.longPress = lp;
   }
@@ -2482,11 +2701,16 @@ export class Surface {
     d.addEventListener(
       "pointerdown",
       (e) => {
+        this.cancelDrag();
+        this.buttonHold = null;
+        this.suppressMouse = false;
+        this.primaryClickEmitted = false;
+        this.suppressPaste = false;
         this.secondaryTaken = false;
         this.lastDown = { type: e.pointerType };
         // A secondary press clears no selection (a Mac's Control with the
         // primary button is one), so it comes before `pressed`.
-        if (this.onSecondaryDown(e)) return;
+        if (this.buttonDown(e) || this.onSecondaryDown(e)) return;
         if (e.button === 0 && e.isPrimary) this.host.pressed(e.altKey ? null : this.name);
         if (this.onAltDown(e)) return;
         if (e.button === 0) this.maskField(e.target, false);
@@ -2497,14 +2721,16 @@ export class Surface {
       },
       true,
     );
-    d.addEventListener("pointermove", (e) => this.onAltMove(e) || this.onDragMove(e), true);
-    d.addEventListener("pointerup", (e) => this.onAltUp(e) || this.onDragUp(e), true);
+    d.addEventListener("pointermove", (e) => this.buttonMove(e), true);
+    d.addEventListener("pointerup", (e) => this.buttonUp(e), true);
     d.addEventListener("pointercancel", (e) => this.lostPointer(e), true);
     d.addEventListener("lostpointercapture", (e) => this.lostPointer(e), true);
     d.addEventListener(
       "mousedown",
       (e) => {
-        if (this.altPointer !== null || this.secondaryTaken) {
+        if (this.buttonHold?.route === "browser") return;
+        if (this.altPointer !== null || this.secondaryTaken || this.suppressMouse ||
+            (this.buttonHold && this.buttonHold.route !== "primary")) {
           // The program's press (SPEC §9.2), or a secondary press the
           // surface took (§9): no focus, no selection, no drag.
           e.preventDefault();
@@ -2554,6 +2780,8 @@ export class Surface {
     d.addEventListener("compositionstart", (e) => (this.composing = e.target as Element), true);
     d.addEventListener("compositionend", () => (this.composing = null), true);
     d.addEventListener("click", (e) => this.onClick(e), true);
+    d.addEventListener("mouseup", (e) => { if (this.suppressMouse) e.preventDefault(); }, true);
+    d.addEventListener("paste", (e) => { if (this.suppressPaste) e.preventDefault(); }, true);
     d.addEventListener("auxclick", (e) => this.onAuxClick(e), true);
     d.addEventListener("contextmenu", (e) => this.onContextMenu(e), true);
     d.addEventListener("pointerdown", () => this.scrollDestinations.clear(), true);
@@ -2876,7 +3104,7 @@ export class Surface {
 
   /** Other buttons on a link do nothing: no navigation, no new tab. */
   private onAuxClick(e: MouseEvent) {
-    if (this.linkIn(e)) e.preventDefault();
+    if (this.suppressMouse || this.linkIn(e)) e.preventDefault();
   }
 
   private hovered: { link: Element; url: string } | null = null;
@@ -2884,7 +3112,7 @@ export class Surface {
   /** The pointer onto a hyperlink: the terminal hears it, as it does over
    * an OSC 8 one. */
   private onOver(e: MouseEvent) {
-    if (this.altPointer !== null) return; // the program's gesture (SPEC §9.2)
+    if (this.altPointer !== null || this.buttonHold && !this.buttonHold.released && this.buttonHold.route !== "primary") return; // the program's gesture (SPEC §9.2)
     const link = this.linkIn(e);
     const hyper = link && this.isHyperlink(link) ? link : null;
     if (hyper === this.hovered?.link) return;
@@ -2897,7 +3125,7 @@ export class Surface {
   }
 
   private onOut(e: MouseEvent) {
-    if (this.altPointer !== null) return;
+    if (this.altPointer !== null || this.buttonHold && !this.buttonHold.released && this.buttonHold.route !== "primary") return;
     const to = e.relatedTarget as Node | null;
     if (this.hovered && to && this.hovered.link.contains(to)) return;
     this.onLeave(e);
@@ -2912,7 +3140,11 @@ export class Surface {
 
   private onClick(e: MouseEvent) {
     const link = this.linkIn(e);
-    if (this.altReleased) {
+    if (this.primaryClickEmitted && e.detail > 0) {
+      if (link) e.preventDefault();
+      return;
+    }
+    if ((this.suppressMouse && e.detail !== 0) || this.altReleased) {
       // The release of a press with Alt held: the program's (SPEC §9.2).
       this.altReleased = false;
       e.preventDefault();
@@ -3399,6 +3631,10 @@ function isElement(n: EventTarget): n is Element {
 }
 
 /** Whether `el`'s `data-on` lists `what`. */
+function buttonMask(button: number): number {
+  return button === 1 ? 4 : button === 2 ? 2 : button === 0 ? 1 : 1 << button;
+}
+
 function listens(el: Element, what: string): boolean {
   return (el.getAttribute("data-on") ?? "").split(/\s+/).includes(what);
 }

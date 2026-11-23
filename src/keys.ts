@@ -490,13 +490,16 @@ const C0: Record<number, string> = {
   0x1e: "ctrl+^",
   0x1f: "ctrl+_",
 };
-const FINAL: Record<string, string> = { A: "arrow_up", B: "arrow_down", C: "arrow_right", D: "arrow_left", H: "home", F: "end" };
-const TILDE: Record<number, string> = { 1: "home", 7: "home", 4: "end", 8: "end", 2: "insert", 3: "delete", 5: "page_up", 6: "page_down" };
+const FINAL: Record<string, string> = { A: "arrow_up", B: "arrow_down", C: "arrow_right", D: "arrow_left", H: "home", F: "end", P: "f1", Q: "f2", R: "f3", S: "f4" };
+const TILDE: Record<number, string> = { 1: "home", 7: "home", 4: "end", 8: "end", 2: "insert", 3: "delete", 5: "page_up", 6: "page_down",
+  15: "f5", 17: "f6", 18: "f7", 19: "f8", 20: "f9", 21: "f10", 23: "f11", 24: "f12", 29: "context_menu",
+};
 const CODES: Record<number, string> = { 9: "tab", 13: "enter", 27: "escape", 8: "backspace", 127: "backspace", 32: "space" };
 /** The kitty keyboard protocol's keypad codes, which name what a legacy
  * terminal sends for the key (SPEC §10.4). Its other codes from 57344 are
  * no key here. */
 const KITTY: Record<number, string> = {
+  57363: "context_menu",
   57409: ".",
   57410: "/",
   57411: "*",
@@ -515,6 +518,7 @@ const KITTY: Record<number, string> = {
   57425: "insert",
   57426: "delete",
 };
+for (let i = 0; i < 12; i++) KITTY[57364 + i] = `f${i + 1}`;
 for (let i = 0; i < 10; i++) KITTY[57399 + i] = String(i);
 
 /** The key of a character with modifiers: a capital is `shift` with its
@@ -634,7 +638,7 @@ export function inputKeys(s: string): InputKey[] {
       i += 1;
     } else if ((s[i + 1] === "[" || s[i + 1] === "O") && i + 2 < s.length) {
       if (s[i + 1] === "O") {
-        key = "ABCDHF".includes(s[i + 2]!) ? FINAL[s[i + 2]!]! : null;
+        key = FINAL[s[i + 2]!] ?? null;
         i += 3;
       } else {
         let j = i + 2;

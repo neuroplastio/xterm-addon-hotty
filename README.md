@@ -275,15 +275,18 @@ runs programs for whoever connects.
   the drag and the focus it causes; a tap reports it on the mousedown the
   browser makes for it, and a touch that drags when it becomes a drag. A
   touch that pans presses nothing. A press on a hyperlink is the terminal's.
-- **Secondary presses** (SPEC §9, §9.1, §9.2; hotty 0.7) on an element with
-  `secondary` in its `data-on`, or inside one: a mouse's button 2, a pen's
-  barrel button, or a touch held still for 500 ms. `press` has `t` the
-  nearest such element's id, `button: 2`, its `area` and the pointer's cell
-  `c` and `r`, whatever `p` says; the frame cancels the mousedown and the
-  `contextmenu` (no click, drag, selection or focus change, and a touch's
-  lift scrolls and clicks nothing). Over any other element, or with Shift
-  held, the browser's own menu is left to the embedder; with Alt it is the
-  program's mouse report (`CSI < 10`) in a 0.7 session too (HOST.md §5.1).
+- **Context menus and other buttons** (SPEC §9, §9.1, §9.2). An element
+  with `contextmenu` receives the platform's menu gesture, including a
+  touch held still for 500 ms and the menu key when that key would reach
+  the program. An element with `aux` receives an `auxclick` when the
+  pointer releases the middle, back or forward button over it.
+  `rightbutton` takes the mouse's secondary button the same way. The
+  nearest `contextmenu` or `rightbutton` decides which takes a secondary
+  press. When the same element has `drag`, movement past the drag
+  threshold starts a drag with `button` in `dragstart`. Back and forward
+  are handled in Chromium, where native cancellation is verified. On
+  Linux, a middle press on a text field uses the browser's primary
+  selection unless the field itself opts into `aux`.
 - **Hit** (hotty 0.8, SPEC §9.7). `a=hit:s:c:r` answers as a query,
   with `{t, tx, ty}` for what a drag would name at that cell's centre.
   It uses the surface's own document beneath anything drawn above it,

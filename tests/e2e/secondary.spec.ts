@@ -126,7 +126,10 @@ const events = async (page: Page) =>
     .filter((m) => m.get("a") === "ev")
     .map((m) => [m.get("e"), m.get("t") ?? "", m.body as Record<string, unknown> | null] as const);
 
-test.beforeEach(async ({ page }) => open(page, "?pty=0"));
+test.beforeEach(async ({ page }) => {
+  await open(page, "?pty=0");
+  await send(page, { a: "q", v: "0.8" });
+});
 
 for (const p of ["0", "1"] as const) {
   test(`p=${p}: the innermost element that takes it is the press, and its release makes nothing`, async ({ page, browserName }) => {
@@ -342,31 +345,29 @@ test.describe("a long press", () => {
   });
 });
 
-// Both supported sessions have the secondary press (HOST.md §5.1).
-test.describe("a 0.7 session", () => {
+// The 0.8 session keeps the secondary press (HOST.md §5.2).
+test.describe("a 0.8 session", () => {
   const query = (page: Page, v: string) => send(page, { a: "q", n: "9", v });
 
-  test("a secondary press is reported in 0.7 and 0.8, and RIS starts a new session", async ({ page, browserName }) => {
+  test("a secondary press is reported in 0.8, and RIS starts a new session", async ({ page, browserName }) => {
     const m = new Mouse(page, browserName);
-    for (const v of ["0.7", "0.8"]) {
-      await query(page, v);
-      await place(page, "0");
-      const [x, y] = await centre(page, "i");
-      await take(page);
-      await m.click(x, y);
-      expect((await events(page)).map((e) => [e[0], e[1]])).toEqual([["press", "i"]]);
-    }
+    await query(page, "0.8");
+    await place(page, "0");
+    const [beforeX, beforeY] = await centre(page, "i");
+    await take(page);
+    await m.click(beforeX, beforeY);
+    expect((await events(page)).map((e) => [e[0], e[1]])).toEqual([["press", "i"]]);
     await write(page, "\x1bc");
     await place(page, "0");
     const [x, y] = await centre(page, "i");
     await take(page);
     await m.click(x, y);
-    expect((await events(page)).map((e) => [e[0], e[1]])).toEqual([["press", "i"]]);
+    expect((await events(page)).map((e) => [e[0], e[1]])).toEqual([]);
   });
 
-  test("Alt with the secondary button sends CSI < 10 in 0.7 too", async ({ page, browserName }) => {
+  test("Alt with the secondary button sends CSI < 10 in 0.8 too", async ({ page, browserName }) => {
     await write(page, "\x1b[?1002h\x1b[?1006h");
-    await query(page, "0.7");
+    await query(page, "0.8");
     await place(page, "1");
     const m = new Mouse(page, browserName);
     const [x, y] = await centre(page, "i");

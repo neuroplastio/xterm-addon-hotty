@@ -223,6 +223,13 @@ type DataSink = { triggerDataEvent(data: string, wasUserInput?: boolean): void }
 type Keys = Pick<MouseEvent, "altKey" | "ctrlKey" | "shiftKey" | "metaKey">;
 const keysOf = (e: Keys): Keys => ({ altKey: e.altKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, metaKey: e.metaKey });
 
+/** An input to xterm's mouse protocol encoder. */
+type TerminalMouseReport = {
+  col: number; row: number; x: number; y: number;
+  button: number; action: number;
+  ctrl: boolean; alt: boolean; shift: boolean;
+};
+
 /** What `pressCells` replays of a mouse event: a surface's, or a finger's
  * as the mouse (SPEC §9.6). */
 type MouseLike = Keys & Pick<MouseEvent, "screenX" | "screenY" | "buttons" | "detail">;
@@ -918,7 +925,7 @@ export class HottyAddon implements ITerminalAddon {
     return {
       layer: this.ensureLayer(),
       store: this.store,
-      secondary: () => this.version === "0.7" || this.version === "0.8",
+      legacySession: () => this.version === "0.8",
       event: (surface, kind, target, detail) => {
         // `t` is absent where no element is meant, and a detail with no
         // field is no payload (SPEC §9).
@@ -1020,6 +1027,8 @@ export class HottyAddon implements ITerminalAddon {
       // scrollback, or mouse reports and arrow keys on the alternate screen.
       wheel: (e, x, y) => this.forwardWheel(e, x, y),
       cells: (kind, e, x, y, button) => this.pressCells(kind, e, x, y, button),
+      tracksMouse: () => this.term.modes.mouseTrackingMode !== "none",
+      reportMouse: (kind, e, x, y, button, giveKeyboard) => this.reportMouse(kind, e, x, y, button, giveKeyboard),
     };
   }
 
@@ -1032,6 +1041,13 @@ export class HottyAddon implements ITerminalAddon {
   private terminalKey(e: KeyboardEvent) {
     const ta = this.term.textarea;
     if (!ta) return;
+    // xterm's legacy keyboard handler does not encode the menu key.
+    if (e.key === "ContextMenu" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey &&
+        this.version !== "0.8" && e.type === "keydown") {
+      const core = (this.term as unknown as { _core?: { coreService?: DataSink } })._core;
+      core?.coreService?.triggerDataEvent("\x1b[29~", true);
+      return;
+    }
     const init = {
       key: e.key,
       code: e.code,
@@ -1290,6 +1306,30 @@ export class HottyAddon implements ITerminalAddon {
       return;
     }
     el.ownerDocument.dispatchEvent(new MouseEvent(kind === "move" ? "mousemove" : "mouseup", init));
+  }
+
+  /** Use xterm's protocol and encoding for another button from an iframe.
+   * Its DOM handler focuses the terminal and maps buttons above 2 to NONE.
+   * The underlying encoder already supports the extended button codes. */
+  private reportMouse(kind: "down" | "move" | "up", e: MouseEvent, x: number, y: number, button: number, giveKeyboard = false) {
+    if (giveKeyboard) for (const s of this.surfaces.values()) if (s.hasKeyboard()) s.blur();
+    if (this.term.modes.mouseTrackingMode === "none" || e.shiftKey ||
+        (this.term.options.mouseEventsRequireAlt && !e.altKey) || button > 4) return;
+    const core = (this.term as unknown as { _core?: {
+      _mouseService?: { _triggerMouseEvent(event: TerminalMouseReport): boolean };
+    } })._core;
+    const screen = this.term.element?.querySelector(".xterm-screen");
+    if (!screen || !core?._mouseService?._triggerMouseEvent) return;
+    const rect = screen.getBoundingClientRect();
+    const px = Math.max(0, Math.min(rect.width - 1, x - rect.left));
+    const py = Math.max(0, Math.min(rect.height - 1, y - rect.top));
+    core._mouseService._triggerMouseEvent({
+      col: Math.floor(px * this.term.cols / rect.width), row: Math.floor(py * this.term.rows / rect.height),
+      x: Math.floor(px), y: Math.floor(py),
+      button: button > 2 ? button + 5 : button,
+      action: kind === "down" ? 1 : kind === "up" ? 0 : 32,
+      ctrl: e.ctrlKey, alt: e.altKey && !this.term.options.mouseEventsRequireAlt, shift: e.shiftKey,
+    });
   }
 
   private ensureLayer(): HTMLDivElement {
