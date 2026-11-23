@@ -957,7 +957,7 @@ export class HottyAddon implements ITerminalAddon {
         return data;
       },
       keys: this.keys,
-      command: (e) => this.command(e),
+      command: (e) => this.command(e, true),
       typed: (e) => this.menuKey(e),
       sendKey: (data) => {
         const cs = (this.term as unknown as { _core: { coreService: DataSink } })._core.coreService;
@@ -1364,7 +1364,7 @@ export class HottyAddon implements ITerminalAddon {
    * the key's bytes. A `paste` brings the clipboard's text, from the
    * browser's paste where the key makes one, or else read.
    */
-  private command(e: KeyboardEvent): boolean {
+  private command(e: KeyboardEvent, fromSurface = false): boolean {
     const taken = this.taken[this.term.buffer.active.type];
     if (taken.size === 0) return false;
     // A press has two names, looked up physical first (§10.4). The command
@@ -1392,7 +1392,7 @@ export class HottyAddon implements ITerminalAddon {
       this.pasting = null;
       void (navigator.clipboard?.readText().catch(() => "") ?? Promise.resolve("")).then((text) => this.sendCommand("paste", k, text));
     };
-    if (!e.isTrusted || this.forwarding) {
+    if (!e.isTrusted || this.forwarding || fromSurface) {
       e.preventDefault();
       read();
     } else this.pasting = { key: k, timer: setTimeout(read, 0) };
